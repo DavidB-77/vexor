@@ -80,6 +80,14 @@ pub const ShredCommonHeader = struct {
         const variant_byte = data[64];
         const variant = ShredVariant.fromByte(variant_byte);
 
+        // Data shreds carry two more bytes (parent_offset, [83..85)) than code
+        // shreds. The `data.len < 83` floor above is only sufficient for a code
+        // shred (fields end at byte 83); a data-shred buffer of exactly 83 or 84
+        // bytes passed that check but then read `data[83..85]` out of bounds —
+        // found by fuzz/fuzz_shred_parse.zig (index out of bounds, not caught as
+        // a parse error). Widen the floor to 85 whenever the variant is data.
+        if (variant.is_data and data.len < 85) return error.ShredTooShort;
+
         return ShredCommonHeader{
             .signature = sig,
             .variant_byte = variant_byte,
