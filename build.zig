@@ -3880,4 +3880,135 @@ pub fn build(b: *std.Build) void {
     test_divalarm_rt_step.dependOn(&run_test_divalarm_rt.step);
     test_divloc_step.dependOn(&run_test_divalarm_rt.step);
     test_migrated_step.dependOn(&run_test_divalarm_rt.step);
+
+    // ════════════════════════════════════════════════════════════════════════
+    // FUZZ HARNESSES (fuzz/) — libFuzzer-ABI targets over the untrusted-input
+    // parsing surfaces (shred/entry-batch/gossip/tx/compute-budget wire decode).
+    // See fuzz/README.md for target rationale + the OSS-Fuzz integration gap.
+    //
+    // Each `fuzz_*.zig` file is a plain module (no `main`) exporting
+    // `LLVMFuzzerTestOneInput`, so a real OSS-Fuzz toolchain can build it
+    // unchanged. `fuzz/runner.zig` is a LOCAL-ONLY bounded mutation driver
+    // (fork-per-input) that lets the same harness logic run today without a
+    // libFuzzer runtime — each `fuzz-<name>` step builds one such combined
+    // binary. `optimize` here is deliberately the top-level ReleaseSafe
+    // default (never ReleaseFast): Zig's safety-panic checks ARE the crash
+    // oracle these harnesses rely on.
+    // ════════════════════════════════════════════════════════════════════════
+    const fuzz_step = b.step("fuzz", "Build all local bounded-fuzz-driver binaries under fuzz/");
+
+    // shred_parse.zig's relative sibling chain (fec_resolver/bmtree/duplicate_shred/
+    // shred_encoder/shred_layout/shred_reedsol/gf_simd/shred_header/crds) needs only
+    // `core` + `vex_crypto` as NAMED imports — every other dependency is file-relative
+    // and resolves automatically off this root file's directory.
+    const fuzz_shred_parse_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/shred_parse.zig"), .target = target, .optimize = optimize });
+    fuzz_shred_parse_target.addImport("core", core);
+    fuzz_shred_parse_target.addImport("vex_crypto", vex_crypto);
+
+    // crds.zig has exactly one named import (vex_crypto) and no relative siblings.
+    const fuzz_crds_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/crds.zig"), .target = target, .optimize = optimize });
+    fuzz_crds_target.addImport("vex_crypto", vex_crypto);
+
+    // entry.zig has zero non-std dependencies.
+    const fuzz_entry_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/entry.zig"), .target = target, .optimize = optimize });
+
+    // tx_ingest.zig / compute_budget.zig reuse the module-72 instances (net_txingest /
+    // net_cb) already wired above with the same core/vex_crypto imports — no need to
+    // mint fresh copies.
+
+    const FuzzTarget = struct {
+        /// Build-step name suffix, e.g. "shred-parse" -> `zig build fuzz-shred-parse`.
+        step_name: []const u8,
+        /// fuzz/<name>.zig harness file stem.
+        harness_stem: []const u8,
+        /// Name the harness's LLVMFuzzerTestOneInput call reaches for, used only
+        /// in the run log / crash-file prefix (fuzz/runner.zig's `fuzz_meta`).
+        harness_name: []const u8,
+        /// (import name, module) pairs the harness file's own @import(...) calls need.
+        imports: []const struct { name: []const u8, module: *std.Build.Module },
+        description: []const u8,
+    };
+
+    const fuzz_targets = [_]FuzzTarget{
+        .{
+            .step_name = "shred-parse",
+            .harness_stem = "fuzz_shred_parse",
+            .harness_name = "shred_parse",
+            .imports = &.{.{ .name = "shred_parse", .module = fuzz_shred_parse_target }},
+            .description = "Shred wire-format decode (parseShred + Merkle-root reconstruction)",
+        },
+        .{
+            .step_name = "entry-batch",
+            .harness_stem = "fuzz_entry_batch",
+            .harness_name = "entry_batch",
+            .imports = &.{
+                .{ .name = "entry", .module = fuzz_entry_target },
+                .{ .name = "tx_ingest", .module = net_txingest },
+            },
+            .description = "Entry-batch buffer walk (readEntryCount/readEntryHeader + tx-bearing entry skip)",
+        },
+        .{
+            .step_name = "gossip-protocol",
+            .harness_stem = "fuzz_gossip_protocol",
+            .harness_name = "gossip_protocol",
+            .imports = &.{.{ .name = "crds", .module = fuzz_crds_target }},
+            .description = "Gossip Protocol/CrdsValue/ContactInfo decode",
+        },
+        .{
+            .step_name = "tx-ingest",
+            .harness_stem = "fuzz_tx_ingest",
+            .harness_name = "tx_ingest",
+            .imports = &.{.{ .name = "tx_ingest", .module = net_txingest }},
+            .description = "Transaction wire decode + sanitize (tx_ingest.parse)",
+        },
+        .{
+            .step_name = "compute-budget",
+            .harness_stem = "fuzz_compute_budget",
+            .harness_name = "compute_budget",
+            .imports = &.{
+                .{ .name = "tx_ingest", .module = net_txingest },
+                .{ .name = "compute_budget", .module = net_cb },
+            },
+            .description = "Compute-budget instruction parse over real tx_ingest-derived offsets",
+        },
+    };
+
+    for (fuzz_targets) |ft| {
+        var path_buf: [64]u8 = undefined;
+        const harness_path = std.fmt.bufPrint(&path_buf, "fuzz/{s}.zig", .{ft.harness_stem}) catch unreachable;
+        const harness_mod = b.createModule(.{ .root_source_file = b.path(harness_path), .target = target, .optimize = optimize });
+        for (ft.imports) |imp| harness_mod.addImport(imp.name, imp.module);
+
+        const meta_opts = b.addOptions();
+        meta_opts.addOption([]const u8, "harness_name", ft.harness_name);
+
+        const runner_mod = b.createModule(.{ .root_source_file = b.path("fuzz/runner.zig"), .target = target, .optimize = optimize });
+        runner_mod.addImport("target_harness", harness_mod);
+        runner_mod.addImport("fuzz_meta", meta_opts.createModule());
+
+        var name_buf: [64]u8 = undefined;
+        const exe_name = std.fmt.bufPrint(&name_buf, "fuzz-{s}", .{ft.step_name}) catch unreachable;
+        const exe = b.addExecutable(.{ .name = exe_name, .root_module = runner_mod });
+        const install = b.addInstallArtifact(exe, .{});
+
+        var step_buf: [64]u8 = undefined;
+        const step_key = std.fmt.bufPrint(&step_buf, "fuzz-{s}", .{ft.step_name}) catch unreachable;
+        const step = b.step(step_key, ft.description);
+        step.dependOn(&install.step);
+        fuzz_step.dependOn(&install.step);
+
+        // Also expose the pure harness module as a `zig build test --fuzz`-able
+        // target (std.testing.fuzz path — see fuzz/README.md). Not the vehicle
+        // for the bounded local run, but free once the module exists.
+        var test_buf: [64]u8 = undefined;
+        const test_name = std.fmt.bufPrint(&test_buf, "test-fuzz-{s}", .{ft.step_name}) catch unreachable;
+        const harness_test_mod = b.createModule(.{ .root_source_file = b.path(harness_path), .target = target, .optimize = optimize });
+        for (ft.imports) |imp| harness_test_mod.addImport(imp.name, imp.module);
+        const harness_test = b.addTest(.{ .name = test_name, .root_module = harness_test_mod });
+        const run_harness_test = b.addRunArtifact(harness_test);
+        var test_step_buf: [64]u8 = undefined;
+        const test_step_key = std.fmt.bufPrint(&test_step_buf, "test-fuzz-{s}", .{ft.step_name}) catch unreachable;
+        const test_step = b.step(test_step_key, "Smoke-run (non---fuzz) the harness's std.testing.fuzz test block");
+        test_step.dependOn(&run_harness_test.step);
+    }
 }
