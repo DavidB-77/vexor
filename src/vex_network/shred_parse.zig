@@ -410,3 +410,33 @@ pub fn parseShred(data: []const u8) !Shred {
     const common = try ShredCommonHeader.fromBytes(data);
     return Shred{ .common = common, .payload = data };
 }
+
+const testing = std.testing;
+
+// Regression KAT for the out-of-bounds `parent_offset` read fuzz/fuzz_shred_parse.zig
+// found: a data-shred-variant buffer of exactly 83 or 84 bytes passed the old
+// `data.len < 83` floor and then panicked reading data[83..85]. Must return a clean
+// parse error instead.
+test "fromBytes: 83/84-byte data-shred buffer errors cleanly (does not panic)" {
+    inline for (.{ 83, 84 }) |len| {
+        var buf = [_]u8{0} ** len;
+        buf[64] = 0x80; // Merkle DATA variant, proof_size=0 (is_data=true)
+        try testing.expectError(error.ShredTooShort, ShredCommonHeader.fromBytes(&buf));
+    }
+}
+
+test "fromBytes: 85-byte data-shred buffer parses (parent_offset now in range)" {
+    var buf = [_]u8{0} ** 85;
+    buf[64] = 0x80;
+    const hdr = try ShredCommonHeader.fromBytes(&buf);
+    try testing.expect(hdr.variant.is_data);
+    try testing.expectEqual(@as(u16, 0), hdr.parent_offset);
+}
+
+test "fromBytes: 83-byte code-shred buffer still parses (code shreds have no parent_offset field)" {
+    var buf = [_]u8{0} ** 83;
+    buf[64] = 0x40; // Merkle CODE variant, proof_size=0 (is_data=false)
+    const hdr = try ShredCommonHeader.fromBytes(&buf);
+    try testing.expect(!hdr.variant.is_data);
+    try testing.expectEqual(@as(u16, 0), hdr.parent_offset);
+}

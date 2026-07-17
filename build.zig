@@ -3905,6 +3905,20 @@ pub fn build(b: *std.Build) void {
     fuzz_shred_parse_target.addImport("core", core);
     fuzz_shred_parse_target.addImport("vex_crypto", vex_crypto);
 
+    // Dedicated unit-test step for shred_parse.zig's own `test` blocks (the
+    // fuzz-found parent_offset regression KAT below them). Not otherwise reachable:
+    // every fuzz_*.zig harness imports this file by NAME (@import("shred_parse")),
+    // which Zig's test discovery does not walk, and no existing test root reaches
+    // it via a relative import chain either.
+    const test_shred_parse = b.addTest(.{
+        .name = "test-shred-parse",
+        .root_module = fuzz_shred_parse_target,
+    });
+    const run_test_shred_parse = b.addRunArtifact(test_shred_parse);
+    const test_shred_parse_step = b.step("test-shred-parse", "Run shred_parse.zig's own KATs (incl. the fuzz-found parent_offset bounds regression)");
+    test_shred_parse_step.dependOn(&run_test_shred_parse.step);
+    test_migrated_step.dependOn(&run_test_shred_parse.step);
+
     // crds.zig has exactly one named import (vex_crypto) and no relative siblings.
     const fuzz_crds_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/crds.zig"), .target = target, .optimize = optimize });
     fuzz_crds_target.addImport("vex_crypto", vex_crypto);
