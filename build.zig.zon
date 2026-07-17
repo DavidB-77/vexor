@@ -1,0 +1,18 @@
+.{
+    .name = .vexor,
+    .version = "0.9.0",
+    .fingerprint = 0xbac4bbd3c649301d,
+    .minimum_zig_version = "0.15.2",
+    // vendor/blst is vendored as raw C source (not fetched via the Zig
+    // package manager) and built directly by build.zig's addCSourceFile /
+    // addAssemblyFile steps — see build.zig for the blst wiring. There are
+    // no zig-fetched dependencies today.
+    .dependencies = .{},
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tests",
+        "vendor",
+    },
+}

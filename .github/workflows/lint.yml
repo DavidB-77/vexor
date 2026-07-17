@@ -1,0 +1,21 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: zig fmt --check
+        run: zig fmt --check .

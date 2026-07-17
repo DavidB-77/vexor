@@ -1,0 +1,178 @@
+Vexor vex_crypto — Third-Party Attributions
+===========================================
+
+Vexor runs a self-contained, FFI-free-capable, pure-Zig cryptographic stack.
+Several components are Vexor's own implementations that are INFORMED BY, and in
+places SUBSTANTIALLY ADAPTED FROM, prior Apache-2.0 open-source work. We do not
+claim to be the first pure-Zig Solana crypto implementation — Syndica's Sig
+already ships one, and we credit it below. What Vexor contributes is the
+integration: a decoupled, standalone, byte-exact stack gated against the live
+cluster and tuned for our hot paths.
+
+This NOTICE covers the Ed25519 subtree specifically (Phase 1 of the pure-Zig
+crypto rewrite, 2026-07-11). Other components (BN254, Poseidon, BLS12-381,
+BLAKE3, LtHash) carry their own attributions where applicable.
+
+
+1. Ed25519 — src/vex_crypto/ed25519/
+------------------------------------
+
+The Ed25519 subtree is TWO layers, and this NOTICE credits them precisely:
+
+  OURS (Vexor-authored orchestration + API — src/vex_crypto/ed25519/root.zig):
+    the double-base scalar-multiply (`doubleBaseMul`), the w-NAF machinery
+    (`asNaf`) and NAF lookup tables, the three explicitly-named verify
+    predicates and the verify-strictness matrix, `signPureZig`, and
+    `verifyBatchStrict`. The consensus `verify()` path (src/vex_crypto/
+    ed25519.zig) is deliberately bare `std.crypto.sign.Ed25519` — never routed
+    through this subtree. This layer is Vexor's own; it is informed by Sig's
+    ed25519.zig (which in turn credits the dalek-cryptography curve25519-dalek
+    IFMA backend, https://github.com/dalek-cryptography/curve25519-dalek,
+    BSD/Apache), but it is not a verbatim copy — the API shape, the strictness
+    matrix, and the sign path are Vexor's.
+
+  CREDITED FLOOR (the field-element + point vector kernels — avx512.zig,
+  generic.zig): these are carried as the verbatim numeric floor, credited, and
+  NOT claimed as from-scratch — exactly analogous to the fiat-crypto artifact
+  used for BN254. They are the dalek-cryptography curve25519-dalek vectorized
+  IFMA algorithm at the bit level (canonical RFC8032 curve25519 arithmetic);
+  there is no cleaner byte-identical expression, so re-writing them would be
+  cosmetic churn with real fork risk and zero honesty gain, and they sit only
+  on the drop-safe shred path — so they are kept and credited, not re-authored.
+  Reached here via Syndica's Sig client:
+    Project : Sig
+    Source  : https://github.com/syndica/sig
+    License : Apache License 2.0
+    Files   : lib/crypto/ed25519/avx512.zig
+              lib/crypto/ed25519/generic.zig
+              lib/crypto/ed25519/wycheproof.zig  (Google Wycheproof KAT corpus)
+
+  * avx512.zig  — the AVX-512 IFMA (vpmadd52) parallel field-element backend
+    (ExtendedPoint / CachedPoint over @Vector(4,u64) 52-bit limbs). Carried
+    substantially verbatim; the math is unchanged. Verified to BUILD AND PASS
+    on Zig 0.15.2 under -mcpu=znver4 (Sig's own header warned the vpmadd52
+    intrinsic crashed LLVM on Zig 0.14.1 — that does NOT reproduce on 0.15.2).
+  * generic.zig — the portable AVX2-generalized @Vector field backend used as
+    the automatic fallback when the target lacks avx512ifma+avx512vl. Carried
+    substantially verbatim.
+  * wycheproof.zig — Project Wycheproof EDDSA test vectors (generated data),
+    carried verbatim as a KAT corpus. Wycheproof is Google's, Apache-2.0.
+
+  NOTE: Sig's general N-point multi-scalar-mul (straus.zig / pippenger.zig) was
+  briefly vendored during Phase 1 but is NOT part of this stack: the ed25519
+  verify path uses the 2-point `doubleBaseMul`, and the one in-tree MSM
+  consumer (the zk-ElGamal proof program) carries its own std.crypto.ecc-based
+  implementation (src/vex_bpf2/zksdk/ed25519.zig). We do not ship unused
+  vendored code, so those two files were removed.
+
+HOW WE DECOUPLED IT (made it standalone + our own):
+  * Removed every Sig-internal namespace dependency: the `sig.*` /
+    `lib.solana.Signature` / `lib.solana.Pubkey` / `build-options` imports and
+    the `common` self-referential module. The subtree compiles with only
+    `std` — no Sig build graph needed.
+  * Reshaped the public API to Vexor's call-site contract: our verifiers take
+    raw wire bytes (`*const [64]u8` sig, `*const [32]u8` pubkey, `[]const u8`
+    message) instead of Sig's `Signature`/`Pubkey` structs, matching the shape
+    of the Firedancer Ballet FFI they replace.
+  * Reconciled the verify-strictness matrix against Vexor's already-live
+    consensus routing (the proven fork class at slot 415479361). We expose
+    THREE explicitly-named predicates and DELIBERATELY do NOT route the
+    consensus path through the Sig-derived ones:
+      - consensus verify()  = std.crypto.sign.Ed25519 (cofactored, Agave/dalek/
+        cluster-equivalent) — UNCHANGED, never touched by this subtree.
+      - verifyStrict()       = exact + full low-order rejection (== Firedancer
+        Ballet fd_ed25519_verify == dalek verify_strict) — used on the
+        drop-safe shred path only.
+      - verifyLenientCofactorless() = Sig's cofactorless verify, exposed for
+        audited comparison; NOT wired to consensus.
+    A 3-way KAT matrix (ed25519/kat.zig) pins these verdicts as a regression
+    guard, including the cofactored cases where the consensus predicate accepts
+    but both Sig-derived predicates reject.
+  * Added Vexor-owned sign (signPureZig), KAT-proven byte-identical to
+    std.crypto's RFC 8032 signing, built on our own doubleBaseMul.
+
+
+2. Firedancer Ballet — differential oracle (not vendored into this subtree)
+--------------------------------------------------------------------------
+    Project : Firedancer
+    Source  : https://github.com/firedancer-io/firedancer
+    License : Apache License 2.0
+
+During development, Ballet's fd_ed25519_verify / fd_ed25519_sign (AVX-512 C)
+were linked behind a -Dballet_ed25519 build flag and used as a differential
+ORACLE: the ed25519/kat.zig differential KAT proved our pure-Zig verifyStrict
+agreed with fd_ed25519_verify byte-for-byte on canonical vectors. That FFI
+backend was removed entirely on 2026-07-12 once the epoch-boundary soak
+passed — Vexor's ed25519 is unconditionally pure-Zig today; the KAT corpus
+remains as a regression guard against the recorded Ballet-verified vectors.
+
+
+3. Agave / Solana Labs — reference semantics
+--------------------------------------------
+    Project : Agave (Solana validator)
+    Source  : https://github.com/anza-xyz/agave
+    License : Apache License 2.0
+
+Agave is the consensus ground truth. The consensus verify() path deliberately
+matches Agave/dalek acceptance semantics (via std.crypto). The precompile
+strictness (SIMD-0152, Agave 4.2) is handled separately in
+src/vex_crypto/ed25519_precompile.zig and is out of scope for this subtree.
+
+
+═══════════════════════════════════════════════════════════════════════════════
+BN254 (alt_bn128) + Poseidon — src/vex_crypto/bn254/ (Phase 2, 2026-07-11)
+═══════════════════════════════════════════════════════════════════════════════
+
+The BN254 group ops (G1/G2 add, scalar-mul, compress/decompress), the optimal-ate
+pairing, and the Poseidon-BN254 hash are VEXOR'S OWN implementation. They run
+INSIDE transaction execution (the sol_alt_bn128_group_op / sol_alt_bn128_compress
+/ sol_poseidon syscalls), feeding account state → bank_hash, so every output is
+byte-exact-gated against Firedancer Ballet and the published solana-bn254 v3.2.1 /
+Firedancer test vectors (src/vex_crypto/bn254/kat.zig, `zig build test-vex-bn254`).
+
+4. BN254 base field Fp — src/vex_crypto/bn254/fiat_fp.zig
+--------------------------------------------------------
+    Project : fiat-crypto
+    Source  : https://github.com/mit-plv/fiat-crypto
+    License : MIT / Apache-2.0 / BSD-1-Clause (tri-licensed)
+
+The ONE component carried as-is: the word-by-word Montgomery reduction for the
+BN254 base-field prime, a machine-generated, formally-verified fiat-crypto Coq
+extraction. Bit-identical modular reduction is mandatory for consensus, and the
+canonical way to obtain it is the fiat-crypto artifact — not a hand-rolled
+reduction. This is a mathematical artifact, identical regardless of who runs the
+extractor; the same generator output is used by Sig and other Solana clients.
+The verbatim generator banner is retained at the top of the file.
+
+5. BN254 tower / groups / pairing / serialization — Vexor's own
+---------------------------------------------------------------
+Vexor-authored, informed by the framework and algorithms of:
+    - Syndica's Sig  (Apache-2.0) — https://github.com/syndica/sig
+      (shared/crypto/bn254: field tower shape, group law, pairing structure)
+    - Firedancer Ballet (Apache-2.0) — the alt_bn128 syscall byte contract, the
+      subgroup-check semantics (G2 add = curve-only, G2 mul / pairing = subgroup),
+      and (during development, via a -Dballet_bn254 flag removed 2026-07-12
+      once the epoch-boundary soak passed) the differential oracle used to
+      byte-verify this implementation.
+    - solana-bn254 v3.2.1 / ark-bn254 (Apache-2.0) — the authoritative Agave
+      wire/serialization/error semantics (endianness, flag bytes, length rules).
+The Fp2/Fp6/Fp12 tower, G1/G2 group law, Miller loop, final exponentiation, and
+point (de)serialization were written fresh against the standard published
+algorithms (references cited inline) — cleaner and reorganized, math identical,
+gated byte-for-byte. We do NOT claim "from scratch, no reference."
+
+6. Poseidon-BN254 — src/vex_crypto/bn254/poseidon.zig + poseidon_params.zig
+--------------------------------------------------------------------------
+Vexor-authored permutation over the BN254 scalar field. The round constants (ark)
+and MDS matrices originate from light-poseidon v0.2.0 / circomlib v2.0.5
+(bn254_x5); they were taken from Firedancer's fd_poseidon_params.c and converted
+out of Fr-Montgomery form to normal residues by src/vex_crypto/bn254/gen_poseidon_params.py
+(normal = mont · R⁻¹ mod r), so the permutation runs in plain Fr arithmetic with
+byte-identical output. The conversion + permutation are proven end-to-end by the
+differential gate against the Firedancer/solana Poseidon vectors.
+    - light-poseidon v0.2.0 (Apache-2.0) — https://github.com/Lightprotocol/light-poseidon
+    - circomlib v2.0.5 (GPL-3.0, parameters/spec reference) — https://github.com/iden3/circomlib
+    - Firedancer Ballet (Apache-2.0) — parameter source + differential oracle.
+
+
+Full Apache-2.0 license text: https://www.apache.org/licenses/LICENSE-2.0

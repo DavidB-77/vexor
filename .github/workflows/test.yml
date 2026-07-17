@@ -1,0 +1,24 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      # test-migrated is the aggregate KAT (known-answer-test) suite across
+      # every migrated subsystem — the closest equivalent to a project-wide
+      # `zig build test`. Same portable CPU baseline as build.yml.
+      - name: Run KAT suite
+        run: zig build test-migrated -Dprod -Dpure_zig --release=safe -Dcpu=x86_64_v2

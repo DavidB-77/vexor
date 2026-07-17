@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      # Public GitHub-hosted runners are generic x86_64 (Cascade Lake/Ice
+      # Lake-class Azure VMs) and do NOT support the znver4 (Zen 4) target
+      # production deploys build with. -Dcpu=x86_64_v2 is the portable
+      # baseline verified to compile here; note plain -Dcpu=baseline fails
+      # (this codebase uses 128-bit atomics, which need cmpxchg16b — a
+      # x86-64-v2 feature, not part of the plain x86-64 baseline).
+      - name: Build (portable CPU baseline)
+        run: zig build -Dprod -Dpure_zig --release=safe -Dcpu=x86_64_v2

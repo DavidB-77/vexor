@@ -1,0 +1,46 @@
+Vexor — an independent, Zig-native Solana validator.
+Copyright (c) 2026 the Vexor authors.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Vexor is an ORIGINAL reimplementation written from scratch in Zig. Its runtime
+behavior is byte-for-byte compatible with the Agave validator by design. That
+compatibility was achieved by using the Apache-2.0 licensed projects below as
+REFERENCE IMPLEMENTATIONS and DIFFERENTIAL TEST ORACLES — reading their source,
+reimplementing the behavior in Zig, and verifying bit-for-bit against their
+output. Vexor links NONE of their code at runtime (the crypto is a pure-Zig
+reimplementation; see PROVENANCE.md).
+
+  • Agave — Anza  (anza-xyz/agave), Apache-2.0.
+      Primary behavioral reference: consensus / fork choice, SVM + sBPF
+      execution, compute-budget & cost model, CPI, vote / stake / loader
+      programs, sysvars, account (LtHash) hashing.
+
+  • Firedancer — Jump Crypto  (firedancer-io/firedancer), Apache-2.0.
+      Reference for leaf cryptography (the "Ballet" ed25519 / blake3 / bn254 /
+      poseidon routines) and select high-performance data structures.
+      NOTE: Vexor no longer links Firedancer at all — its cryptography is an
+      independent pure-Zig reimplementation (build flag -Dpure_zig).
+
+  • Sig — Syndica  (Syndica/sig), Apache-2.0.
+      Reference for Zig-idiomatic Solana structures during early bring-up.
+      NOTE: the one subsystem that carried Sig-derived code — the vote-program
+      transplant used as a differential oracle while Vexor's own vote executor
+      (voteforge) was validated — was removed 2026-07-12. Vexor's vote program,
+      like the rest of the client, is now an independent reimplementation;
+      Vexor's implementations are independent of Sig at both build and runtime.
+
+Per-subsystem provenance — exactly which Vexor file/function reimplements which
+upstream source, and whether it was reimplemented, ported, or verified
+byte-exact — is maintained in PROVENANCE.md (the provenance ledger).
+
+Vexor also vendors one piece of third-party code directly (not a behavioral
+reference — actual linked source):
+
+  • blst — Supranational LLC  (supranational/blst), Apache-2.0.
+      BLS12-381 pairing-cryptography library, vendored at vendor/blst/ and
+      built directly from its C/assembly source. See vendor/blst/LICENSE for
+      the license text as distributed by Supranational.
+
+"Agave", "Firedancer", "Sig", and "Solana" are trademarks of their respective
+owners. This notice is provided in the spirit of Apache-2.0 attribution for
+work that was reimplemented with the above projects as reference.

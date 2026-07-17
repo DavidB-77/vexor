@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Zig has no native GitHub Dependabot ecosystem as of this writing; scope
+  # updates to the GitHub Actions workflows themselves.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
