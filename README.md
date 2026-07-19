@@ -109,13 +109,13 @@ reference — not against baked-in expected outputs. Latest full-corpus run
 ## Acknowledgments
 
 Vexor exists because other teams built great validator clients in the open.
-Beyond the reference-oracle relationships credited in
-[`NOTICE`](./NOTICE)/[`PROVENANCE.md`](./PROVENANCE.md) (Agave, Firedancer,
-Sig), we're grateful to the wider Solana client ecosystem — including
-**[Jito-Solana](https://github.com/jito-foundation/jito-solana)** (Jito Labs)
-and **[Mithril](https://github.com/Overclock-Validator/mithril)** (Overclock)
-— whose public code, tooling, and client-diversity work shaped how Vexor was
-built and tested.
+The reference-oracle relationships that shaped Vexor's byte-fidelity work are
+credited in [`NOTICE`](./NOTICE)/[`PROVENANCE.md`](./PROVENANCE.md) (Agave,
+Firedancer, Sig). Vexor aims to stand alongside the ecosystem's other
+production clients, such as
+**[Jito-Solana](https://github.com/jito-foundation/jito-solana)** — another
+independent client serving the same network, with Vexor taking its own path
+on efficiency, performance, and self-containment.
 
 ## License
 
