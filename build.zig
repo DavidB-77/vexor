@@ -2794,7 +2794,7 @@ pub fn build(b: *std.Build) void {
     // hard_forks that the evolved bank.zig now references). Result: 52/53 assert
     // pass; the 3 non-green items are ALL intrinsic to the frozen byte-identical
     // bank.zig (zero from the stub, which allocates nothing) and are pre-existing
-    // FIX105-SOURCE defects owed a forward-port fix, NOT rebuild defects, so they
+    // origin-tree defects owed a forward-port fix, NOT rebuild defects, so they
     // must NOT be patched here (verbatim mandate — bank.zig md5 must stay
     // 6c0d6a3b93c1325dcd8be8b560d0ff87):
     //   (1) FAIL bank.zig:4973 `EpochSchedule: DEFAULT carries canonical warmup` —

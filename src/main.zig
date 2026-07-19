@@ -2677,7 +2677,7 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 // slot K, advance the accounts-db root to the newest FROZEN slot
                 // ≤ K−N via the SAME shared root-advance the live vote path uses
                 // (replay_stage.forceAdvanceRootTo → doRootAdvance: ancestry
-                // guard + FIX105 promote/purge + advanceRoot + purgeRootedSlot —
+                // guard + partition promote/purge + advanceRoot + purgeRootedSlot —
                 // never bare advanceRoot). Without this a no-vote replay never
                 // roots → unrooted_ring grows unboundedly → account reads go
                 // O(slots²) (the 2026-07-01 21.7k-slot wall: 63% CPU in

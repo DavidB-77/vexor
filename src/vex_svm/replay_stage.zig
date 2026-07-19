@@ -5499,7 +5499,7 @@ pub const ReplayStage = struct {
     /// (submitVote) and the OFFLINE force-root path (forceAdvanceRootTo,
     /// VEX_REPLAY_FORCE_ROOT_DEPTH). Extracted VERBATIM from submitVote so the
     /// two callers can never drift: ancestry guard (carrier #7 LAYER 2) →
-    /// FIX105-PROMOTE partition promote/purge → db.advanceRoot → geyser rooted
+    /// partition promote/purge → db.advanceRoot → geyser rooted
     /// emit → db.purgeRootedSlot. Returns prev_root (read BEFORE advanceRoot)
     /// when the advance ran; null when the ancestry guard REFUSED it (prev
     /// root kept). anchor_slot/anchor_parent = the just-voted (live) /
@@ -5691,13 +5691,13 @@ pub const ReplayStage = struct {
                 // would be noise). Pairs with purgeUnrootedSlot's
                 // [FORK-ISO] per-sibling line.
                 if (p.chain.items.len > 1 or p.siblings.items.len > 0 or (vex_store.recorder.promoteDiagOn() and vex_store.recorder.promoteDiagTick())) {
-                    std.log.warn("[FIX105-PROMOTE] advance root={d} prev={d} chain_len={d} siblings={d} complete={}", .{ root, prev_root, p.chain.items.len, p.siblings.items.len, p.chain_complete });
+                    std.log.warn("[ROOT-PROMOTE] advance root={d} prev={d} chain_len={d} siblings={d} complete={}", .{ root, prev_root, p.chain.items.len, p.siblings.items.len, p.chain_complete });
                 }
             } else {
                 // RULE #0: partition unavailable (alloc failure) — promote
                 // and purge are skipped; the flat cache keeps whatever it
                 // holds this advance. Surface it so we know if it ever fires.
-                std.log.warn("[FIX105-PROMOTE] partition unavailable root={d} prev={d} — promote+purge SKIPPED (fork-blind cache unguarded this advance)", .{ root, prev_root });
+                std.log.warn("[ROOT-PROMOTE] partition unavailable root={d} prev={d} — promote+purge SKIPPED (fork-blind cache unguarded this advance)", .{ root, prev_root });
             }
         }
 
@@ -5718,7 +5718,7 @@ pub const ReplayStage = struct {
     /// unrooted_ring grows unboundedly → getWithModifiedSlotPlusSelf goes
     /// O(slots²) (perf-proven 63% CPU by slot ~1600 of the 2026-07-01
     /// 21.7k-slot attempt). Runs the FULL shared root-advance via doRootAdvance
-    /// — NEVER bare db.advanceRoot: skipping the FIX105 promote/purge or the
+    /// — NEVER bare db.advanceRoot: skipping the partition promote/purge or the
     /// sig_overlay purge would silently falsify replayed bank_hashes (the H2
     /// purge-no-promote carrier shape, offline).
     /// OFFLINE-ONLY: main.zig wires this exclusively inside its
