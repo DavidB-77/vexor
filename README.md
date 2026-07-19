@@ -66,17 +66,26 @@ test-<name>` steps (see `build.zig`) for faster iteration on one area.
 
 Numbers below are cluster-attested, not benchmarks:
 
-- Voting: **~98.7% of maximum vote credits** (measured vs. the theoretical
-  16/slot ceiling).
-- Block production: **~97%+ of leader slots produced and cluster-accepted**
-  (empty blocks). Transaction-bearing block production is **under live
-  testing** on testnet — currently restricted to a narrow transaction
-  whitelist, with an automatic in-process fallback to empty-block production
-  if a produce-parity check fails. Do not treat it as shipped or
+- Voting: while operating, Vexor lands votes at **~98.7–99% of the
+  theoretical 16-credits/slot Timely-Vote-Credit ceiling** — measured
+  side-by-side against the epoch's top validators (16.00/slot) on the public
+  RPC oracle. Full-epoch credit totals are lower whenever the testnet box is
+  deliberately taken down for development windows; the shortfall is downtime,
+  not missed or late votes.
+- Block production: **~97%+ of leader slots produced and cluster-accepted
+  over a full epoch** (best cluster-attested epoch: 152/156 via
+  `getBlockProduction`), and **100% of leader slots while the node is up**
+  (every skip on record falls in a deliberate maintenance window or a gated
+  experiment). Blocks are currently empty; transaction-bearing block
+  production is **under live testing** on testnet — restricted to a narrow
+  transaction whitelist, with an automatic in-process fallback to empty-block
+  production if a produce-parity check fails. Do not treat it as shipped or
   production-ready.
-- Vote execution: Vexor's vote program executes vote instructions in
-  **~1.9–2.0 µs**, **4.7× faster** than the reference transplant it replaced,
-  measured over 990k+ live instructions with byte-identical results.
+- Vote execution: Vexor's from-scratch vote program executes live vote
+  instructions in **~1.9–2.0 µs**, **~4.4× faster** than the reference
+  transplant it replaced (2,017 ns vs 8,909 ns over the same 990k-instruction
+  replay) — and verified byte-identical against that reference over **20M+
+  live instructions in a single session with zero mismatches**.
 - Byte-fidelity methodology: every consensus-affecting change passes an
   **offline golden replay** (1992 canonical slots spanning an epoch
   boundary, bank hashes byte-identical to the live cluster's) before deploy.
