@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 2 — account-I/O layer: FD-style borrow-only-what's-touched
+//! voteforge, stage 2 — account-I/O layer: FD-style borrow-only-what's-touched
 //! account model over Vexor's flat `[]u8 + lamports + owner` account world
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 2, §F.1 layer 2, executive
 //! summary lever #2).

@@ -6,10 +6,10 @@
 //! (`src/vex_ledger/divergence_alarm.zig`). It reads ONE JSON object (from --input <file>
 //! or stdin) carrying our slot's frozen bank_hash inputs (from the [BANK-FROZEN] log line /
 //! FlightRecord) plus the cluster's canonical inputs (public-testnet-RPC oracle + optional
-//! govnode bank-hash-details), runs `classify()`, and prints the structured `verdict.json`
+//! oracle-node bank-hash-details), runs `classify()`, and prints the structured `verdict.json`
 //! (design §4.1). It performs NO network I/O and NO replay — the wrapper
 //! `tools/divergence-localize.sh` produces the JSON (offline re-replay → [BANK-FROZEN]
-//! parse → govnode fetch → base58 PoH decode) and consumes this verdict, then appends the
+//! parse → oracle-node fetch → base58 PoH decode) and consumes this verdict, then appends the
 //! account/field/owner from the per-account lt_hash diff for an EXECUTION class.
 //!
 //! Keeping this front-end pure JSON-in/JSON-out (no vex_svm import) makes it a tiny,

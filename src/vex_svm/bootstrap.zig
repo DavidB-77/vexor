@@ -841,7 +841,7 @@ pub const ValidatorBootstrap = struct {
         // hatch — when the default cluster RPC is down (the api.testnet 503 that
         // stranded bootstrap on 2026-06-05), point Vexor at any healthy RPC.
         if (self.config.rpc_url_override) |url| {
-            try sm.addRpcEndpoint(url); // RULE#1: hard-fails if url is govnode
+            try sm.addRpcEndpoint(url); // RULE#1: hard-fails if url is oracle-node
         }
 
         // A1 multi-seed: VEXOR_SNAPSHOT_RPCS is an optional comma-separated list of

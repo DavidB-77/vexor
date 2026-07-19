@@ -1,4 +1,4 @@
-// REBUILD-CLEAN (2026-07-07, module 49): fix105's 3 dead re-exports dropped
+// REBUILD-CLEAN (2026-07-07, module 49): origin-tree's 3 dead re-exports dropped
 // from this barrel — `vote` (@import("vote.zig")), `bpf_loader`
 // (@import("bpf_loader.zig")), `vote_codec` (@import("vote_codec.zig")).
 // All 3 are manifest-disposed DEAD | DELETE | NONE (manifest lines

@@ -242,7 +242,7 @@ pub const AlarmConfig = struct {
     autoreplay: bool = true,
     /// VEX_DIVERGE_ALARM_PUSH → notify stub (parsed + logged; no network in M2).
     push: bool = false,
-    /// Public testnet RPC oracle (CLUSTER ORACLE HARD RULE — never Vexor localhost/govnode).
+    /// Public testnet RPC oracle (CLUSTER ORACLE HARD RULE — never Vexor localhost/oracle-node).
     oracle_url: []const u8 = "https://api.testnet.solana.com",
     /// Bundle output root.
     bundle_root: []const u8 = "/tmp/vexor-divergence-bundles",

@@ -153,17 +153,17 @@ const SYSVAR_OWNER: [32]u8 = .{
     0x7f, 0xc1, 0x94, 0x60, 0x00, 0x00, 0x00, 0x00,
 };
 
-// r37-diag (Helm 2026-04-27): per-sysvar byte-content probe for lthash carrier
+// r37-diag: per-sysvar byte-content probe for lthash carrier
 // attribution. After r36-fix-e SECONDARY verdict (cap 60/60 + sig 60/60 +
 // lthash 0/60), vex-109's vote_state vindication + vex-110's fee-collector
 // vindication left per-slot sysvar DATA bytes as the highest-leverage
-// remaining suspect. Coverage perfect (SEQ:144), algorithm parity ruled out
+// remaining suspect. Coverage perfect, algorithm parity ruled out
 // (Audit D), so divergence must be post-state DATA bytes of shared accounts.
 //
 // Emit format:
 //   [PROBE-SYSVAR-BYTES] slot=N name=<NAME> sha256=<hex_64> first16=<hex_32> last16=<hex_32> len=<N>
 //
-// Compared to govnode RPC ground truth via getAccountInfo(<sysvar>, slot=N) →
+// Compared to oracle-node RPC ground truth via getAccountInfo(<sysvar>, slot=N) →
 // base64-decode → sha256 + first16 + last16 + len. First sysvar with
 // byte-divergence at the same slot = lthash carrier class.
 //
@@ -1121,7 +1121,7 @@ pub const Bank = struct {
         // change LtHash math (see the accountLtHash/mixing implementation below
         // for the invariant this must not disturb).
         // For the 4.1% of vote-mismatches that are REAL bank_hash divergence,
-        // diff'ing per-account contributions vs govnode pinpoints the exact
+        // diff'ing per-account contributions vs oracle-node pinpoints the exact
         // pubkey whose hash drifted.
         if (recorder.isEnabled()) {
             const old_prefix = std.mem.readInt(u64, old_lt.asBytes()[0..8], .big);
@@ -1326,7 +1326,7 @@ pub const Bank = struct {
         // 360 into feed accounts → permanent lt_hash divergence (equal sigs) →
         // divergent fork → root wedge @414731381. The differential KAT
         // (kat_clock_unixts_414723807.zig, canonical vote-account bytes from
-        // govnode create-snapshot @414723806) proves the estimator yields the
+        // oracle-node create-snapshot @414723806) proves the estimator yields the
         // cluster's 360 EXACTLY when fed true parent-bank samples — the bug was
         // the top_votes feed serving staler (slot, ts) pairs whose floor-projected
         // estimates sat one second low at the median.
@@ -1709,7 +1709,7 @@ pub const Bank = struct {
         // for RBH (6008 bytes data → (6008+128)*6960 = 42,706,560). On testnet
         // this fallback never triggers (probe-2026-05-26: adb_hit=true 100%
         // over 86 slots) but mainnet may exercise it. Previously `= 1` was a
-        // non-canonical sentinel that would diverge from Agave/govnode if the
+        // non-canonical sentinel that would diverge from Agave/oracle-node if the
         // fallback ever fires.
         var existing_lamports: u64 = 42_706_560;
         var existing_rent_epoch: u64 = std.math.maxInt(u64);
@@ -2048,7 +2048,7 @@ pub const Bank = struct {
         var existing_data_ptr: ?[]const u8 = null;
         // 2026-05-27 Task #43 RULE #0: fallback default = canonical rent-exempt
         // for SlotHashes (20488 bytes data → (20488+128)*6960 = 143,487,360).
-        // Was `1_143_600` which would diverge from Agave/govnode if fallback
+        // Was `1_143_600` which would diverge from Agave/oracle-node if fallback
         // fires. On testnet adb_hit=true 100% so this never triggers, but
         // mainnet hygiene per RULE #0.
         var existing_lamports: u64 = 143_487_360;
@@ -2194,7 +2194,7 @@ pub const Bank = struct {
 
     /// LastRestartSlot sysvar — per-slot writer.
     ///
-    /// r35-fix (Helm SEQ:123-helm 2026-04-27): r35-A [SYSVAR-WRITES] probe
+    /// r35-fix: r35-A [SYSVAR-WRITES] probe
     /// confirmed Vexor never wrote LastRestartSlot in 10/10 sampled slots.
     /// @prov:bank.last-restart-slot-writer — this wires the missing per-slot
     /// writer at pre-execute, mirroring the Clock+SlotHashes pattern.
@@ -2301,7 +2301,7 @@ pub const Bank = struct {
         // SysvarLastRestartS1ot1111111111111111111111 — verified canonical bytes
         // via base58-decode of the pubkey string.
         //
-        // r35-fix-c (Helm SEQ:127-helm 2026-04-27): the original r35-fix
+        // r35-fix-c: the original r35-fix
         // (commit 27e0611) hand-typed bytes that base58-encoded to
         // `Sysvar1nstructionrcbw6E4xzw4Qw5oNvY8psLDYhF` — a junk pubkey
         // structurally similar to `Sysvar1nstructions1111...` but with wrong
@@ -2321,7 +2321,7 @@ pub const Bank = struct {
         // Latent bug tracked separately: 7 OTHER sysvar pubkey constants in
         // sysvar_cache.zig also have placeholder bytes — all 8 need fixing
         // in a future iteration. r35-fix-c scope is intentionally minimal
-        // per Helm SEQ:127 ("1-line bytes correction").
+        // per ("1-line bytes correction").
         const LRS_PUBKEY = Pubkey{ .data = .{
             0x06, 0xa7, 0xd5, 0x17, 0x19, 0x06, 0xdd, 0xe1,
             0xcd, 0x3f, 0x94, 0x7d, 0xca, 0xb4, 0xc8, 0xf4,
@@ -2351,7 +2351,7 @@ pub const Bank = struct {
         // r36-A diag: per-100-slot emit showing whether snapshot has the
         // LRS account + its bytes. Disambiguates the "snapshot-has-LRS"
         // vs "snapshot-doesn't-have-LRS" branches if r36-A's data-bytes
-        // preserve has null effect on lthash. Helm SEQ:131-helm bonus ask.
+        // preserve has null effect on lthash. bonus ask.
         if (self.slot % 100 == 0) {
             if (old_lt_data) |od| {
                 if (od.len >= 8) {
@@ -2376,7 +2376,7 @@ pub const Bank = struct {
 
         // Build 8-byte data: u64 last_restart_slot (LE).
         //
-        // r36-A (Helm SEQ:131-helm 2026-04-27): preserve existing snapshot
+        // r36-A: preserve existing snapshot
         // bytes when present. r35-fix-c hardcoded data = [0u64 LE] every
         // slot, ignoring what the snapshot actually held. On testnet without
         // active hard-forks since boot, the snapshot value should be 0
@@ -2450,7 +2450,7 @@ pub const Bank = struct {
         const burn: u64 = self.execution_fees / 2;
         const fees_to_leader: u64 = self.priority_fees + (self.execution_fees - burn);
 
-        // r27 cap-burn fix (Helm SEQ:102-helm 2026-04-27): debit the 50%
+        // r27 cap-burn fix: debit the 50%
         // execution_fee burn from capitalization. Pre-r27 this line was
         // missing — every slot leaked +burn lamports onto Vexor's cap counter
         // (~1.3M / slot on testnet) producing the +185M..+197M cap_delta vs
@@ -2647,7 +2647,7 @@ pub const Bank = struct {
     /// Returns a caller-owned slice of StakeHistoryEntry.
     /// Correct memory management: pre-scan count, allocate exactly that many entries.
     pub fn readStakeHistory(self: *Self, allocator: std.mem.Allocator) ![]StakeHistoryEntry {
-        // r36-fix-d (Helm SEQ:137-helm 2026-04-27): canonical SysvarStakeHistory1111...
+        // r36-fix-d: canonical SysvarStakeHistory1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
         // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u` — another instance of the
         // never-hand-type-pubkey-bytes rule being violated (third documented
@@ -3148,14 +3148,14 @@ pub const Bank = struct {
         std.log.warn("[EPOCH] Boundary detected: epoch {d} to {d}", .{ prev_epoch, new_epoch });
 
         // r39 inflation-math fix — three multiplicatively-stacking bugs
-        // (Helm SEQ:026-elder Agent Z byte-diff, SEQ:025-elder Agent X smoking-gun,
+        // (byte-diff + smoking-gun forensics,
         //  helm-fresh primary-source verification 2026-04-27T20:50Z).
         //
         // Combined effect (all three): Vexor inflation pool was ~2.23× Agave's per
         // epoch on testnet, distributing as +25%-ish per-slot cap drift through both
         // bank.zig:~1947 (vote_reward_total +=) and bank.zig:~2232 (lamports_distributed
         // +=). Empirically: r38 verdict 60-slot live-tip +346k/slot drift + ~1B
-        // catchup-window spike vs Agave govnode (bank-frozen capitalization field).
+        // catchup-window spike vs Agave oracle-node (bank-frozen capitalization field).
         //
         // Bug 1: Inflation.initial — was 0.15 (rewards.zig:82 struct default), should
         //   be 0.08. Agave testnet runs Inflation::full() (runtime/src/bank.rs:5714).
@@ -3181,7 +3181,7 @@ pub const Bank = struct {
         //   into years_as_slots() — that's a localized constant for other tests.
         //   Magnitude: Vexor's epoch_duration_in_years over-counts by 1.2508×.
         //
-        // Combined ratio = 1.78 × 1.2508 ≈ 2.23× — matches Agent Z byte-diff.
+        // Combined ratio = 1.78 × 1.2508 ≈ 2.23× — matches the byte-diff forensics.
         //
         // Root cause in Vexor: snapshot_manifest.zig:382-385 calls skipInflation()
         // which discards the 6 inflation f64 fields from the snapshot rather than
@@ -3202,7 +3202,7 @@ pub const Bank = struct {
         //   r40+ (queued):     StakeHistory + warmup curves + commission BPS.
         // carrier #16 @414812256: the prior "r39" change set initial=0.08 believing
         // testnet runs Inflation::full(). The LIVE testnet inflation governor
-        // (verified 2026-06-12 via govnode getInflationGovernor) is:
+        // (verified 2026-06-12 via oracle-node getInflationGovernor) is:
         //   initial=0.15, taper=0.15, terminal=0.015, foundation=0.0, foundationTerm=0.0
         // i.e. Agave Inflation::default() with foundation zeroed in genesis. Matched
         // byte-exact: initial=0.15 + inflation_start=pico(49772256) reproduces the
@@ -3903,7 +3903,7 @@ pub const Bank = struct {
     /// Ring buffer of (epoch, effective, activating, deactivating) entries, max 512.
     fn updateStakeHistory(self: *Self, epoch: u64, effective: u64, activating: u64, deactivating: u64) !void {
         // SysvarStakeHistory1111111111111111111111111
-        // r36-fix-d (Helm SEQ:137-helm 2026-04-27): canonical SysvarStakeHistory1111...
+        // r36-fix-d: canonical SysvarStakeHistory1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
         // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u` — another instance of the
         // never-hand-type-pubkey-bytes rule being violated (third documented
@@ -3922,7 +3922,7 @@ pub const Bank = struct {
 
         // 2026-05-27 Task #43 RULE #0: fallback default = canonical rent-exempt
         // for StakeHistory (16392 bytes data → (16392+128)*6960 = 114,979,200).
-        // Was `1` which would diverge from Agave/govnode if fallback fires.
+        // Was `1` which would diverge from Agave/oracle-node if fallback fires.
         // Mainnet hygiene per RULE #0.
         var existing_lamports: u64 = 114_979_200;
         var existing_rent_epoch: u64 = std.math.maxInt(u64);
@@ -4007,7 +4007,7 @@ pub const Bank = struct {
     /// Contains distribution schedule so programs can detect reward period.
     fn createEpochRewardsSysvar(self: *Self) !void {
         // SysvarEpochRewards1111111111111111111111111
-        // r36-fix-d (Helm SEQ:137-helm 2026-04-27): canonical SysvarEpochRewards1111...
+        // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
         // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5` — the same
         // never-hand-type-pubkey-bytes pattern as r35-fix and the StakeHistory
@@ -4299,7 +4299,7 @@ pub const Bank = struct {
 
     /// Update EpochRewards sysvar distributed_rewards field.
     fn updateEpochRewardsDistributed(self: *Self) !void {
-        // r36-fix-d (Helm SEQ:137-helm 2026-04-27): canonical SysvarEpochRewards1111...
+        // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
         // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5` — the same
         // never-hand-type-pubkey-bytes pattern as r35-fix and the StakeHistory
@@ -4372,7 +4372,7 @@ pub const Bank = struct {
 
     /// Deactivate EpochRewards sysvar (set active=0).
     fn deactivateEpochRewardsSysvar(self: *Self) !void {
-        // r36-fix-d (Helm SEQ:137-helm 2026-04-27): canonical SysvarEpochRewards1111...
+        // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
         // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5` — the same
         // never-hand-type-pubkey-bytes pattern as r35-fix and the StakeHistory
@@ -4635,7 +4635,7 @@ pub const Bank = struct {
         // Step 3: Settle fees (creates leader credit write)
         // @prov:bank.settle-fees
         //
-        // r27 [CAP-DEBUG] (Helm SEQ:102-helm 2026-04-27): capture cap pre +
+        // r27 [CAP-DEBUG]: capture cap pre +
         // post settleFees to verify the new `self.capitalization -= burn`
         // line is firing per slot. Useful as long as the experiment runs;
         // remove after r27 verdict is locked.
@@ -4790,7 +4790,7 @@ pub const Bank = struct {
         // called on the hot path — most writes flow through this per-pk pass.)
         const rec_lt_on = recorder.isEnabled();
         // [VOTE-PROBE] Carrier-K (2026-06-08 rev2 CRASH-SAFE, env VEX_VOTE_PROBE): for
-        // Vote-owned accounts log slot+pk+lt-prefix(+lamports) so a diff vs govnode
+        // Vote-owned accounts log slot+pk+lt-prefix(+lamports) so a diff vs oracle-node
         // agave-ledger-tool per-account ground truth pins the EXACT diverging voter
         // (accounts_lt_hash compute carrier @413928162; vote-state piecewise merge
         // suspect). The lt-prefix already incorporates data+lamports+owner, so an lt
@@ -4973,7 +4973,7 @@ pub const Bank = struct {
         }
 
         // [WRITESET-FULL] env-gated per-pubkey dump for the first ~30 frozen slots
-        // after boot, used to diff against govnode's agave-ledger-tool cluster-
+        // after boot, used to diff against oracle-node's agave-ledger-tool cluster-
         // canonical writeset at the first-divergent slot. Bounded by env var
         // VEX_WRITESET_FULL=1 + atomic counter so production deploys pay zero IO.
         // Format: one line per pubkey containing (pubkey, owner, lamports, data_len,
@@ -5005,7 +5005,7 @@ pub const Bank = struct {
                         // Skip SHA over w.data — by freeze time the slice may point to
                         // freed/mmap'd memory (mmap is read-only; dupe before use). Emit data_len only;
                         // still identifies lamport diffs, missing/extra pubkeys, and
-                        // data_len divergence. Data-byte diffs come from govnode's
+                        // data_len divergence. Data-byte diffs come from oracle-node's
                         // authoritative bank-file via per-account inspection if needed.
                         std.log.warn(
                             "[WRITESET-FULL] slot={d} pk={s} owner={s} lamports={d} data_len={d}",

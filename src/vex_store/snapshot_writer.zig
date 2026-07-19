@@ -11,7 +11,7 @@
 //! written — the produced AppendVec file is bit-for-bit unchanged.
 //!
 //! Every declaration below is copied byte-identical from the original
-//! snapshot.zig (fix105 726287b, lines 19-259) except 6 documented
+//! snapshot.zig (origin-tree 726287b, lines 19-259) except 6 documented
 //! visibility promotions (`pub` added, zero behavior change) required
 //! because snapshot_boot.zig now reaches these across a file boundary:
 //! DEFAULT_BUF_BYTES, SyncingAvWriter, bgsaveRawErr, bgsaveChildSetup,

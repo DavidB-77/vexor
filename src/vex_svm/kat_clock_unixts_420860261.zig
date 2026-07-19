@@ -3,7 +3,7 @@
 //! (after @414203814 and carrier #15 @414723807).
 //!
 //! GROUND TRUTH (per-account diff of slot 420860261 vs cluster-canonical,
-//! govnode create-snapshot; SLOTD_FINDINGS 2026-07-09):
+//! oracle-node create-snapshot; SLOTD_FINDINGS 2026-07-09):
 //!   Clock@420860261 canonical = { slot 420860261, epoch_start_ts 1783624397,
 //!                                  epoch 987, lse 988, unix_timestamp 1783624399 }
 //!   Vexor DIVERGED: unix_timestamp = 1783624398  (canon − 1s).

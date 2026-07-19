@@ -58,7 +58,7 @@ const runtime_mod = @import("runtime.zig"); // carrier 419957920: INCINERATOR_ID
 const shadow_capture = @import("shadow_capture.zig"); // Phase 4: live fixture capture
 const bank_sysvar_adapter = @import("bank_sysvar_adapter.zig"); // Wave 6 final: Bank → SysvarCache populate
 const bank_prune = @import("bank_prune.zig"); // F3 (C8d backport): clamp pruneOldBanks against current frame's bank
-const elf_version = @import("elf_version.zig"); // F8i (Helm SEQ:62-helm): per-ELF sBPF version sniff for V3 routing
+const elf_version = @import("elf_version.zig"); // F8i: per-ELF sBPF version sniff for V3 routing
 const v2_pc_mod = vex_bpf2.v2_program_cache; // Wave 6 final: V2 program cache
 
 // Precompile verification (runs before instruction execution)
@@ -2165,7 +2165,7 @@ pub const ReplayStage = struct {
     /// produced-slot list is read from that STATIC file (one slot per line or CSV;
     /// blank lines / non-numeric tokens ignored) instead of curling live RPC. A
     /// 12h-old wedge slot is no longer in live getBlocks retention, so the
-    /// offline-replay gate supplies the govnode-derived produced list here to make
+    /// offline-replay gate supplies the oracle-node-derived produced list here to make
     /// the abandon decision deterministic. When the env is UNSET, the live curl is
     /// used. The file is filtered to [lo, hi] so the caller's coverage logic is
     /// identical to the live path.
@@ -6965,7 +6965,7 @@ pub const ReplayStage = struct {
         // r45-A probe (2026-04-27). @prov:replay.sig-structural-invariant-probe
         // We retrofit as logged + counted (NOT crash) until we know the firing rate. If the residual
         // 1.9% wrong-parent + bootstrap-RBH-unseeded + dedup-bug carriers fire here, this surfaces them.
-        // Slot/parent/category are emitted so we can correlate with govnode bank-frozen logs.
+        // Slot/parent/category are emitted so we can correlate with oracle-node bank-frozen logs.
 
         // d21 (2026-05-11) — chain-connectivity check. @prov:replay.chain-connectivity-defer
         // ReplayStage only iterates `bank_forks.active_bank_slots()` — slots
@@ -7046,7 +7046,7 @@ pub const ReplayStage = struct {
         // queue was reset to .{} empty per Bank.init (bank.zig:423), so each
         // updateRecentBlockhashes call pushed 1 entry → count=1 forever instead of the
         // canonical rolling 150-entry window. This caused ~6008 bytes/slot of RBH sysvar
-        // byte-divergence vs Agave (vex-109/110/SEQ:144 narrowed: coverage perfect +
+        // byte-divergence vs Agave (prior forensics narrowed: coverage perfect +
         // algorithm parity → carrier had to be sysvar bytes; r37-diag probed all 5
         // per-slot sysvars and confirmed RBH was the dominant carrier). RBH queue
         // is plain-old-data (BoundedArray of [150]BlockhashEntry + len), so a value-copy
@@ -7825,9 +7825,9 @@ pub const ReplayStage = struct {
         // when a parent_offset>1 leader-block exists (e.g., orphan slot 211
         // writes Clock; canonical slot 212's parent=210 child reads slot 211's
         // bytes instead of slot 210's). Empirical carrier: testnet slot 409566212
-        // (Carrier G) — Vexor and govnode agree on parent_off=2 fork at slot 212
+        // (Carrier G) — Vexor and oracle-node agree on parent_off=2 fork at slot 212
         // (sigs=0, POH match) but diverge on lthash because Vexor's Clock at
-        // slot 212 subtracted `lt(slot_211_clock)` while govnode subtracted
+        // slot 212 subtracted `lt(slot_211_clock)` while oracle-node subtracted
         // `lt(slot_210_clock)`. Bug delta one-shot, lthash chain contaminated
         // for 1100+ cascade slots.
         //
@@ -7897,7 +7897,7 @@ pub const ReplayStage = struct {
         };
         try bank.updateClockSysvar();
         try bank.updateSlotHashesSysvar(parent_sh_sysvar);
-        // r35-fix (Helm SEQ:123-helm 2026-04-27): r35-A [SYSVAR-WRITES] probe
+        // r35-fix: r35-A [SYSVAR-WRITES] probe
         // confirmed LastRestartSlot was never being written (0/10 slots).
         // @prov:replay.pre-execute-sysvar-order Wire the missing writer.
         try bank.updateLastRestartSlot();
@@ -8248,7 +8248,7 @@ pub const ReplayStage = struct {
             // vote-backlog flushes — testnet slot 406443788 had 2526 vote txs
             // (cluster RPC confirmed) packed into one entry, the gate rejected
             // the entire batch → bank frozen with sysvars only → bank_hash
-            // cascade-diverged from govnode for 211 subsequent slots until the
+            // cascade-diverged from oracle-node for 211 subsequent slots until the
             // chain recovered. Solana's per-block size is bounded by CU (48M)
             // and shred count, not by a fixed tx count; 10k is a sane parser-
             // sanity ceiling that matches the inner gate.
@@ -10798,7 +10798,7 @@ pub const ParsedTx = struct {
     /// First signature (the canonical tx ID). Zero-copy pointer into tx_data.
     /// Set by parseTxFromBytes; nullable because some test paths construct
     /// ParsedTx without a real signatures section. When set, this is the
-    /// 64-byte ed25519 signature shadow_capture can serialize for govnode
+    /// 64-byte ed25519 signature shadow_capture can serialize for oracle-node
     /// `getTransaction <base58(signature)>` arbitration.
     first_signature: ?*const [64]u8 = null,
     /// Number of static (non-ALT) account keys. For legacy txns, equals num_accounts.

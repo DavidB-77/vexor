@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 1 — codec layer: fixed-offset, allocation-free V3/V4
+//! voteforge, stage 1 — codec layer: fixed-offset, allocation-free V3/V4
 //! vote-state serde (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 1).
 //!
 //! Derived DIRECTLY from Agave 4.2.0-beta.0 (semantics authority) — wire =

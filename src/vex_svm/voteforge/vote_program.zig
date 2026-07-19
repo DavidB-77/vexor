@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 4 — instruction dispatch glue / FRONT DOOR
+//! voteforge, stage 4 — instruction dispatch glue / FRONT DOOR
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 4, §F.1 layer 4).
 //!
 //! [FD] `fd_vote_program.c:1655-1699` (`fd_vote_program_execute`) is the

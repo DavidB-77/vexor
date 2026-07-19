@@ -9,12 +9,12 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    // Default ReleaseSafe (mirrors fix105: Debug is 30× slower; Zig 0.15.2
+    // Default ReleaseSafe (mirrors origin-tree: Debug is 30× slower; Zig 0.15.2
     // takes `--release=safe|fast|small`).
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     // ── build options read by the migrated modules at comptime ──────────────
-    // CONFIG BAKE-IN (2026-07-08): `-Dprod` bundles all 12 canonical production
+    // CONFIG BAKE-IN: `-Dprod` bundles all 12 canonical production
     // feature flags ON in ONE flag, so the build/deploy script runs `zig build
     // -Dprod` instead of 12 separate -D flags that could be silently dropped (the
     // -Dvex_ledger/-Dsig_vote drops that bit us this session). Each flag stays
@@ -22,20 +22,20 @@ pub fn build(b: *std.Build) void {
     // test suite (built without -Dprod) is byte-identical-unchanged. The deploy
     // self-check still verifies SIG-VOTE/BN254/VEX_LEDGER markers → a dropped -Dprod
     // is caught, not silently shipped.
-    const prod = b.option(bool, "prod", "Bundle ON all canonical production feature flags (leader_mode, repair_stake_weighting, parallel_exec, fec_dedup, watchdog, status_cache, use_native_quic_votes, vex_ledger). Each still individually overridable. (Vote execution is unconditionally voteforge — no flag.)") orelse false;
+    const prod = b.option(bool, "prod", "Bundle ON all canonical production feature flags (leader_mode, repair_stake_weighting, parallel_exec, fec_dedup, watchdog, status_cache, use_native_quic_votes, vex_ledger). Each still individually overridable. (Vote execution unconditionally uses Vexor's own vote executor — no flag.)") orelse false;
 
     // Crypto is now pure-Zig UNCONDITIONALLY (the Firedancer Ballet FFI backend
-    // was removed 2026-07-12 — Vexor runs a fully FFI-free crypto leaf:
+    // was removed — Vexor runs a fully FFI-free crypto leaf:
     // ed25519 + bn254/poseidon + blake3 all in-tree Zig). `-Dpure_zig` is kept
     // ACCEPTED for compatibility with existing build/deploy recipes but is now a
     // no-op (crypto is pure-Zig regardless). The consensus verify() path is
     // std.crypto pure-Zig, as always.
     const pure_zig = b.option(bool, "pure_zig", "No-op (retained for compatibility). Crypto is pure-Zig unconditionally.") orelse false;
-    // vex_consensus/leader_schedule.zig reads this at comptime (fix105
+    // vex_consensus/leader_schedule.zig reads this at comptime (origin-tree
     // build.zig:198). Default OFF = byte-identical advertiser+round-robin
     // repair-peer selection; the stake-weighted branch is comptime-dead when
     // off. test-leader-schedule-repair (module 3) builds under the SAME
-    // global build_options module fix105 uses for this target.
+    // global build_options module origin-tree uses for this target.
     const repair_stake_weighting = b.option(bool, "repair_stake_weighting", "Stake-weight repair-peer selection (default OFF = byte-identical advertiser+round-robin)") orelse prod;
     // vex_store/unrooted_ring.zig reads this at comptime (@hasDecl-guarded).
     // Default OFF = the per-pubkey read index runs with ZERO shadow-verify cost
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
     const verify_ring_index = b.option(bool, "verify_ring_index", "Shadow-verify the unrooted_ring per-pubkey read index against the full scan (default OFF = comptime-dead, byte-identical)") orelse false;
     const verify_av_flush = b.option(bool, "verify_av_flush", "Shadow-verify each AppendVec tail flush by reading the whole .av file back and comparing to the heap buffer (default OFF = comptime-dead, byte-identical)") orelse false;
 
-    // Client-identity git stamp (2026-07-10, core/version.zig): the gossip
+    // Client-identity git stamp (core/version.zig): the gossip
     // ContactInfo advertisement + metrics reporter carry "src:<hash>". Explicit
     // -Dgit_hash overrides; default auto-detects from the tree (falls back to
     // "unknown" outside a git checkout). Consensus-neutral string.
@@ -67,9 +67,9 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "pure_zig", pure_zig);
     options.addOption(bool, "repair_stake_weighting", repair_stake_weighting);
     // module 25: accounts.zig SPLIT references build_options.two_tier (canonical
-    // two-tier accountsdb read/commit path). fix105 build.zig:126 defaults it ON
+    // two-tier accountsdb read/commit path). origin-tree build.zig:126 defaults it ON
     // (`orelse true`); the legacy single-tier path is the broken carrier. Wired
-    // here so accounts_db.zig compiles; default true matches fix105.
+    // here so accounts_db.zig compiles; default true matches origin-tree.
     options.addOption(bool, "two_tier", true);
     options.addOption(bool, "verify_ring_index", verify_ring_index);
     options.addOption(bool, "verify_av_flush", verify_av_flush);
@@ -80,7 +80,7 @@ pub fn build(b: *std.Build) void {
     // vex_crypto reads build_options at comptime (repair/feature flags).
     vex_crypto.addImport("build_options", build_options);
 
-    // ── bls_pop (SIMD-0387, task #49) — fix105 build.zig:68-95 verbatim ─────
+    // ── bls_pop (SIMD-0387, task #49) — origin-tree build.zig:68-95 verbatim ─────
     // Shared named module rooted at src/vex_crypto/bls12_381.zig with the
     // vendored blst 0.3.16 C sources ATTACHED TO THE MODULE so every consuming
     // compilation compiles+links blst automatically. vendor/blst is the
@@ -108,7 +108,7 @@ pub fn build(b: *std.Build) void {
     const core = b.createModule(.{ .root_source_file = b.path("src/core/root.zig") });
     core.addImport("vex_crypto", vex_crypto);
 
-    // ── vex_consensus — fix105 build.zig:288-290 verbatim ───────────────────
+    // ── vex_consensus — origin-tree build.zig:288-290 verbatim ───────────────────
     // Tower BFT + HeaviestSubtreeForkChoice + leader schedule + propagation
     // gate + vote-tx builder. Needs core (Pubkey/Slot/Hash/Signature types
     // used throughout) and vex_crypto (vote_tx.zig signs with it directly).
@@ -120,7 +120,7 @@ pub fn build(b: *std.Build) void {
     // Aggregate: `zig build test-migrated` runs every target below.
     const test_migrated_step = b.step("test-migrated", "Run ALL KAT targets for modules migrated so far");
 
-    // ── restart-flags gate KATs — fix105 build.zig:1201-1215 ────────────────
+    // ── restart-flags gate KATs — origin-tree build.zig:1201-1215 ────────────────
     // Roots restart_gate.zig (a std+base58 leaf): expected-bank-hash base58
     // compare + wait-for-supermajority 80%-threshold predicate.
     const test_restart_flags = b.addTest(.{
@@ -136,7 +136,7 @@ pub fn build(b: *std.Build) void {
     test_restart_flags_step.dependOn(&run_test_restart_flags.step);
     test_migrated_step.dependOn(&run_test_restart_flags.step);
 
-    // ── metrics-reporter + client-identity KATs (2026-07-10) ────────────────
+    // ── metrics-reporter + client-identity KATs ────────────────
     // metrics_reporter.zig and version.zig are std-only leaves (no module
     // imports), so both test roots need zero wiring. metrics_reporter.zig is
     // deliberately NOT re-exported from core/root.zig — it belongs to the exe
@@ -166,7 +166,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_metrics.step);
     test_migrated_step.dependOn(&run_test_version_kat.step);
 
-    // ── ed25519 KATs — fix105 build.zig:1166-1185 ────────────────────────────
+    // ── ed25519 KATs — origin-tree build.zig:1166-1185 ────────────────────────────
     // Pure-Zig ed25519 sign/verify round-trip KATs (no FFI).
     const test_ed25519 = b.addTest(.{
         .name = "test-ed25519",
@@ -183,7 +183,7 @@ pub fn build(b: *std.Build) void {
     test_ed25519_step.dependOn(&run_test_ed25519.step);
     test_migrated_step.dependOn(&run_test_ed25519.step);
 
-    // ── PURE-ZIG ed25519 core KATs (Phase 1, 2026-07-11) ────────────────────
+    // ── PURE-ZIG ed25519 core KATs (Phase 1,) ────────────────────
     // Gates the vendored+decoupled src/vex_crypto/ed25519/ core: wycheproof
     // strict-verdict match, ACCEPT round-trips, and the 3-way consensus/strict/
     // lenient semantic-divergence matrix (the slot-415479361 fork class).
@@ -229,7 +229,7 @@ pub fn build(b: *std.Build) void {
     // Gates src/vex_network/af_xdp/xdp_program.zig deinit()/detach() against
     // every partial-init state (never-attached, attached-but-bind-failed,
     // double-deinit) so the rapid kill→relaunch fallback can never double-close
-    // an fd → EBADF → std.posix.close `unreachable` → SIGABRT (the 2026-07-09
+    // an fd → EBADF → std.posix.close `unreachable` → SIGABRT (the
     // 19:35Z downtime). Needs libc for the @cImport(linux/bpf.h) headers.
     const test_xdp_deinit = b.addTest(.{
         .name = "test-xdp-deinit",
@@ -248,7 +248,7 @@ pub fn build(b: *std.Build) void {
     test_xdp_deinit_step.dependOn(&run_test_xdp_deinit.step);
     test_migrated_step.dependOn(&run_test_xdp_deinit.step);
 
-    // ── task #49: BLS12-381 PoP KAT (SIMD-0387) — fix105 build.zig:2837-2860 ──
+    // ── task #49: BLS12-381 PoP KAT (SIMD-0387) — origin-tree build.zig:2837-2860 ──
     // Gates src/vex_crypto/bls12_381.zig against real on-chain VoterWithBLS
     // PoPs + Firedancer cross-implementation vectors + negatives. The bls_pop
     // module carries the blst C objects itself — no extra linking needed.
@@ -269,7 +269,7 @@ pub fn build(b: *std.Build) void {
     test_blspop_step.dependOn(&run_test_blspop.step);
     test_migrated_step.dependOn(&run_test_blspop.step);
 
-    // ── SIMD-0388: BLS12-381 sol_curve_* syscall KAT — fix105 build.zig:3475-3499 ──
+    // ── SIMD-0388: BLS12-381 sol_curve_* syscall KAT — origin-tree build.zig:3475-3499 ──
     // Drives vex_crypto/bls12_381_syscall.zig against the OFFICIAL
     // solana-bls12-381-syscall v0.1.0 test_vectors (machine-extracted into
     // src/vex_bpf2/bls12_381_test_vectors.zig — pulled forward with this
@@ -297,7 +297,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_bls12_381.step);
 
     // ── core module compile smoke (REBUILD-NATIVE scaffolding) ──────────────
-    // fix105 has no dedicated test target for config/keypair/types (they are
+    // origin-tree has no dedicated test target for config/keypair/types (they are
     // exercised by the exe + dozens of downstream targets, none migrated yet).
     // This smoke root forces analysis of the core module graph so a migration
     // typo can't hide until vex_svm arrives. Deliberately NOT recursive into
@@ -317,7 +317,7 @@ pub fn build(b: *std.Build) void {
     test_core_smoke_step.dependOn(&run_core_smoke.step);
     test_migrated_step.dependOn(&run_core_smoke.step);
 
-    // ═══ module 2: src/vex_ledger — fix105 build.zig:294-303,767-880 verbatim ═
+    // ═══ module 2: src/vex_ledger — origin-tree build.zig:294-303,767-880 verbatim ═
     // Zig-native crash-recoverable append-segment blockstore (VEXOR-NATIVE
     // engine) plus 5 std-only BYTE-FAITHFUL-PORT submodules re-exported off
     // its root (agave_wire/agave_proto/agave_json/agave_meta_json/agave_tx_json
@@ -329,14 +329,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // ── test-vexledger — fix105 build.zig:767-785 verbatim ──────────────────
+    // ── test-vexledger — origin-tree build.zig:767-785 verbatim ──────────────────
     // Roots at tests/kat_vex_ledger.zig importing the vex_ledger module.
     // Covers: byte-exact shred round-trip, FEC-recovery hole-fill, SlotMeta
     // round-trip, roots, crash-recovery/index-rebuild-from-log, truncated-tail
     // tolerance. The re-exported agave_json/agave_meta_json/agave_tx_json test
     // blocks ride along automatically (relative @import chain from
     // vex_ledger.zig pulls their `test "..."` decls into this same binary —
-    // no separate build target exists for them in fix105 either).
+    // no separate build target exists for them in origin-tree either).
     const test_vexledger = b.addTest(.{
         .name = "test-vexledger",
         .root_module = b.createModule(.{
@@ -351,7 +351,7 @@ pub fn build(b: *std.Build) void {
     test_vexledger_step.dependOn(&run_vexledger.step);
     test_migrated_step.dependOn(&run_vexledger.step);
 
-    // ── test-agave-wire — fix105 build.zig:844-858 verbatim ─────────────────
+    // ── test-agave-wire — origin-tree build.zig:844-858 verbatim ─────────────────
     // Pure std-only module (src/vex_ledger/agave_wire.zig) — wincode/bincode-
     // wire encoders for ErasureMeta/MerkleRootMeta/Index/SlotMetaV3 validated
     // against LIVE's rc.1 oracle lengths + LSB-first BitVec content KAT.
@@ -368,7 +368,7 @@ pub fn build(b: *std.Build) void {
     test_agave_wire_step.dependOn(&run_agave_wire.step);
     test_migrated_step.dependOn(&run_agave_wire.step);
 
-    // ── test-agave-proto — fix105 build.zig:862-876 verbatim ────────────────
+    // ── test-agave-proto — origin-tree build.zig:862-876 verbatim ────────────────
     // Pure std-only module (src/vex_ledger/agave_proto.zig) — prost wire-form
     // encoders for TransactionStatusMeta/Rewards/Reward/NumPartitions
     // validated against VERIFIED hex golden vectors.
@@ -386,7 +386,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_agave_proto.step);
 
     // NOTE: test-vexledger-gate remains DEFERRED, not ported yet. It needs a
-    // `shred` module rooted at fix105's src/vex_network/shred.zig, which
+    // `shred` module rooted at origin-tree's src/vex_network/shred.zig, which
     // transitively pulls in fec_resolver.zig (1949 LoC) + bmtree.zig (648) +
     // af_xdp/socket.zig (1394, migrated module 14 but only as a leaf, not via
     // shred.zig) + slot_chain_tracker.zig (489) + shred_encoder.zig/
@@ -398,14 +398,14 @@ pub fn build(b: *std.Build) void {
     // `shred` module first exists in this tree.
     //
     // CORRECTION (module 14, re-verified per task instruction): test-ledger-tile
-    // does NOT need the shred module — re-checked fix105 build.zig:788-802
+    // does NOT need the shred module — re-checked origin-tree build.zig:788-802
     // directly (not reused from this stale claim): it roots at
     // src/vex_network/ledger_tile.zig with a SINGLE addImport("vex_ledger",
     // vex_ledger_mod) — the same vex_ledger_mod module 2 already declared
     // above. ledger_tile.zig's own @import list is std + "vex_ledger" only
     // (grepped fresh). So it was migrated this module, not deferred:
 
-    // ── test-ledger-tile — module 14 — fix105 build.zig:788-802 verbatim ────
+    // ── test-ledger-tile — module 14 — origin-tree build.zig:788-802 verbatim ────
     // Roots at src/vex_network/ledger_tile.zig (imports the std-only vex_ledger
     // module for FinishBlob/SlotMeta). Proves the MPSC ring is loss/dup/
     // corruption-free under concurrent producers + drops on full.
@@ -423,8 +423,8 @@ pub fn build(b: *std.Build) void {
     test_ledger_tile_step.dependOn(&run_ledger_tile.step);
     test_migrated_step.dependOn(&run_ledger_tile.step);
 
-    // ── test-verify-ring — module 15 — fix105 build.zig:1710-1725 verbatim ──
-    // Option B verify-handoff SPSC ring KATs (2026-06-14). Rooted directly at
+    // ── test-verify-ring — module 15 — origin-tree build.zig:1710-1725 verbatim ──
+    // Option B verify-handoff SPSC ring KATs. Rooted directly at
     // spsc_ring.zig (the lock-free ring lives in its own file so its KATs run
     // standalone). It imports ONLY af_xdp/socket.zig (UmemFrameRef, migrated
     // module 14), which imports only std — so the test graph is tiny and
@@ -440,8 +440,8 @@ pub fn build(b: *std.Build) void {
     test_vring_step.dependOn(&run_vring.step);
     test_migrated_step.dependOn(&run_vring.step);
 
-    // ── test-produce-ring — module 16 — fix105 build.zig:1825-1837 verbatim ─
-    // Block-production TILE-ISOLATION SPSC control rings (2026-06-16): Ring A
+    // ── test-produce-ring — module 16 — origin-tree build.zig:1825-1837 verbatim ─
+    // Block-production TILE-ISOLATION SPSC control rings: Ring A
     // replay->produce (BecomeLeader snapshot), Ring B produce->replay (SlotDone
     // + loopback bytes). Rooted directly at produce_ring.zig, which imports
     // ONLY std (grepped fresh at kickoff) — the manifest notes its ring
@@ -458,12 +458,12 @@ pub fn build(b: *std.Build) void {
     test_pring_step.dependOn(&run_pring.step);
     test_migrated_step.dependOn(&run_pring.step);
 
-    // ── test-overlay-lookup — module 16 — fix105 build.zig:1812-1821 verbatim
+    // ── test-overlay-lookup — module 16 — origin-tree build.zig:1812-1821 verbatim
     // (judgment second leaf) — Parallel-exec Stage B/B2a write-overlay
-    // newest-first lookup KATs (2026-06-22): the read-your-writes core for
+    // newest-first lookup KATs: the read-your-writes core for
     // wave-parallel execution. std-only (grepped fresh), KEEP disposition
     // (byte-identical copy, no hygiene edit cited or needed) — the smallest
-    // still-unmigrated vex_svm leaf with a real fix105 KAT target, picked
+    // still-unmigrated vex_svm leaf with a real origin-tree KAT target, picked
     // over cost_tracker.zig (239 LoC, CLEAN/BEHAVIORAL-PORT, larger + a
     // non-trivial disposition) for this session's second-leaf slot.
     const test_overlay_mod = b.createModule(.{
@@ -477,18 +477,18 @@ pub fn build(b: *std.Build) void {
     test_overlay_step.dependOn(&run_overlay.step);
     test_migrated_step.dependOn(&run_overlay.step);
 
-    // ═══ module 3: src/vex_consensus — fix105 build.zig:2126-2268 verbatim ═══
+    // ═══ module 3: src/vex_consensus — origin-tree build.zig:2126-2268 verbatim ═══
     // HeaviestSubtreeForkChoice (fork_choice.zig), TowerBft (tower.zig),
     // vote-tx builder (vote_tx.zig), repair-peer stake-weighting
     // (leader_schedule.zig via leader_schedule_repair_test.zig). The main
     // `vex_consensus` module above is available for future consumers
     // (vex_svm/vex_network, not migrated yet); these 4 leaf KAT targets each
-    // reuse fix105's OWN narrower module graph per target (test-fork-choice
+    // reuse origin-tree's OWN narrower module graph per target (test-fork-choice
     // needs only the minimal vex_crypto/core.zig subset, not the full
-    // vex_crypto root — mirrors fix105 exactly rather than introducing a new
+    // vex_crypto root — mirrors origin-tree exactly rather than introducing a new
     // wiring decision this session).
 
-    // ── test-fork-choice — fix105 build.zig:2137-2174 verbatim ─────────────
+    // ── test-fork-choice — origin-tree build.zig:2137-2174 verbatim ─────────────
     const test_fc_vex_crypto = b.createModule(.{
         .root_source_file = b.path("src/vex_crypto/core.zig"),
         .target = target,
@@ -525,11 +525,11 @@ pub fn build(b: *std.Build) void {
     // the sibling import resolves through the root_source_file's directory.
 
     const run_test_fc = b.addRunArtifact(test_fc);
-    const test_fc_step = b.step("test-fork-choice", "Run fork_choice.zig unit tests (Agave Phase 1 port; incl. task #32 slot-memoized switchProofVoteCounts)");
+    const test_fc_step = b.step("test-fork-choice", "Run fork_choice.zig unit tests (Agave port; incl. slot-memoized switchProofVoteCounts)");
     test_fc_step.dependOn(&run_test_fc.step);
     test_migrated_step.dependOn(&run_test_fc.step);
 
-    // ── test-tower — fix105 build.zig:2187-2204 verbatim ────────────────────
+    // ── test-tower — origin-tree build.zig:2187-2204 verbatim ────────────────────
     // Uses the FULL core module (tower.zig needs core.Signature/Keypair,
     // which the minimal test_fc vex_crypto stub lacks); sibling imports
     // vote.zig/fork_choice.zig resolve through the root file's directory.
@@ -549,7 +549,7 @@ pub fn build(b: *std.Build) void {
     test_tower_step.dependOn(&run_test_tower.step);
     test_migrated_step.dependOn(&run_test_tower.step);
 
-    // ── test-votetx — fix105 build.zig:2209-2226 verbatim ───────────────────
+    // ── test-votetx — origin-tree build.zig:2209-2226 verbatim ───────────────────
     // vote_tx.zig imports core + vex_crypto; sibling vote.zig/tower.zig
     // resolve through the root file's directory (same as test-tower).
     const test_votetx = b.addTest(.{
@@ -568,19 +568,19 @@ pub fn build(b: *std.Build) void {
     test_votetx_step.dependOn(&run_test_votetx.step);
     test_migrated_step.dependOn(&run_test_votetx.step);
 
-    // ── test-leader-schedule-repair — fix105 build.zig:2241-2268 verbatim ───
+    // ── test-leader-schedule-repair — origin-tree build.zig:2241-2268 verbatim ───
     // Standalone test FILE (leader_schedule_repair_test.zig) importing
     // leader_schedule.zig as `ls`. Uses the SAME full `core` module + ballet
     // stub-link pattern as test-tower (core needs vex_crypto → build_options).
     // build_options carries repair_stake_weighting=true so this target shares
     // the exact comptime config under which the gated tvu helper compiles.
-    // fix105's filter excluded a PRE-EXISTING-failure legacy test ("leader
+    // origin-tree's filter excluded a PRE-EXISTING-failure legacy test ("leader
     // schedule cache", which asserted against the dead ChaCha20 generate()
     // path with an epoch-override the warmup-aware getEpoch ignores). This
     // migration's CLEAN pass on leader_schedule.zig DELETED that dead
     // generate()/ensureSchedule()/quarterRound() chain and its two tests
     // outright (manifest §1.6), so the filter's original target no longer
-    // exists in this tree — kept anyway to mirror fix105's wiring verbatim
+    // exists in this tree — kept anyway to mirror origin-tree's wiring verbatim
     // (harmless: it now also excludes the surviving "epoch calculation" test
     // from THIS target's run, which is fine, that assertion isn't specific to
     // repair stake-weighting and isn't otherwise gated in this tree).
@@ -603,13 +603,13 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_lsr.step);
 
     // NOTE: test-fork-choice-feed, test-gossip-retarget, and the propagation-
-    // gate KATs living on the fix105 side of build.zig ~2919+ are DEFERRED —
+    // gate KATs living on the origin-tree side of build.zig ~2919+ are DEFERRED —
     // they reuse a `src/vex_svm/test_vex_consensus_stub.zig` stub module that
     // requires vex_svm's own test_bank_core (bank-shaped stub), which has not
     // migrated. They port together with vex_svm.
 
     // ═══ module 5: src/vex_bpf2 inner core (elf/memory/verifier/serialize/
-    // interp_breadcrumb/sysvar_cache) — fix105 build.zig:1877-1917,3212-3248
+    // interp_breadcrumb/sysvar_cache) — origin-tree build.zig:1877-1917,3212-3248
     // verbatim ═══════════════════════════════════════════════════════════
     // Self-contained sBPF VM leaf cluster: M1 ELF parser, M2 memory map, M3
     // verifier (imports elf only), M5 serializer (imports memory only),
@@ -617,10 +617,10 @@ pub fn build(b: *std.Build) void {
     // leaf). Zero deps on core/vex_crypto/vex_svm/builtins — confirmed by
     // grepping every @import line pre-copy. interpreter.zig/syscalls.zig/
     // cpi.zig/invoke_ctx.zig are HELD OUT (see REBUILD-LEDGER.md row) —
-    // entangled with the unmerged fix/cu-meter-per-tx-2026-07-05 branch
+    // entangled with the unmerged per-tx CU-meter branch
     // (carrier 419786142, still soaking) and/or pull vex_crypto+builtins.
 
-    // ── test-vex-bpf2-elf — fix105 build.zig:3212-3229 verbatim ─────────────
+    // ── test-vex-bpf2-elf — origin-tree build.zig:3212-3229 verbatim ─────────────
     // Standalone (elf_test.zig imports only std + elf.zig).
     const test_vex_bpf2_elf = b.addTest(.{
         .name = "test-vex-bpf2-elf",
@@ -638,7 +638,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_elf_step.dependOn(&run_test_vex_bpf2_elf.step);
     test_migrated_step.dependOn(&run_test_vex_bpf2_elf.step);
 
-    // ── test-vex-bpf2-memory — fix105 build.zig:3231-3248 verbatim ──────────
+    // ── test-vex-bpf2-memory — origin-tree build.zig:3231-3248 verbatim ──────────
     // Standalone (memory_test.zig imports only std + memory.zig).
     const test_vex_bpf2_memory = b.addTest(.{
         .name = "test-vex-bpf2-memory",
@@ -656,7 +656,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_memory_step.dependOn(&run_test_vex_bpf2_memory.step);
     test_migrated_step.dependOn(&run_test_vex_bpf2_memory.step);
 
-    // ── test-invoke-ctx — module 61 — CU-meter-soak gate LIFTED 2026-07-07 ──
+    // ── test-invoke-ctx — module 61 — CU-meter-soak gate LIFTED ──
     // invoke_ctx.zig (the §H leaf) imports ONLY sysvar_cache.zig (module 5) +
     // std; invoke_ctx_test.zig imports invoke_ctx.zig + sysvar_cache.zig — all
     // relative, zero named modules. First of the un-frozen vex_bpf2 core cluster.
@@ -676,7 +676,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_invoke_ctx_step.dependOn(&run_test_vex_bpf2_invoke_ctx.step);
     test_migrated_step.dependOn(&run_test_vex_bpf2_invoke_ctx.step);
 
-    // ── test-vex-bpf2-interpreter — module 62 — fix105 build.zig:3382-3395 ──
+    // ── test-vex-bpf2-interpreter — module 62 — origin-tree build.zig:3382-3395 ──
     // interpreter_test.zig imports interpreter.zig + elf.zig + memory.zig (all
     // relative). interpreter.zig itself pulls elf/memory/interp_breadcrumb +
     // heap_trace.zig (heap_trace carried verbatim for move-only compile — it is
@@ -698,7 +698,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_interpreter_step.dependOn(&run_test_vex_bpf2_interpreter.step);
     test_migrated_step.dependOn(&run_test_vex_bpf2_interpreter.step);
 
-    // ── test-vex-bpf2-builtin-* (M9) — module 63 — fix105 build.zig:3590-3652 ──
+    // ── test-vex-bpf2-builtin-* (M9) — module 63 — origin-tree build.zig:3590-3652 ──
     // The §F builtins/ subdir (10 files, 9,000 LoC, all KEEP verbatim). Each
     // m9_test_root_<name>.zig is a tiny discovery shim that `_ = @import`s one
     // builtins file so its in-file tests run. External deps: invoke_ctx.zig
@@ -733,12 +733,12 @@ pub fn build(b: *std.Build) void {
             // full 211-test union — wiring all 10 into test_migrated would run it
             // 9x. Wire ONLY builtin-mod (the full union) into test_migrated (module-58
             // no-double-count precedent); the other 9 stay standalone-callable + in
-            // the test-vex-bpf2-builtins aggregate (faithful to fix105's M9 loop).
+            // the test-vex-bpf2-builtins aggregate (faithful to origin-tree's M9 loop).
             if (std.mem.eql(u8, name, "mod")) test_migrated_step.dependOn(&r.step);
         }
     }
 
-    // ── test-vex-bpf2-cpi — module 64 — fix105 build.zig:1947-1960 verbatim ──
+    // ── test-vex-bpf2-cpi — module 64 — origin-tree build.zig:1947-1960 verbatim ──
     // cpi.zig (M7, WHOLE-FILE KEEP) imports interpreter/invoke_ctx (m61/62) +
     // builtins/mod.zig (m63) + memory/serialize/elf/trace/sysvar_cache/
     // stake_bpf_flag — all in-tree. cpi_test.zig imports cpi + builtins/mod +
@@ -759,7 +759,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_cpi_step.dependOn(&run_vex_bpf2_cpi.step);
     test_migrated_step.dependOn(&run_vex_bpf2_cpi.step);
 
-    // ── test-vex-bpf2-syscalls — module 65 — fix105 build.zig:3453-3482 ──────
+    // ── test-vex-bpf2-syscalls — module 65 — origin-tree build.zig:3453-3482 ──────
     // syscalls.zig (M6, WHOLE-FILE KEEP) imports cpi (m64) + interpreter (m62) +
     // invoke_ctx (m61) + memory/sysvar_cache/trace/elf/crypto_helpers + the NAMED
     // module vex_crypto (secp256k1 recover + bls12_381 syscall). syscalls_test.zig
@@ -785,28 +785,28 @@ pub fn build(b: *std.Build) void {
     );
     test_vex_bpf2_syscalls_step.dependOn(&run_vex_bpf2_syscalls.step);
     // DEFER from the green test_migrated gate (module-46 test-bank precedent):
-    // fix105's OWN test-vex-bpf2-syscalls is RED (283/284) — the transitively-
+    // origin-tree's OWN test-vex-bpf2-syscalls is RED (283/284) — the transitively-
     // pulled builtins/test_harness test "Harness sanity: single-account push/pop"
-    // fails when co-resident with the 283 M6 syscall tests (a pre-existing fix105
+    // fails when co-resident with the 283 M6 syscall tests (a pre-existing origin-tree
     // test-pollution defect; the same test PASSES standalone in the module-63
-    // builtins binary). Proven by an isolated-cache run of fix105 HEAD (identical
+    // builtins binary). Proven by an isolated-cache run of origin-tree HEAD (identical
     // 283/284, 1 failed). The 283 M6 syscall tests themselves all pass. Kept
     // standalone-callable (`zig build test-vex-bpf2-syscalls`) but NOT wired into
-    // test_migrated_step so the green gate stays clean; re-wire once fix105 fixes
+    // test_migrated_step so the green gate stays clean; re-wire once origin-tree fixes
     // the harness test-pollution defect upstream, then resync.
-    // test_migrated_step.dependOn(&run_vex_bpf2_syscalls.step);  // deferred: fix105-red
+    // test_migrated_step.dependOn(&run_vex_bpf2_syscalls.step);  // deferred: origin-tree-red
 
-    // ── test-vex-bpf2-runtime — module 66 — fix105 build.zig:3359-3372 ──────
+    // ── test-vex-bpf2-runtime — module 66 — origin-tree build.zig:3359-3372 ──────
     // Roots the vex_bpf2 UMBRELLA barrel src/vex_bpf2/root.zig — the file that
-    // DEFINES the named `vex_bpf2` module (fix105 build.zig:406, root_source_file
+    // DEFINES the named `vex_bpf2` module (origin-tree build.zig:406, root_source_file
     // = src/vex_bpf2/root.zig). With root.zig + loader.zig + v2_program_cache.zig
     // + self_test.zig now all in-tree, every one of root.zig's 18 re-export
     // imports resolves, so the umbrella compiles for the first time. root.zig has
     // NO `test {}` block (it explicitly documents "do not add a blanket test
     // block") so this discovers 0 tests — it is a pure COMPILE gate on the barrel,
-    // exactly as fix105's own target is (whose "SysvarCache+InvokeContext+Loader"
+    // exactly as origin-tree's own target is (whose "SysvarCache+InvokeContext+Loader"
     // comment is stale from a Wave-2 era when root.zig aggregated those tests).
-    // 1:1 with fix105: no addImport — Zig's lazy analysis of the bare
+    // 1:1 with origin-tree: no addImport — Zig's lazy analysis of the bare
     // `pub const X = @import(...)` re-exports does NOT force syscalls.zig's
     // vex_crypto import (empirically: `zig test root.zig` → "All 0 tests passed"
     // with zero named modules, both modes).
@@ -826,15 +826,15 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_runtime_step.dependOn(&run_vex_bpf2_runtime.step);
     test_migrated_step.dependOn(&run_vex_bpf2_runtime.step);
 
-    // ── test-vex-bpf2-self-test — module 66 — fix105 build.zig:3676-3690 ────
+    // ── test-vex-bpf2-self-test — module 66 — origin-tree build.zig:3676-3690 ────
     // Roots self_test.zig (Wave 3.5 boot-time dashboard; 3 inline tests). It
     // imports syscalls.zig (→ named `vex_crypto` for secp256k1_recover + bls12_381)
     // + interpreter/cpi/invoke_ctx/elf/memory/verifier/serialize/sysvar_cache —
-    // all in-tree. fix105's target adds vex_crypto only; because the referenced
+    // all in-tree. origin-tree's target adds vex_crypto only; because the referenced
     // vex_crypto surface transitively pulls bls12_381's extern blst symbols, the
     // test binary additionally needs the vendored blst C + linkLibC (identical to
     // the module-65 test-vex-bpf2-syscalls wiring) to LINK — added here as a
-    // documented deviation from fix105's under-wired target (same blst/linkLibC
+    // documented deviation from origin-tree's under-wired target (same blst/linkLibC
     // pattern as test_bls12_381 / syscalls).
     const test_vex_bpf2_self_test = b.addTest(.{
         .name = "test-vex-bpf2-self-test",
@@ -857,7 +857,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_self_test_step.dependOn(&run_vex_bpf2_self_test.step);
     test_migrated_step.dependOn(&run_vex_bpf2_self_test.step);
 
-    // ── test-vex-bpf2-verifier — fix105 build.zig:1898-1917 verbatim ────────
+    // ── test-vex-bpf2-verifier — origin-tree build.zig:1898-1917 verbatim ────────
     // verifier_test.zig imports std + verifier.zig + elf.zig (M3's only
     // sibling dep, per manifest).
     const test_vex_bpf2_verifier = b.addTest(.{
@@ -876,7 +876,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_verifier_step.dependOn(&run_vex_bpf2_verifier.step);
     test_migrated_step.dependOn(&run_vex_bpf2_verifier.step);
 
-    // ── test-vex-bpf2-serialize — fix105 build.zig:1877-1896 verbatim ───────
+    // ── test-vex-bpf2-serialize — origin-tree build.zig:1877-1896 verbatim ───────
     // Strongest-gated target this module: serialize_test.zig drives the 18
     // FD golden fixtures (serialize_fixtures_data.zig, non-regenerable real
     // FD JSON capture) + the SIMD-0449 3-axis golden vector (rc.1==FD==this)
@@ -900,7 +900,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_vex_bpf2_serialize.step);
 
     // NOTE: sysvar_cache.zig (KEEP) and interp_breadcrumb.zig (KEEP) have NO
-    // dedicated fix105 build.zig target of their own — fix105's only wiring
+    // dedicated origin-tree build.zig target of their own — origin-tree's only wiring
     // for sysvar_cache_test.zig is "test-vex-bpf2-runtime", rooted at
     // src/vex_bpf2/root.zig. As of module 66 that umbrella target IS now wired
     // above (all 18 root.zig re-export imports resolve in-tree). It is a pure
@@ -912,15 +912,15 @@ pub fn build(b: *std.Build) void {
 
     // ═══ module 6: src/vex_network FEC/shred-encode leaf cluster ═══════════
     // shred_header/shred_layout/shred_reedsol/gf_simd/bmtree/shred_encoder/
-    // shred_encoder_pcap_kat — fix105 build.zig:1438-1600ish verbatim targets.
+    // shred_encoder_pcap_kat — origin-tree build.zig:1438-1600ish verbatim targets.
     // bmtree.zig carries an unused `@import("core")` (dead import inherited
-    // byte-identical from fix105 — grepped, zero live use of `core.` in the
+    // byte-identical from origin-tree — grepped, zero live use of `core.` in the
     // file) that still must resolve, so any test root that transitively pulls
     // bmtree.zig needs `core` registered even though nothing in this cluster
-    // actually reads a `core` type. fix105 also registers `vex_crypto` on
+    // actually reads a `core` type. origin-tree also registers `vex_crypto` on
     // those two targets; grepped and confirmed UNUSED by every file in this
     // cluster — omitted here as a deliberate (recorded) deviation, not carried
-    // along just because fix105 had it.
+    // along just because origin-tree had it.
 
     // Canonical shred-header KAT (byte-exact fd_shred.h v0.1002.40103). std-only.
     const test_shred_header = b.addTest(.{
@@ -1015,8 +1015,8 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_shred_encoder_pcap.step);
 
     // NOTE: bmtree.zig (the SHA256 shred-merkle primitive, incl. the
-    // makeMerkleProof bounds-guard — the 2026-06-26 repair-path SIGABRT fix,
-    // fedf1ba, verified present) has NO dedicated fix105 build.zig target of
+    // makeMerkleProof bounds-guard — the repair-path SIGABRT fix,
+    // fedf1ba, verified present) has NO dedicated origin-tree build.zig target of
     // its own, exactly like module 5's sysvar_cache_test.zig precedent: its
     // in-file tests (round-trip, the SIGABRT-guard regression test, shred
     // merkle tree) ride along transitively via test-shred-encoder and
@@ -1032,7 +1032,7 @@ pub fn build(b: *std.Build) void {
 
     // C1 turbine WeightedShuffle/Fenwick + ChaCha8/ChaCha20 + UniformU64Sampler
     // KATs. CONSENSUS-adjacent (byte-exact broadcast-root selection): carries
-    // Agave's own hard-coded ChaCha20 vectors PLUS the 2026-06-17 Rust-harness
+    // Agave's own hard-coded ChaCha20 vectors PLUS the Rust-harness
     // -proven ChaCha8 (live SIMD-0332 testnet variant) golden vectors inline —
     // "treat byte-frozen" per manifest. std-only.
     const test_wshuf = b.addTest(.{
@@ -1079,11 +1079,11 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_or.step);
 
     // fec_dedup.zig: Ed25519 FEC-set signature dedup cache (cache-key-isolation
-    // safety KATs). std-only. fix105 has NO dedicated build.zig target for this
+    // safety KATs). std-only. origin-tree has NO dedicated build.zig target for this
     // file (grepped "fec_dedup"/"fec-dedup" across build.zig at kickoff — only
     // the -Dfec_dedup b.option() itself and its consumer verify_tile.zig, which
     // is unmigrated, ever mention it). Per the module-4/5/6 precedent (no new
-    // build.zig surface invented beyond fix105's own), NOT added here either —
+    // build.zig surface invented beyond origin-tree's own), NOT added here either —
     // verified instead via ad hoc `zig test` (see REBUILD-LEDGER.md), a natural
     // promotion candidate once verify_tile.zig migrates with vex_network gossip.
 
@@ -1189,13 +1189,13 @@ pub fn build(b: *std.Build) void {
     test_verify_ticks_step.dependOn(&run_test_verify_ticks.step);
     test_migrated_step.dependOn(&run_test_verify_ticks.step);
 
-    // ── test-cost-tracker — module 17 — fix105 build.zig:1104-1115 verbatim ─
+    // ── test-cost-tracker — module 17 — origin-tree build.zig:1104-1115 verbatim ─
     // Block CostTracker (BP staging step 2): would_fit admission ordering +
     // block/account/vote CU limits (60M SIMD-0256 testnet). std-only root
     // (grepped fresh at kickoff, zero siblings). CLEAN disposition/CONSENSUS
     // — the manifest's cited hygiene (re-cite beta.3 constants to rc.1) was
     // applied to the header + one test-name string only; every constant
-    // VALUE and the would_fit ordering are byte/logic-identical to fix105
+    // VALUE and the would_fit ordering are byte/logic-identical to origin-tree
     // (body-diff from `const std = @import` onward = 1 line, the renamed
     // test-name string only — see ledger row for the full verification).
     const test_cost = b.addTest(.{
@@ -1228,7 +1228,7 @@ pub fn build(b: *std.Build) void {
     test_siphash13_step.dependOn(&run_test_siphash13.step);
     test_migrated_step.dependOn(&run_test_siphash13.step);
 
-    // ── test-clock — module 18 — fix105 build.zig:1982-2003 verbatim ────────
+    // ── test-clock — module 18 — origin-tree build.zig:1982-2003 verbatim ────────
     // SIMD-0001 stake-weighted median Clock.unix_timestamp + drift-clamp KAT
     // (clock_timestamp.zig, 396 LoC, manifest line 594, BEHAVIORAL-PORT/KEEP/
     // CONSENSUS — Clock bytes persist into account data -> lthash, proven
@@ -1251,7 +1251,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_clock.step);
 
     // kat_clock_unixts_414203814.zig (70 LoC, KEEP, module-18 paired boot KAT)
-    // has NO dedicated fix105 build.zig target (grepped fix105 build.zig —
+    // has NO dedicated origin-tree build.zig target (grepped origin-tree build.zig —
     // zero hits beyond its own header/in-file `test` blocks) — repeats the
     // ad-hoc-`zig test` deviation pattern (modules 4/5/6/7/9/10/13a/13b
     // precedent). It imports `std` + a RELATIVE sibling import of
@@ -1266,7 +1266,7 @@ pub fn build(b: *std.Build) void {
     // kat_clock_unixts_414723807.zig (161 LoC, carrier #15 differential KAT)
     // is DEFERRED this module — re-verified fresh at kickoff (NOT reused from
     // the module-16/17 "next module" note's optimistic framing, which assumed
-    // clock_timestamp.zig alone would unblock it): its fix105 build.zig
+    // clock_timestamp.zig alone would unblock it): its origin-tree build.zig
     // target (build.zig:2005-2032) wires TWO addImports this tree does not
     // have available — `vex_store` (full) and `vex_svm` (full, package-style
     // `@import("vex_svm")`, resolving `vex_svm.native.vote_state_serde` +
@@ -1286,7 +1286,7 @@ pub fn build(b: *std.Build) void {
     // the frozen interpreter.zig/syscalls.zig/cpi.zig/invoke_ctx.zig set —
     // re-attempt once vote_state_serde.zig (+ epoch_schedule.zig) migrates.
 
-    // ── test-entry — module 19 — fix105 build.zig:1062-1072 verbatim ────────
+    // ── test-entry — module 19 — origin-tree build.zig:1062-1072 verbatim ────────
     // Canonical Entry module (entry.zig, 315 LoC, manifest line ~600,
     // BYTE-FAITHFUL-PORT/KEEP/CONSENSUS — "the #1 byte-risk surface for
     // produced blocks"): PoH next_hash/tick/record + signature MerkleTree
@@ -1317,7 +1317,7 @@ pub fn build(b: *std.Build) void {
     test_entry_step.dependOn(&run_test_entry.step);
     test_migrated_step.dependOn(&run_test_entry.step);
 
-    // ── test-leader-poh — module 19 — fix105 build.zig:1314-1324 verbatim ───
+    // ── test-leader-poh — module 19 — origin-tree build.zig:1314-1324 verbatim ───
     // Streaming producer-side PoH engine (leader_poh.zig, 242 LoC, manifest
     // line ~617, BYTE-FAITHFUL-PORT/KEEP/CONSENSUS): hash(max)/record(mixin)/
     // tick() cadence bookkeeping, deterministic (pacing deliberately
@@ -1341,7 +1341,7 @@ pub fn build(b: *std.Build) void {
     test_lpoh_step.dependOn(&run_test_lpoh.step);
     test_migrated_step.dependOn(&run_test_lpoh.step);
 
-    // ── test-entry-real — module 19 third leaf — fix105 build.zig:1077-1087 ─
+    // ── test-entry-real — module 19 third leaf — origin-tree build.zig:1077-1087 ─
     // entry_kat_real.zig (264 LoC, VEXOR-NATIVE/KEEP/NONE, "Regression gate
     // for entry.zig" per manifest): integration KAT replaying a REAL captured
     // testnet slot's deshredded entry bytes through entry.zig's parser-
@@ -1355,7 +1355,7 @@ pub fn build(b: *std.Build) void {
     // VEX_KAT_PREV/VEX_KAT_HASH); with none set the test SKIPs cleanly (its
     // own header: "With no env set the test SKIPs so it never fails a clean
     // CI run without a capture") — this tree has no captured-slot forensic
-    // assets, so it SKIPs here too, same as it would in fix105 without the
+    // assets, so it SKIPs here too, same as it would in origin-tree without the
     // env set. `has_side_effects = true` carried over verbatim (never cache
     // a run that reads an external env-specified capture file).
     const test_entry_real = b.addTest(.{
@@ -1372,20 +1372,20 @@ pub fn build(b: *std.Build) void {
     test_entry_real_step.dependOn(&run_test_entry_real.step);
     test_migrated_step.dependOn(&run_test_entry_real.step);
 
-    // ── test-block-produce — module 20 — fix105 build.zig:1327-1348 verbatim ─
+    // ── test-block-produce — module 20 — origin-tree build.zig:1327-1348 verbatim ─
     // M1 empty-block produce KAT (block_produce.zig: produceSlot -> serializeEntries
     // -> parse-back). block_produce.zig (1115 LoC, manifest BEHAVIORAL-PORT/CLEAN/
     // CONSENSUS, "the live leader-mode block byte-producer") declares 8 @import lines
     // (grepped fresh at kickoff): std, entry.zig + leader_poh.zig (relative siblings,
     // both module 19, already in this dir), cost_tracker.zig + builtin_cu_costs.zig
     // (relative siblings, modules 17 + 10, already in this dir), and 3 PACKAGE-style
-    // imports — banking_stage / tx_ingest / compute_budget — that fix105 wires as
+    // imports — banking_stage / tx_ingest / compute_budget — that origin-tree wires as
     // three DISTINCT module instances built fresh for this test compilation (task #13
-    // comment in fix105, carried verbatim below), not the shared build.zig-wide
+    // comment in origin-tree, carried verbatim below), not the shared build.zig-wide
     // instances used elsewhere. banking_stage.zig (183 LoC, VEXOR-NATIVE/KEEP/LIVENESS)
     // is std-only at the SOURCE level (grepped fresh: 1 import line, `std`) — its own
     // in-file comment states the former types.zig/Pubkey import was dead and was
-    // removed; the addImport("vex_crypto", ...) fix105 attaches to this module instance
+    // removed; the addImport("vex_crypto", ...) origin-tree attaches to this module instance
     // (mirrored below) is therefore inert build-graph plumbing, not a real dependency —
     // ported 1:1 anyway per the "port KAT targets verbatim" instruction, not silently
     // dropped. tx_ingest.zig (359 LoC, BEHAVIORAL-PORT/KEEP/LIVENESS) imports `core`
@@ -1396,8 +1396,8 @@ pub fn build(b: *std.Build) void {
     // (header re-cite 4.0-beta.7->rc.1 + the stale "epoch 949" bls_pubkey_management_
     // in_vote_account inactive-feature note re-verified against the live cluster oracle
     // at epoch 985, still null/inactive) is a comment-only change, body-diffed against
-    // fix105 to confirm (see REBUILD-LEDGER.md module-20 row). `test_bprod.linkLibC()`
-    // is called in fix105 with NO conditional ballet_ed25519/ballet_blake3 gate and NO
+    // origin-tree to confirm (see REBUILD-LEDGER.md module-20 row). `test_bprod.linkLibC()`
+    // is called in origin-tree with NO conditional ballet_ed25519/ballet_blake3 gate and NO
     // addObjectFile/addCSourceFile (unlike test-tower/test-votetx's real FD-acceleration
     // pattern in this same tree) — block_produce.zig and its whole test-compilation
     // module graph are pure Zig (no C symbols referenced anywhere in the 4 files or
@@ -1425,7 +1425,7 @@ pub fn build(b: *std.Build) void {
     test_bprod_step.dependOn(&run_bprod.step);
     test_migrated_step.dependOn(&run_bprod.step);
 
-    // ── test-tx-ingest — module 20 — fix105 build.zig:1653-1664 verbatim ─────
+    // ── test-tx-ingest — module 20 — origin-tree build.zig:1653-1664 verbatim ─────
     // SB-1 (parity backlog): tx-ingest (wire decode + sigverify) KAT. Roots
     // tx_ingest.zig directly; imports core + vex_crypto (both migrated,
     // modules 1-2; the specific symbols used — core.Pubkey at :21 and
@@ -1443,12 +1443,12 @@ pub fn build(b: *std.Build) void {
     test_txin_step.dependOn(&run_txin.step);
     test_migrated_step.dependOn(&run_txin.step);
 
-    // ── test-compute-budget — module 20 — fix105 build.zig:1666-1677 verbatim
+    // ── test-compute-budget — module 20 — origin-tree build.zig:1666-1677 verbatim
     // compute_budget KATs (std-only). Includes parseComputeUnitPriceFromWire —
     // the dormant QUIC-ingest mempool cu_price extractor used by
     // quic_ingest_adapter to rank pending txs. Also carries the carrier-419786142
     // tx#289 executionLimit/per-tx-CU-meter draw-down KATs (the compute_budget.zig
-    // half of fix105 commit 894028b, already an ancestor of the pin for this file).
+    // half of origin-tree commit 894028b, already an ancestor of the pin for this file).
     const test_cbgt_mod = b.createModule(.{
         .root_source_file = b.path("src/vex_svm/compute_budget.zig"),
         .target = target,
@@ -1460,7 +1460,7 @@ pub fn build(b: *std.Build) void {
     test_cbgt_step.dependOn(&run_cbgt.step);
     test_migrated_step.dependOn(&run_cbgt.step);
 
-    // ── test-txbearing-exec — module 40 — fix105 build.zig:1350-1392 verbatim ──
+    // ── test-txbearing-exec — module 40 — origin-tree build.zig:1350-1392 verbatim ──
     // TX-BEARING produce→execute→freeze KAT: produces a tx-bearing block via the
     // REAL produceSlotBytes loopback path, replays it through the REAL System
     // processor (system.executeTransfer, reached via the system_exec_kat_shim.zig
@@ -1469,7 +1469,7 @@ pub fn build(b: *std.Build) void {
     // this module by native/system.zig (97, MERGE→system_v2.zig DEFERRED, copied
     // verbatim) + system_exec_kat_shim.zig (15, KEEP) + tests/kat_txbearing_exec.zig
     // (340, KEEP). block_produce/banking_stage/tx_ingest/compute_budget already
-    // in-tree since module 20 (their src differs from fix105 ONLY by module-20's
+    // in-tree since module 20 (their src differs from origin-tree ONLY by module-20's
     // documented CLEAN comment/header hygiene — zero logic, bank_hash-identical).
     // Distinct module instances (same shape as test-block-produce) so this
     // compilation is self-contained.
@@ -1502,16 +1502,16 @@ pub fn build(b: *std.Build) void {
     test_txbe_step.dependOn(&run_txbe.step);
     test_migrated_step.dependOn(&run_txbe.step);
 
-    // ── test-block-broadcast — module 41 — fix105 build.zig:1393-1423 verbatim ──
+    // ── test-block-broadcast — module 41 — origin-tree build.zig:1393-1423 verbatim ──
     // M2 empty-block broadcast driver + SELF-REPLAY GATE: block_broadcast.zig's
     // produceEmptySlotShreds → deshred round-trip to the EXACT entry batch +
     // receiver merkle-reconstruct (byte-level shred-parity proof). block_broadcast.zig
     // (528, KEEP/LIVENESS, ARMED live VEX_LEADER_BROADCAST=1) — unblocked this module:
     // its relative siblings shred_encoder/shred_header/bmtree/shred_layout are all
     // in-tree (modules 6/13) and the block_produce chain since module 20. The
-    // bmtree.zig + block_produce.zig + compute_budget.zig "drift" vs fix105 is those
+    // bmtree.zig + block_produce.zig + compute_budget.zig "drift" vs origin-tree is those
     // modules' OWN documented CLEAN comment/header hygiene (zero logic, byte-parity
-    // proven by this KAT's self-replay gate passing), NOT fix105 movement.
+    // proven by this KAT's self-replay gate passing), NOT origin-tree movement.
     const test_bbcast_mod = b.createModule(.{
         .root_source_file = b.path("src/vex_network/block_broadcast.zig"),
         .target = target,
@@ -1540,7 +1540,7 @@ pub fn build(b: *std.Build) void {
     test_bbcast_step.dependOn(&run_bbcast.step);
     test_migrated_step.dependOn(&run_bbcast.step);
 
-    // ── DUPLICATE-SHRED (CRDS type 9) Tier-1 KAT — module 54 — fix105 build.zig:638-671 verbatim ──
+    // ── DUPLICATE-SHRED (CRDS type 9) Tier-1 KAT — module 54 — origin-tree build.zig:638-671 verbatim ──
     // Run with: zig build test-duplicate-shred
     // Roots at tests/kat_duplicate_shred.zig. Validates the byte-exact CRDS
     // DuplicateShred wire layout (tag/index/_unused/_unused_shred_type/chunk_len),
@@ -1574,7 +1574,7 @@ pub fn build(b: *std.Build) void {
     test_dupshred_step.dependOn(&run_dupshred.step);
     test_migrated_step.dependOn(&run_dupshred.step);
 
-    // ── #61 chained-merkle FEC recovery KAT — module 55 — fix105 build.zig:1839-1854 verbatim ──
+    // ── #61 chained-merkle FEC recovery KAT — module 55 — origin-tree build.zig:1839-1854 verbatim ──
     // Run with: zig build test-fec-recovery
     // Rooted directly at fec_resolver.zig so its #61 KAT test blocks execute (the
     // target roots AT the module, so all 6 in-file tests ride the wired gate —
@@ -1583,7 +1583,7 @@ pub fn build(b: *std.Build) void {
     // KAT additionally imports shred_encoder.zig (-> shred_header/layout/reedsol,
     // all std/core only). bmtree needs `core`. No vex_crypto / secp256k1 reach on
     // the KAT path (duplicate_shred.zig's vex_crypto-using decls are not touched),
-    // so addImport("core") alone suffices — mirrored 1:1 from fix105.
+    // so addImport("core") alone suffices — mirrored 1:1 from origin-tree.
     const test_fecrec_mod = b.createModule(.{
         .root_source_file = b.path("src/vex_network/fec_resolver.zig"),
         .target = target,
@@ -1596,12 +1596,12 @@ pub fn build(b: *std.Build) void {
     test_fecrec_step.dependOn(&run_fecrec.step);
     test_migrated_step.dependOn(&run_fecrec.step);
 
-    // ── GOSSIP CONTACT-INFO KAT — module 56 — fix105 build.zig:928-946 verbatim ──
+    // ── GOSSIP CONTACT-INFO KAT — module 56 — origin-tree build.zig:928-946 verbatim ──
     // Run with: zig build test-gossip
     // Roots at gossip.zig so its `test` blocks EXECUTE. gossip.zig (and its
     // relative deps socket/packet/bincode/cluster_slots/crds/duplicate_shred/
     // fec_resolver) only need the `core` module import (which carries vex_crypto),
-    // so the test module wiring is just core — mirrored 1:1 from fix105. Covers
+    // so the test module wiring is just core — mirrored 1:1 from origin-tree. Covers
     // the Tag-12 tpu_vote_quic parse + the canonical prefer-Tag-12 / fall-back-Tag-8
     // vote-QUIC resolution order.
     const test_gossip = b.addTest(.{
@@ -1618,11 +1618,11 @@ pub fn build(b: *std.Build) void {
     test_gossip_step.dependOn(&run_gossip.step);
     test_migrated_step.dependOn(&run_gossip.step);
 
-    // ── SHRED-ASSEMBLER KATs — module 57 — fix105 build.zig:1690-1712, SPLIT-adapted ──
+    // ── SHRED-ASSEMBLER KATs — module 57 — origin-tree build.zig:1690-1712, SPLIT-adapted ──
     // Run with: zig build test-net
-    // fix105 roots this DIRECTLY at (pre-split) shred.zig so its 5 `test` blocks
+    // origin-tree roots this DIRECTLY at (pre-split) shred.zig so its 5 `test` blocks
     // (FIX #56 chained-merkle over-alloc, task #71 L3 clearRootedSlots leak,
-    // 2x FEC-boundary guard FD:544, FIX 2026-07-07 carrier-420258409 frame-overwrite
+    // 2x FEC-boundary guard FD:544, FIX carrier-420258409 frame-overwrite
     // drop) execute. Module 57's SPLIT moved every one of those blocks into
     // `shred_assembler.zig` (they all exercise ShredAssembler/SlotAssembly, not the
     // shred_parse.zig wire-format half) — REPOINTED root_source_file to
@@ -1631,7 +1631,7 @@ pub fn build(b: *std.Build) void {
     // itself uses neither `core` nor `vex_crypto` directly, but its relative import of
     // shred_parse.zig does (core.Signature/Slot/Pubkey + crypto.verifyShred) — Zig
     // resolves relative-file @imports against the ROOT module's import table, so both
-    // still need registering here, exactly mirroring fix105's own two addImports.
+    // still need registering here, exactly mirroring origin-tree's own two addImports.
     const test_net_mod = b.createModule(.{
         .root_source_file = b.path("src/vex_network/shred_assembler.zig"),
         .target = target,
@@ -1645,13 +1645,13 @@ pub fn build(b: *std.Build) void {
     test_net_step.dependOn(&run_net.step);
     test_migrated_step.dependOn(&run_net.step);
 
-    // ── TURBINE TREE — module 58 — fix105 build.zig:1478-1513 verbatim (2 targets) ──
+    // ── TURBINE TREE — module 58 — origin-tree build.zig:1478-1513 verbatim (2 targets) ──
     // Run with: zig build test-turbine-tree / zig build test-turbine-retransmit
     // turbine_tree.zig (KEEP verbatim) needs core (Pubkey) + vex_crypto (unused —
     // its only real crypto use is std.crypto.hash.sha2.Sha256, a stdlib namespace,
-    // not the `crypto` binding; wired anyway, mirrored 1:1 from fix105) + relative
+    // not the `crypto` binding; wired anyway, mirrored 1:1 from origin-tree) + relative
     // imports gossip.zig (module 56) / packet.zig / weighted_shuffle.zig (module 12,
-    // both already in-tree). fix105 roots BOTH targets at the SAME file (no
+    // both already in-tree). origin-tree roots BOTH targets at the SAME file (no
     // -Dturbine_retransmit build-option gate exists in the source — grepped, zero
     // hits, doc-comment only) so both run the identical 13 in-file tests; only
     // test-turbine-tree's count rides the cumulative test-migrated total to avoid
@@ -1686,14 +1686,14 @@ pub fn build(b: *std.Build) void {
     const test_turbine_retransmit_step = b.step("test-turbine-retransmit", "Run the turbine retransmit child-selection KATs (getRetransmitChildren revival)");
     test_turbine_retransmit_step.dependOn(&run_turbine_retransmit.step);
 
-    // ── REPAIR-ABANDON KAT — module 59 — fix105 build.zig:980-1001 verbatim ──
+    // ── REPAIR-ABANDON KAT — module 59 — origin-tree build.zig:980-1001 verbatim ──
     // Run with: zig build test-repair-abandon
     // Roots at src/repair_abandon_kat.zig (rooted at src/ so the test module can
     // import BOTH vex_network/shred.zig and vex_svm/pending_wake.zig — a module
     // rooted in vex_network/ cannot reach ../vex_svm/). repair_abandon.zig (module
     // 59) pulls in shred.zig (the module-57 aggregator), which imports the named
     // modules core + vex_crypto → provide them. pending_wake.zig (module 8, std-only)
-    // resolves relative. ReleaseSafe forced (fix105 note verbatim): the Zig 0.15.2
+    // resolves relative. ReleaseSafe forced (origin-tree note verbatim): the Zig 0.15.2
     // self-hosted Debug backend chokes on the ~512KB by-value SlotAssembly the KAT
     // materializes; the LLVM backend (what the real build uses) handles it.
     const test_repair_abandon = b.addTest(.{
@@ -1713,13 +1713,13 @@ pub fn build(b: *std.Build) void {
     test_repair_abandon_step.dependOn(&run_repair_abandon.step);
     test_migrated_step.dependOn(&run_repair_abandon.step);
 
-    // ── #61 CHAINED-MERKLE FEC RECOVERY KAT — module 60 — fix105 build.zig:1593-1603 verbatim ──
+    // ── #61 CHAINED-MERKLE FEC RECOVERY KAT — module 60 — origin-tree build.zig:1593-1603 verbatim ──
     // Run with: zig build test-fec-chained-recovery
     // Roots at fec_chained_recovery_kat.zig (real signed chained FEC set → erase data
     // → RS-recover → assert byte-exact recovered shreds + merkleRoot32/chainedMerkleRoot
     // match + root-gate REJECT on corruption). Imports the encoder + fec_resolver +
     // shred.zig (module-57 aggregator, which pulls vex_crypto + core); build_options
-    // provided too (fix105 wires all three) — mirrored 1:1.
+    // provided too (origin-tree wires all three) — mirrored 1:1.
     const test_fecr_mod = b.createModule(.{
         .root_source_file = b.path("src/vex_network/fec_chained_recovery_kat.zig"),
         .target = target,
@@ -1735,25 +1735,25 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_fecr.step);
 
     // NOT ported (defer-with-evidence, root at unmigrated or DELETE surfaces):
-    // test-block-assembler (fix105 :1425+, roots
+    // test-block-assembler (origin-tree :1425+, roots
     // block_assembler.zig — manifest DEAD/DELETE, superseded by block_produce.zig's
     // produceSlotBytes; never copied, target never ports); the shared
     // banking_stage/tx_ingest/compute_budget module wiring for quic_ingest_adapter
-    // (fix105 :1250-1258 + :314-345 main-exe plumbing — vex_network + main exe,
+    // (origin-tree :1250-1258 + :314-345 main-exe plumbing — vex_network + main exe,
     // unmigrated). banking_stage.zig itself has NO in-file tests and NO dedicated
-    // fix105 test-* target (it is exercised transitively by test-block-produce's
+    // origin-tree test-* target (it is exercised transitively by test-block-produce's
     // queue→drain path); mirrored faithfully, no new surface invented.
 
-    // ── test-execute-on-bank — module 21 — fix105 build.zig:1680-1688 verbatim ──
+    // ── test-execute-on-bank — module 21 — origin-tree build.zig:1680-1688 verbatim ──
     // SB-1 (parity backlog): executeOnBank foundation (account overlay = simulate/
     // produce discard primitive). execute_on_bank.zig (258 LoC, manifest STUB/KEEP/
     // NONE, "foundation only — the tx loop/CU meter/log wiring never landed") is
     // std-only at the source level (grepped fresh at kickoff: 1 import line, `std`) —
-    // zero addImports, exactly as fix105 wires it (b.path root, no siblings). No
-    // production importer exists anywhere in fix105 (grep: only build.zig:1659's
+    // zero addImports, exactly as origin-tree wires it (b.path root, no siblings). No
+    // production importer exists anywhere in origin-tree (grep: only build.zig:1659's
     // test target) — tx_ingest.zig:7 and block_produce.zig:926 (both in-tree since
     // module 20) reference it only in comments as the planned increment, not a real
-    // @import. Smallest remaining unblocked leaf with a real fix105 target per the
+    // @import. Smallest remaining unblocked leaf with a real origin-tree target per the
     // module-20 "next module" note.
     const test_eob = b.addTest(.{
         .name = "test-execute-on-bank",
@@ -1773,7 +1773,7 @@ pub fn build(b: *std.Build) void {
     // execute_on_bank.zig per the manifest's explicit pairing note. std-only
     // (grepped fresh: 1 import line, `std`), zero drift vs the 32117f5 pin. Agave
     // svm-log-collector/stable_log byte-faithful port with 4 in-file tests. Has
-    // ZERO fix105 build.zig references (grepped `log_collector` across src/+
+    // ZERO origin-tree build.zig references (grepped `log_collector` across src/+
     // build.zig — only its own header/in-file tests) — repeats the precedented
     // ad-hoc-`zig test` verification pattern (modules 4/5/6/7/9/10/13/18 —
     // kat_clock_unixts_414203814.zig is the most recent instance): verified
@@ -1787,7 +1787,7 @@ pub fn build(b: *std.Build) void {
     // judgment-pick companion leaf (module-20's "next module" note flagged it as a
     // weaker-fit candidate: unrelated to the SB-1 cluster, but equally clean).
     // std-only (grepped fresh: 1 import line, `std`), zero drift vs the pin, 3
-    // in-file tests (insert/query, ancestor-fork walk, reset). Has ZERO fix105
+    // in-file tests (insert/query, ancestor-fork walk, reset). Has ZERO origin-tree
     // build.zig references (grepped `txn_cache` across src/+build.zig — only its
     // own header/in-file tests) — same ad-hoc-`zig test` pattern: verified
     // directly via `zig test src/vex_svm/txn_cache.zig` = 3/3 PASS, both Debug and
@@ -1799,7 +1799,7 @@ pub fn build(b: *std.Build) void {
     // tiny module (main.zig:249 + test-zstd); delete caller-less pipeline
     // (extraction shells out to `zstd -T0`)"; manifest rollup names the target
     // `zstd_selftest.zig` verbatim). First SPLIT-disposition file in the rebuild.
-    // Repo-wide grep of every top-level pub symbol against ALL of fix105 (not just
+    // Repo-wide grep of every top-level pub symbol against ALL of origin-tree (not just
     // this tree) found exactly ONE live external caller in the whole codebase:
     // `zstdSelfTest`, called from `src/main.zig:249` (real @import-reachable call,
     // not a comment) — main.zig itself is not migrated yet, so this is a forward
@@ -1808,7 +1808,7 @@ pub fn build(b: *std.Build) void {
     // `vex_store.zstd_selftest.zstdSelfTest` (or through whatever root.zig alias
     // that module wires). `decompressSnapshotStreaming` (the pipelined
     // download+decompress+load orchestrator this file's own header describes) has
-    // ZERO callers anywhere in fix105 — confirmed dead. The 3 root.zig re-exports
+    // ZERO callers anywhere in origin-tree — confirmed dead. The 3 root.zig re-exports
     // (`StreamingDecompressor`/`CompressionType`/`DecompressProgress`) are
     // themselves dead one level up (grepped `vex_store.StreamingDecompressor` /
     // `.CompressionType` / `.DecompressProgress` repo-wide — zero consumers besides
@@ -1825,7 +1825,7 @@ pub fn build(b: *std.Build) void {
     // CompressionType.fileExtension) and the now-unused `const fs = std.fs;`
     // import. Every deletion is a whole intact declaration removed at its
     // brace/import boundary — zero bytes of the retained code were touched
-    // (verified programmatically: every kept line matches its original fix105
+    // (verified programmatically: every kept line matches its original origin-tree
     // line number+content exactly, see module-22 row).
     //
     // Kept (byte-identical, unedited): CompressionType (fromExtension only) +
@@ -1835,7 +1835,7 @@ pub fn build(b: *std.Build) void {
     // StreamingDecompressor (all fields + Config + init/deinit/stop/decompressZstd
     // — the last is the actual point of the file, exercised directly by
     // zstdSelfTest and by the perf#3 KAT) + zstdSelfTest + all 4 in-file tests
-    // (verified none reference anything deleted). fix105's own real target is
+    // (verified none reference anything deleted). origin-tree's own real target is
     // rooted directly at the file (no siblings, no addImports) — reproduced here
     // rooted at the new filename, otherwise verbatim.
     const test_zstd = b.addTest(.{
@@ -1858,7 +1858,7 @@ pub fn build(b: *std.Build) void {
     // replay_stage.zig's advanceRoot call site (FIX #105 Option A); feeds
     // accounts.zig's advanceRoot promote/purge decision once that SPLIT lands.
     // Root-advance partition (vex_store/root_partition.zig) unit tests —
-    // fix105 build.zig:2270-2288 verbatim (test-root-partition).
+    // origin-tree build.zig:2270-2288 verbatim (test-root-partition).
     const test_rp = b.addTest(.{
         .name = "test-root-partition",
         .root_module = b.createModule(.{
@@ -1873,7 +1873,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_rp.step);
 
     // SB-2 (parity backlog): block persistence store KAT. Imports core
-    // (Pubkey) only — fix105 build.zig:1606-1614 verbatim (test-block-store).
+    // (Pubkey) only — origin-tree build.zig:1606-1614 verbatim (test-block-store).
     const test_bstore = b.addTest(.{
         .name = "test-block-store",
         .root_module = b.createModule(.{
@@ -1889,7 +1889,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_bstore.step);
 
     // SB-2 (parity backlog): tx-status/location index KAT. Imports core +
-    // sibling block_store.zig (shared TxError) — fix105 build.zig:1618-1628
+    // sibling block_store.zig (shared TxError) — origin-tree build.zig:1618-1628
     // verbatim (test-tx-status-store).
     const test_txstore = b.addTest(.{
         .name = "test-tx-status-store",
@@ -1907,7 +1907,7 @@ pub fn build(b: *std.Build) void {
 
     // recorder.zig (1290 LoC, std-ONLY, KEEP/OPS — the carrier-RCA forensic
     // oracle) and sig_overlay.zig (432 LoC, std+core, KEEP/CONSENSUS — the
-    // per-slot ancestor-gated write/read overlay) have NO dedicated fix105
+    // per-slot ancestor-gated write/read overlay) have NO dedicated origin-tree
     // build.zig target (grep-confirmed at kickoff: both are pulled into
     // test-accounts only as accounts.zig SIBLINGS, which this module does not
     // migrate). Precedent from modules 4/5/6/7/9/10: their in-file `test`
@@ -1935,7 +1935,7 @@ pub fn build(b: *std.Build) void {
     // site byte-identical (fully removing the param would edit ~20 test lines and
     // change the API arity — deferred to bootstrap.zig's migration per manifest).
     //
-    // fix105 roots test-accounts at accounts.zig (build.zig:3055-3067). Zig runs
+    // origin-tree roots test-accounts at accounts.zig (build.zig:3055-3067). Zig runs
     // ONLY the tests declared in a target's ROOT source file (empirically
     // confirmed this session: a referenced sibling's `test` blocks do NOT run);
     // move-only lands every test in accounts_db.zig, so the root is repointed to
@@ -1977,14 +1977,14 @@ pub fn build(b: *std.Build) void {
     // `parseManifest` call — is compiled in, since ManifestResult embeds a
     // `fee_rate_governor: ?FeeRateGovernor` field that IS referenced by a
     // live `test` block; not lazily unreached. vex_svm is not migrated yet in
-    // this tree, so both files stay in fix105 until vex_svm's
+    // this tree, so both files stay in origin-tree until vex_svm's
     // blockhash_queue.zig lands). See ledger row for full reasoning + the
     // inline-stub-bincode TODO's own disposition (also DEFERRED, separately).
     // ────────────────────────────────────────────────────────────────────────
 
     // Layer-A snapshot-trust agreement KAT (task #40/A3a). snapshot_trust.zig
     // is std-only; kat_snapshot_trust.zig imports it by sibling relative path
-    // — fix105 build.zig:3142-3155 verbatim (test-snapshot-trust).
+    // — origin-tree build.zig:3142-3155 verbatim (test-snapshot-trust).
     const test_snapshot_trust = b.addTest(.{
         .name = "test-snapshot-trust",
         .root_module = b.createModule(.{
@@ -2001,7 +2001,7 @@ pub fn build(b: *std.Build) void {
     test_snapshot_trust_step.dependOn(&run_test_snapshot_trust.step);
     test_migrated_step.dependOn(&run_test_snapshot_trust.step);
 
-    // REPAIR-TARGETING KAT (PRIMARY ROOT FIX 2026-06-14). std-only — fix105
+    // REPAIR-TARGETING KAT (PRIMARY ROOT FIX). std-only — origin-tree
     // build.zig:600-608 verbatim (test-repair-targeting).
     const test_repair_targeting = b.addTest(.{
         .name = "test-repair-targeting",
@@ -2017,7 +2017,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_repair_targeting.step);
 
     // REPAIR-ESCALATE KAT (FIX #3 phantom-wedge predicate). std-only —
-    // fix105 build.zig:957-965 verbatim (test-repair-escalate).
+    // origin-tree build.zig:957-965 verbatim (test-repair-escalate).
     const test_repair_escalate = b.addTest(.{
         .name = "test-repair-escalate",
         .root_module = b.createModule(.{
@@ -2032,7 +2032,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_repair_escalate.step);
 
     // REPAIR-INFLIGHT KAT (FD fd_inflight port, VEX_REPAIR_INFLIGHT). std-only
-    // — fix105 build.zig:1014-1022 verbatim (test-repair-inflight).
+    // — origin-tree build.zig:1014-1022 verbatim (test-repair-inflight).
     const test_repair_inflight = b.addTest(.{
         .name = "test-repair-inflight",
         .root_module = b.createModule(.{
@@ -2047,7 +2047,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_repair_inflight.step);
 
     // SB-4 (parity backlog): account-data encoder KAT. Imports core
-    // (base58) — fix105 build.zig:1631-1639 verbatim (test-account-encoder).
+    // (base58) — origin-tree build.zig:1631-1639 verbatim (test-account-encoder).
     const test_acctenc = b.addTest(.{
         .name = "test-account-encoder",
         .root_module = b.createModule(.{
@@ -2062,7 +2062,7 @@ pub fn build(b: *std.Build) void {
     test_acctenc_step.dependOn(&run_acctenc.step);
     test_migrated_step.dependOn(&run_acctenc.step);
 
-    // SB-4 (parity backlog): commitment/slot selector KAT. std-only — fix105
+    // SB-4 (parity backlog): commitment/slot selector KAT. std-only — origin-tree
     // build.zig:1642-1650 verbatim (test-commitment).
     const test_commit = b.addTest(.{
         .name = "test-commitment",
@@ -2083,7 +2083,7 @@ pub fn build(b: *std.Build) void {
     // blockhash_queue.zig imports `std` + sibling `types.zig` ONLY (grep-
     // verified at kickoff); types.zig imports `std` + `vex_crypto` (already
     // migrated, module 1) ONLY. Neither reaches bank.zig/replay_stage.zig.
-    // Both have NO dedicated fix105 build.zig target (grepped — zero hits) —
+    // Both have NO dedicated origin-tree build.zig target (grepped — zero hits) —
     // repeats the ad-hoc-`zig test` deviation pattern (module 4/5/6/7/9/10
     // precedent): `zig test src/vex_svm/blockhash_queue.zig` (--dep vex_crypto)
     // = 4/4 PASS both modes AFTER the test-only fix below; `zig test
@@ -2092,13 +2092,13 @@ pub fn build(b: *std.Build) void {
     // No new build.zig surface invented for either file.
 
     // snapshot_manifest.zig resolves its FeeRateGovernor via
-    // `@import("vex_svm").blockhash_queue.FeeRateGovernor`. fix105's REAL
+    // `@import("vex_svm").blockhash_queue.FeeRateGovernor`. origin-tree's REAL
     // vex_svm module (root.zig) transitively drags in bank.zig/
     // replay_stage.zig — forbidden this session. Empirically proven in a
-    // /tmp scratch build (never fix105, never this tree) that a THIN,
+    // /tmp scratch build (never origin-tree, never this tree) that a THIN,
     // 100%-real (non-fabricated) substitute module — one file that just
     // re-exports the now-migrated blockhash_queue.zig — resolves the KAT
-    // without reaching either frozen god-file. This mirrors fix105's OWN
+    // without reaching either frozen god-file. This mirrors origin-tree's OWN
     // precedent device for the identical module-boundary problem
     // (src/vex_store/accounts_test_vex_svm_stub.zig, used by test-accounts /
     // test-snapshot-len-provenance) — same technique, but every symbol here
@@ -2112,13 +2112,13 @@ pub fn build(b: *std.Build) void {
     });
     test_manifest_lthash_vex_svm_view.addImport("vex_crypto", vex_crypto);
 
-    // Manifest lt_hash offline-verify (task #39, 2026-06-22) — fix105
-    // build.zig:3119-3135, DEVIATION: fix105's own target only wires `core`
+    // Manifest lt_hash offline-verify (task #39,) — origin-tree
+    // build.zig:3119-3135, DEVIATION: origin-tree's own target only wires `core`
     // (its comment "snapshot_manifest.zig imports only std" is stale — the
-    // FeeRateGovernor/vex_svm import landed later via ccbbd0a 2026-06-25,
-    // confirmed by module-12's kickoff investigation; fix105's target would
+    // FeeRateGovernor/vex_svm import landed later via ccbbd0a,
+    // confirmed by module-12's kickoff investigation; origin-tree's target would
     // hit the same "no module named 'vex_svm'" compile error if actually
-    // built there, unverified since fix105 is read-only). This tree adds the
+    // built there, unverified since origin-tree is read-only). This tree adds the
     // missing `vex_svm` addImport, pointed at the thin real view module
     // above, so the target actually compiles + runs.
     const test_manifest_lthash = b.addTest(.{
@@ -2150,12 +2150,12 @@ pub fn build(b: *std.Build) void {
     // re-exported by the module-25 aggregator (appendvec.zig leaf) — zero new
     // aggregator re-exports needed this module. CLEAN edits (manifest-cited,
     // both provably dead / zero-caller, see REBUILD-LEDGER module-26 row):
-    // (1) the local `io_uring` stub (:20-29 in fix105) + every field/branch
+    // (1) the local `io_uring` stub (:20-29 in origin-tree) + every field/branch
     // built on it (ParallelConfig.enable_io_uring/io_uring_batch_size, Self.
     // ring/batch_reader/io_uring_available, Self.io_uring_reads counter,
     // init()'s dead-branch — io_uring.IoUring.isAvailable() is a hardcoded
     // `return false` stub, so `enable_io_uring and isAvailable()` never once
-    // evaluates true; fix105's OWN doc comment on the config field says so:
+    // evaluates true; origin-tree's OWN doc comment on the config field says so:
     // "NOTE: Disabled - threaded approach is faster for this workload") — and
     // (2) the "legacy copy-parse path" (WorkerContext + workerFn +
     // loadWithIoUring): loadWithIoUring is a private fn with ZERO callers
@@ -2166,15 +2166,15 @@ pub fn build(b: *std.Build) void {
     // straight-up type mismatch that would fail to compile if ever analyzed).
     // workerFn is only reachable from loadWithIoUring; WorkerContext only from
     // both. All three removed together, zero external references anywhere in
-    // fix105 (grep-confirmed). 4 stale doc-comment touch-ups accompany the
+    // origin-tree (grep-confirmed). 4 stale doc-comment touch-ups accompany the
     // deletions (module docstring + 3 fn comments that named the now-gone
     // io_uring/worker-thread paths) — comment hygiene only. Everything else
     // (mmapAndIndex, loadSnapshotParallel, parseBuffer, parseAppendVec[WithSz],
     // all in-file tests) is byte-identical — full diff in the ledger row.
     // kat_snapshot_len_provenance.zig is KEEP/NONE (manifest line 367) —
-    // copied byte-identical, md5-verified against the fix105 blob.
+    // copied byte-identical, md5-verified against the origin-tree blob.
     //
-    // fix105 roots test-snapshot-len-provenance at kat_snapshot_len_
+    // origin-tree roots test-snapshot-len-provenance at kat_snapshot_len_
     // provenance.zig (build.zig:3090-3104) wiring vex_svm = the SAME
     // accounts_test_vex_svm_stub used by test-accounts. DEVIATION (empirically
     // driven, /tmp scratch build never touched): in THIS split-tree, that
@@ -2249,7 +2249,7 @@ pub fn build(b: *std.Build) void {
     vex_store.addImport("build_options", build_options);
     vex_store.addImport("vex_svm", test_manifest_lthash_vex_svm_view);
 
-    // SNAPSHOT-CREATE ROUND-TRIP KAT (fix105 build.zig:712-736 verbatim) —
+    // SNAPSHOT-CREATE ROUND-TRIP KAT (origin-tree build.zig:712-736 verbatim) —
     // the manifest's own named gate for this SPLIT (tests/kat_snapshot_create.zig
     // §7.5 note: "Pairs with the §1.20 snapshot.zig SPLIT — this is the gate
     // for that split"). Builds a synthetic AppendVec + serialized bank
@@ -2275,10 +2275,10 @@ pub fn build(b: *std.Build) void {
     // bpf_fixture/bpf_fixture_runner/bpf_fixture_test/test_vex_store_stub) + 6
     // dormant-chain DELETE→KEEP verbatim-carry (vm_syscalls/bpf_program_cache/
     // vm_sbpf/vm_memory/vm_executable/vm_interpreter). The named vex_bpf module
-    // (fix105 build.zig:356, root interpreter.zig) and vex_bpf_vm (root vm_root.zig,
+    // (origin-tree build.zig:356, root interpreter.zig) and vex_bpf_vm (root vm_root.zig,
     // dormant, DELETE) are NOT createModule'd here — there is NO in-tree consumer
     // yet (vex_svm/exe/loader-KATs test_col/ftr/mdc/ble/bls are all still §B/§E-
-    // blocked on the absent vex_svm named module). Per fix105's create-module-at-
+    // blocked on the absent vex_svm named module). Per origin-tree's create-module-at-
     // consumer pattern (an unused createModule const is a build.zig compile error),
     // the vex_bpf createModule lands at its first @import consumer — module-66's
     // vex_bpf2 precedent (proved buildable via a rooted target, createModule
@@ -2286,7 +2286,7 @@ pub fn build(b: *std.Build) void {
     // interpreter-MERGE + syscalls-REWRITE + root/sbpf/elf/system_cpi CLEAN edits
     // are ALL deferred to the post-migration restructure phase: root.zig +
     // interpreter.zig are on the manifest's HOT-FROZEN carrier surface (manifest
-    // :543), so their import-strip is a fix105-first refactor, not a move-only
+    // :543), so their import-strip is a origin-tree-first refactor, not a move-only
     // migration edit. The 6 dormant files are @import'd by interpreter.zig/root.zig/
     // sbpf_executor.zig so they MUST physically exist to parse — verbatim-carried
     // (loader.zig/module-66 + heap_trace.zig/module-62 precedent) rather than
@@ -2300,8 +2300,8 @@ pub fn build(b: *std.Build) void {
     // runFixture → sbpf_executor.execute(), forcing the whole LIVE cluster
     // (runner → root → interpreter/elf_loader/syscalls/sbpf_executor/vm) to
     // type-check against the real vex_store — proving adb.getAccountInSlot()
-    // resolves, the exact surface fix105's stale test_vex_store_stub CANNOT
-    // satisfy (why fix105's own test-bpf-fixture is RED at HEAD). No fixtures
+    // resolves, the exact surface origin-tree's stale test_vex_store_stub CANNOT
+    // satisfy (why origin-tree's own test-bpf-fixture is RED at HEAD). No fixtures
     // dir needed (the no-op program is synthesised in-memory).
     const test_vex_bpf = b.addTest(.{
         .name = "test-vex-bpf",
@@ -2322,19 +2322,19 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf_step.dependOn(&run_test_vex_bpf.step);
     test_migrated_step.dependOn(&run_test_vex_bpf.step);
 
-    // ── test-bpf-fixture — module 67 — fix105 build.zig:3193-3245 ported 1:1 ──
+    // ── test-bpf-fixture — module 67 — origin-tree build.zig:3193-3245 ported 1:1 ──
     // Mollusk-style fixture harness rooted at bpf_fixture_test.zig, wired with the
-    // fix105 stub trio (fix_core=core/root.zig, fix_vex_crypto=vex_crypto/core.zig,
+    // origin-tree stub trio (fix_core=core/root.zig, fix_vex_crypto=vex_crypto/core.zig,
     // fix_vex_store=vex_bpf/test_vex_store_stub.zig). DEFERRED from the green
     // test_migrated gate (module-46 test-bank / module-65 syscalls precedent):
-    // fix105's OWN target is RED at HEAD db9ccb18 — sbpf_executor.zig:652 calls
+    // origin-tree's OWN target is RED at HEAD db9ccb18 — sbpf_executor.zig:652 calls
     // adb.getAccountInSlot(&program_id, ...) but test_vex_store_stub.AccountsDb
     // does NOT define getAccountInSlot (the stub lagged the executor's CPI path).
     // PROVEN identical failure by an isolated --cache-dir/--prefix run of
-    // fix105-HEAD's own test-bpf-fixture (same compile error, same line). Kept
+    // origin-tree-HEAD's own test-bpf-fixture (same compile error, same line). Kept
     // standalone-callable (`zig build test-bpf-fixture`) but NOT wired into
-    // test_migrated_step so the pre-existing fix105 stub-staleness defect can't
-    // regress the green gate; re-wire once fix105 refreshes the stub upstream.
+    // test_migrated_step so the pre-existing origin-tree stub-staleness defect can't
+    // regress the green gate; re-wire once origin-tree refreshes the stub upstream.
     const fix_vex_crypto = b.createModule(.{ .root_source_file = b.path("src/vex_crypto/core.zig"), .target = target, .optimize = optimize });
     const fix_core = b.createModule(.{ .root_source_file = b.path("src/core/root.zig"), .target = target, .optimize = optimize });
     fix_core.addImport("vex_crypto", fix_vex_crypto);
@@ -2355,20 +2355,20 @@ pub fn build(b: *std.Build) void {
     run_test_bpf_fixture.setCwd(b.path(".")); // resolve tests/bpf_fixtures from repo root
     const test_bpf_fixture_step = b.step(
         "test-bpf-fixture",
-        "Run sBPF fixture harness (tests/bpf_fixtures/*.fix) — DEFERRED, fix105-red stub staleness",
+        "Run sBPF fixture harness (tests/bpf_fixtures/*.fix) — DEFERRED, origin-tree-red stub staleness",
     );
     test_bpf_fixture_step.dependOn(&run_test_bpf_fixture.step);
-    // test_migrated_step.dependOn(&run_test_bpf_fixture.step);  // deferred: fix105-red (stub lacks getAccountInSlot)
+    // test_migrated_step.dependOn(&run_test_bpf_fixture.step);  // deferred: origin-tree-red (stub lacks getAccountInSlot)
 
     // ── module 13b: src/vex_network fresh comm-diff — 7 further self-
     // contained KEEP/CLEAN leaves (packet/socket/io_uring/slot_chain_tracker/
     // cluster_slots/geyser/bincode) ───────────────────────────────────────────
-    // Fresh `comm` diff of fix105's src/vex_network/ (67 entries) against what
+    // Fresh `comm` diff of origin-tree's src/vex_network/ (67 entries) against what
     // modules 6/7/12 already migrated (18 files) surfaced these 7 as the next
     // self-contained (std/core-only) leaves; each @import grepped fresh at
     // kickoff, not reused from any prior session's claim.
 
-    // EpochSlots slot-aware-repair KAT (2026-06-14) — fix105 build.zig:572-587
+    // EpochSlots slot-aware-repair KAT — origin-tree build.zig:572-587
     // verbatim (test-epochslots). cluster_slots.zig imports `std` ONLY.
     const test_epochslots = b.addTest(.{
         .name = "test-epochslots",
@@ -2383,7 +2383,7 @@ pub fn build(b: *std.Build) void {
     test_epochslots_step.dependOn(&run_epochslots.step);
     test_migrated_step.dependOn(&run_epochslots.step);
 
-    // Geyser-style streaming sink KATs (2026-06-22) — fix105 build.zig:1791-1799
+    // Geyser-style streaming sink KATs — origin-tree build.zig:1791-1799
     // verbatim (test-geyser). geyser.zig imports `std` ONLY (comptime-gated OFF
     // by its own `geyser` build option elsewhere; the KAT itself needs no
     // module wiring at all).
@@ -2399,7 +2399,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_geyser.step);
 
     // packet.zig / socket.zig / io_uring.zig / slot_chain_tracker.zig /
-    // bincode.zig / tls13.zig have NO dedicated fix105 build.zig target
+    // bincode.zig / tls13.zig have NO dedicated origin-tree build.zig target
     // (grepped — zero hits beyond each file's own in-file `test` blocks; they
     // normally ride along inside gossip.zig's/tpu_client.zig's/
     // solana_quic.zig's much larger module graphs, none migrated). Precedent
@@ -2418,15 +2418,15 @@ pub fn build(b: *std.Build) void {
     // despite living beside them): 5/5 PASS both modes.
 
     // ── module 28: src/vex_svm/native first entries ──────────────────────────
-    // address_lookup_table.zig (KEEP, CONSENSUS, carries the 2026-07-06
+    // address_lookup_table.zig (KEEP, CONSENSUS, carries the
     // carrier-420180889 PROGRAM_ID fix) + epoch_schedule.zig (KEEP, CONSENSUS,
     // std-only leaf) + vote_state_serde.zig (KEEP, CONSENSUS, unblocked by
     // epoch_schedule.zig sibling + the now-complete vex_store package's
     // `recorder` export) + test_vex_store_stub.zig (KEEP, test plumbing —
     // satisfies vote_state_serde's `@import("vex_store").recorder` without
-    // pulling in the full vex_store graph, fix105's own real-target wiring).
+    // pulling in the full vex_store graph, origin-tree's own real-target wiring).
 
-    // Native Address Lookup Table handler — fix105 build.zig verbatim
+    // Native Address Lookup Table handler — origin-tree build.zig verbatim
     // (test-native-alt). Self-contained (imports only std).
     const test_native_alt = b.addTest(.{
         .name = "test-native-alt",
@@ -2442,8 +2442,8 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_native_alt.step);
 
     // Vote state serde (vex_svm/native/vote_state_serde.zig) unit tests —
-    // fix105 build.zig verbatim (test-vote-state-serde). Reuses
-    // test_vex_store_stub.zig as the "vex_store" module (fix105's own
+    // origin-tree build.zig verbatim (test-vote-state-serde). Reuses
+    // test_vex_store_stub.zig as the "vex_store" module (origin-tree's own
     // real-target wiring — satisfies the `recorder` namespace without the
     // full vex_store graph); epoch_schedule.zig rides along as a plain
     // relative-sibling import (module-18/19/20 ride-along precedent) — it has
@@ -2468,7 +2468,7 @@ pub fn build(b: *std.Build) void {
     test_vss_step.dependOn(&run_test_vss.step);
     test_migrated_step.dependOn(&run_test_vss.step);
 
-    // stake_state.zig (KEEP, CONSENSUS, std-only leaf) — fix105 build.zig
+    // stake_state.zig (KEEP, CONSENSUS, std-only leaf) — origin-tree build.zig
     // verbatim (test-stake-store-bytes), zero addImports.
     const test_stake_store = b.addTest(.{
         .name = "test-stake-store-bytes",
@@ -2487,7 +2487,7 @@ pub fn build(b: *std.Build) void {
     // second closed leaf cluster: system_v2.zig's ENTIRE import graph is
     // `std` + already-migrated `../types.zig` (module 13) + sibling
     // `nonce.zig` (std-only); nonce.zig itself has zero further deps.
-    // Both real fix105 KAT targets ported verbatim.
+    // Both real origin-tree KAT targets ported verbatim.
 
     // Durable-nonce KAT (carrier @414201776 regression guard) — test-nonce-414201776.
     const test_nonce_kat = b.addTest(.{
@@ -2523,15 +2523,15 @@ pub fn build(b: *std.Build) void {
 
     // kat_clock_unixts_414723807.zig (copied byte-identical in module 18,
     // still DEFERRED/held-out): re-verified fresh this module, NOT resolved
-    // by vote_state_serde.zig alone. Its real fix105 target (build.zig
+    // by vote_state_serde.zig alone. Its real origin-tree target (build.zig
     // ~2005-2032) wires the FULL `vex_svm` package module
     // (root_source_file = src/vex_svm/root.zig), which re-exports
     // bank.zig/replay_stage.zig/bootstrap.zig/etc. — none migrated, and
-    // fix105's own root.zig is NOT a stub (unlike test_vex_store_stub.zig for
+    // origin-tree's own root.zig is NOT a stub (unlike test_vex_store_stub.zig for
     // `vex_store`). Building a narrower ad-hoc `vex_svm` stub module here
-    // would be an invented build.zig surface with no fix105 precedent —
+    // would be an invented build.zig surface with no origin-tree precedent —
     // against the no-invented-surface / no-rewrite discipline. Confirmed by
-    // re-reading fix105 build.zig's real target (not re-asserting module 18's
+    // re-reading origin-tree build.zig's real target (not re-asserting module 18's
     // finding): `test_clock807.root_module.addImport("vex_svm", vex_svm)` +
     // `addImport("vex_store", vex_store)`, both the FULL packages. Stays
     // deferred until a future module ports enough of vex_svm's god-files (or
@@ -2543,13 +2543,13 @@ pub fn build(b: *std.Build) void {
     // 28's vote_state_serde.zig (sibling relative-import) + the bls_pop
     // module (registered since module 1, build.zig:62). vote_program.zig
     // itself imports `std` + sibling `vote_state_serde.zig` + named import
-    // `bls_pop` — it has NO standalone fix105 build.zig target of its own
-    // (its only fix105 wiring is via these 3 KAT roots + the still-deferred
+    // `bls_pop` — it has NO standalone origin-tree build.zig target of its own
+    // (its only origin-tree wiring is via these 3 KAT roots + the still-deferred
     // vote_program_test_root.zig `test-vote` target, itself never registered
-    // in fix105 — see the r32/fdd2ea2 NOTE at fix105 build.zig:3916-3925,
+    // in origin-tree — see the r32/fdd2ea2 NOTE at origin-tree build.zig:3916-3925,
     // isLegacyVoteSubmission was dropped on r31's base; production
     // parseTowerSyncCompact does not depend on it, only that deferred test
-    // does — NOT ported this module, no fix105 target to mirror). Its
+    // does — NOT ported this module, no origin-tree target to mirror). Its
     // coverage rides transitively via the 3 KATs below, same as
     // epoch_schedule.zig/nonce.zig rode along in module 28.
     //
@@ -2558,11 +2558,11 @@ pub fn build(b: *std.Build) void {
     // own @import("bls_pop") (BLS PoP mint/verify) — same stub wiring as
     // module 28's test-vote-state-serde: reuse test_vss_vex_store (the
     // test_vex_store_stub.zig + core module instance created above), mirroring
-    // fix105's own reuse of a single test_bank_vex_store instance across all
+    // origin-tree's own reuse of a single test_bank_vex_store instance across all
     // three of its equivalent targets (build.zig:2448/2475/2501).
 
     // Vote AuthorizeChecked canon KAT (carrier @413005757 regression guard) —
-    // fix105 build.zig verbatim (test-vote-authorize-checked).
+    // origin-tree build.zig verbatim (test-vote-authorize-checked).
     const test_vac = b.addTest(.{
         .name = "test-vote-authorize-checked",
         .root_module = b.createModule(.{
@@ -2579,7 +2579,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_vac.step);
 
     // SIMD-0291 UpdateCommissionBps KAT (epoch-974 boundary readiness) —
-    // fix105 build.zig verbatim (test-simd0291).
+    // origin-tree build.zig verbatim (test-simd0291).
     const test_s291 = b.addTest(.{
         .name = "test-simd0291",
         .root_module = b.createModule(.{
@@ -2595,7 +2595,7 @@ pub fn build(b: *std.Build) void {
     test_s291_step.dependOn(&run_test_s291.step);
     test_migrated_step.dependOn(&run_test_s291.step);
 
-    // SIMD-0464 InitializeAccountV2 KAT (dormant, 5-feature gated) — fix105
+    // SIMD-0464 InitializeAccountV2 KAT (dormant, 5-feature gated) — origin-tree
     // build.zig verbatim (test-simd0464).
     const test_s464 = b.addTest(.{
         .name = "test-simd0464",
@@ -2622,7 +2622,7 @@ pub fn build(b: *std.Build) void {
     // module 29's vote_program.zig header-refresh deferral). Imports only
     // `std` + `core` + `vex_store` (grepped fresh) — reuses this tree's
     // existing `core` module and module-28/29's `test_vss_vex_store` instance
-    // (test_vex_store_stub.zig + core), mirroring fix105's own real target
+    // (test_vex_store_stub.zig + core), mirroring origin-tree's own real target
     // (build.zig:2413-2429, `test_bank_core`/`test_bank_vex_store` — identical
     // substance to this tree's `core`/`test_vss_vex_store`, same substitution
     // class as module 29's wiring adaptation). Landing this clears
@@ -2652,11 +2652,11 @@ pub fn build(b: *std.Build) void {
     // is `precompiles_test_root.zig` (sitting in `src/vex_svm/`, NOT
     // precompiles.zig directly) — identical `../features.zig`-escapes-module-
     // prefix issue as the sibling `vote_program_test_root.zig` (module 29),
-    // same fix shape. fix105 has no dedicated build.zig target for this file
+    // same fix shape. origin-tree has no dedicated build.zig target for this file
     // either (its in-file tests ride on a broader test-svm target that hasn't
     // migrated here yet); this is a NEW standalone target, module-30 precedent
-    // for wiring shape. Regression-gates the secp256r1-ungated fix (2026-07-10,
-    // ported from fix105 fix/secp256r1-gate-2026-07-07): with the old bogus
+    // for wiring shape. Regression-gates the secp256r1-ungated fix (
+    // ported from the origin-tree secp256r1-gate fix): with the old bogus
     // FEATURE_SECP256R1 constant this file's tests still passed (the bug was
     // an accept-invalid silent-skip, not a crash), so the two new tests
     // ("...FAILS even with empty feature set" / "...PASSES through the
@@ -2682,10 +2682,10 @@ pub fn build(b: *std.Build) void {
     // fix stack was cluster-attested at the epoch-984 boundary 419564256,
     // saga correctness-CLOSED; byte-identical copy mandatory, no restructuring).
     // stakes.zig (warmup/cooldown activation math) rides in the same module:
-    // rewards.zig imports it relatively, and fix105's own test-rewards target
+    // rewards.zig imports it relatively, and origin-tree's own test-rewards target
     // exercises both files' in-file tests transitively. Target ported 1:1 from
-    // fix105 build.zig:1145-1163 including its fresh vex_crypto module instance
-    // rooted at src/vex_crypto/core.zig (fix105's own stub-instance device for
+    // origin-tree build.zig:1145-1163 including its fresh vex_crypto module instance
+    // rooted at src/vex_crypto/core.zig (origin-tree's own stub-instance device for
     // types.zig's `@import("vex_crypto")` — no build_options needed at that
     // root, mirrored exactly).
     const test_rewards_crypto = b.createModule(.{
@@ -2717,23 +2717,23 @@ pub fn build(b: *std.Build) void {
     // runIncinerator@2423), and Zig 0.15.2 has no partial-struct / cross-file-
     // method mechanism (usingnamespace was removed). Achieving §D requires a
     // method->free-function semantic decomposition of Bank that must be authored+
-    // gated+soaked in fix105 FIRST (forward-port rule) then re-synced — RE-SCOPED
+    // gated+soaked in origin-tree FIRST (forward-port rule) then re-synced — RE-SCOPED
     // to the post-migration restructure phase (REBUILD-REMAINING §D). Whole-file
     // KEEP-verbatim (5,317/5,317 byte-identical, md5
     // 6c0d6a3b93c1325dcd8be8b560d0ff87, zero split-induced edits, zero semantic
     // risk — module-30/32/41 large-consensus-file precedent) fully serves §D's
     // stated GATE purpose: unblocks §B/§C's bank-dependents. Target ported 1:1
-    // from fix105 build.zig:2038-2097 (the real `test-bank`). WIRING ADAPTATION
+    // from origin-tree build.zig:2038-2097 (the real `test-bank`). WIRING ADAPTATION
     // (build.zig-only, bank.zig itself byte-identical — module-29/30 precedent):
     // (a) reuses this tree's SHARED `vex_crypto`/`core` module instances (rooted
     //     at vex_crypto/root.zig + core/root.zig, exactly as the module-25
-    //     test-accounts target does) instead of fix105's fresh core.zig-rooted
+    //     test-accounts target does) instead of origin-tree's fresh core.zig-rooted
     //     instances — this tree's minimal `vex_crypto/core.zig` does NOT export
     //     `blake3`/full LtHash (bank.freeze @1012 needs it), whereas root.zig does;
     // (b) a DEDICATED test_bank_options carries all SIX build_options fields
-    //     bank.zig reads (fix105's snippet set only 4; bank.zig:441's
+    //     bank.zig reads (origin-tree's snippet set only 4; bank.zig:441's
     //     `rpc_store or vex_ledger` field default is analyzed by the
-    //     capitalization test), hardcoded to fix105's canonical defaults
+    //     capitalization test), hardcoded to origin-tree's canonical defaults
     //     (two_tier=true per build.zig:126; sig_clock/inject_diverge=false per
     //     :142/:143; rpc_store/vex_ledger=false; ramdisk_enabled=true).
     const test_bank_options = b.addOptions();
@@ -2761,7 +2761,7 @@ pub fn build(b: *std.Build) void {
 
     // Minimal vex_store stub: satisfies @import("vex_store").accounts.AccountsDb
     // without pulling in the full vex_store module graph (byte-identical to
-    // fix105's stub; module-28 migration).
+    // origin-tree's stub; module-28 migration).
     const test_bank_vex_store = b.createModule(.{
         .root_source_file = b.path("src/vex_svm/test_vex_store_stub.zig"),
         .target = target,
@@ -2789,7 +2789,7 @@ pub fn build(b: *std.Build) void {
     test_bank_step.dependOn(&run_test_bank.step);
     // DEFER+RECORD (module 46): test-bank is intentionally NOT wired into
     // test_migrated_step. Porting the target made bank.zig's tests COMPILE + run
-    // for the FIRST TIME at pin 011a30f (fix105's own test-bank cannot compile at
+    // for the FIRST TIME at pin 011a30f (origin-tree's own test-bank cannot compile at
     // this pin — its byte-identical stub lacks getAccountInSlot/recorder.isEnabled/
     // hard_forks that the evolved bank.zig now references). Result: 52/53 assert
     // pass; the 3 non-green items are ALL intrinsic to the frozen byte-identical
@@ -2800,14 +2800,14 @@ pub fn build(b: *std.Build) void {
     //   (1) FAIL bank.zig:4973 `EpochSchedule: DEFAULT carries canonical warmup` —
     //       asserts getEpoch(524_255)==0 per a stale stub-era comment ("returns 0
     //       today (TODO: not yet wired)"), but native/epoch_schedule.zig's FIX-2
-    //       canonical-Agave getEpoch (byte-identical to fix105) now returns 13 for
+    //       canonical-Agave getEpoch (byte-identical to origin-tree) now returns 13 for
     //       that warmup slot. Test expectation lags the FIX-2 it should assert.
     //   (2)+(3) LEAK in `bank freeze: empty slot` + `bank freeze: idempotent` —
     //       the freeze() test setup allocates a Bank/lthash buffer and never
     //       deinits (test-hygiene gap in bank.zig itself).
     // Wiring a knowingly-red target into the green gate would regress the
     // 1016/1017 invariant; so test-bank stays a standalone `zig build test-bank`
-    // step that arms into test-migrated once fix105 fixes the 3 items above and
+    // step that arms into test-migrated once origin-tree fixes the 3 items above and
     // the pin is re-synced. The 52 passing asserts already validate bank.zig's
     // EpochSchedule/stake-activation/accountLtHash/freeze/capitalization math in
     // the rebuild. See REBUILD-LEDGER module-46 row.
@@ -2820,11 +2820,11 @@ pub fn build(b: *std.Build) void {
     // `vex_bpf2` module (m66 umbrella; used at bpf_loader_program.zig:653-715 for
     // vex_bpf2.{verifier,elf,syscalls} in the Phase-2 deploy/verify path).
     //
-    // vex_bpf2 CREATE-AT-CONSUMER (fix105 build.zig:406-411 pattern, module-66
+    // vex_bpf2 CREATE-AT-CONSUMER (origin-tree build.zig:406-411 pattern, module-66
     // deferral discharged here): bpf_loader_program.zig is the FIRST in-tree
     // consumer of the named `vex_bpf2` module, so its `createModule` var is
     // minted here (root src/vex_bpf2/root.zig, addImport vex_crypto — exactly
-    // fix105's wiring) rather than earlier, where it would have been an
+    // origin-tree's wiring) rather than earlier, where it would have been an
     // unused-local build error. The umbrella re-exports the full §F/§G/§H
     // surface; its leaf syscalls.zig pulls vex_crypto→bls12_381→extern blst, so
     // this target additionally links the vendored blst C + linkLibC (the same
@@ -2836,12 +2836,12 @@ pub fn build(b: *std.Build) void {
     });
     vex_bpf2.addImport("vex_crypto", vex_crypto);
 
-    // The REAL BEHAVIORAL fix105 targets for this file — test-bpf-loader-extend
+    // The REAL BEHAVIORAL origin-tree targets for this file — test-bpf-loader-extend
     // (src/kat_bpf_loader_extend.zig) + test-bpf-loader-setauth
     // (src/kat_bpf_loader_setauth.zig) — both `@import("vex_svm")`, the FULL
     // vex_svm umbrella (src/vex_svm/root.zig, which re-exports the still-absent
     // replay_stage.zig §E). That named module does NOT exist in this tree yet, so
-    // those two KAT targets are BLOCKED on the §E umbrella (NOT a fix105 defect,
+    // those two KAT targets are BLOCKED on the §E umbrella (NOT a origin-tree defect,
     // NOT ported — same blocker class as kat_hard_fork_family.zig). They arm once
     // §E lands. Until then this module gates on the FILE's own 2 inline tests
     // (loader-v3 size constants @1118 + readU32LE/readU64LE @1125), rooted through
@@ -2852,7 +2852,7 @@ pub fn build(b: *std.Build) void {
     // `../bank.zig`/`../features.zig` RELATIVE imports escape it ("import of file
     // outside module path"). The shim lives at src/vex_svm/ so the module root is
     // src/vex_svm/ and those `../` imports resolve in-subtree — exactly as they do
-    // inside fix105's vex_svm module. The shim `_ = @import`s ONLY
+    // inside origin-tree's vex_svm module. The shim `_ = @import`s ONLY
     // native/bpf_loader_program.zig, so Zig test-discovery pulls ONLY that file's
     // 2 inline tests; bank.zig/features.zig are decl-REFERENCED (analyzed +
     // compiled as the closure) but their `test` blocks are NOT discovery-included
@@ -2891,18 +2891,18 @@ pub fn build(b: *std.Build) void {
     test_bpf_loader_program_step.dependOn(&run_test_bpf_loader_program.step);
     // STANDALONE, NOT wired into test_migrated_step (modules-35/45/47/49
     // philosophy): this is a REBUILD-INVENTED compile+inline-test gate, with no
-    // 1:1 fix105 counterpart target — the file's real behavioral KATs
+    // 1:1 origin-tree counterpart target — the file's real behavioral KATs
     // (test-bpf-loader-extend / test-bpf-loader-setauth) are §E-umbrella-blocked
     // and un-portable today. To keep the test-migrated headline count strictly a
-    // sum of faithfully-ported fix105 targets, this green gate is a standalone
+    // sum of faithfully-ported origin-tree targets, this green gate is a standalone
     // `zig build test-bpf-loader-program` step only; the headline stays unchanged.
     // Its purpose is served: it ANCHORS the vex_bpf2 createModule (its committed
     // consumer, avoiding an unused-local) and proves the migrated file + its full
     // bank/features/vex_bpf2 closure type-checks. It is superseded (not merely
     // "armed") by the behavioral KATs once §E lands.
 
-    // ── module-73: native/stake_program.zig test root (P0-2 fix, 2026-07-11,
-    //    VEXOR-PROGRAM-COVERAGE-AUDIT-2026-07-11 §7) ──
+    // ── module-73: native/stake_program.zig test root (P0-2 fix,,
+    //    the program-coverage audit §7) ──
     // Same shape/reason as module-68's bpf_loader gate above: native/
     // stake_program.zig had NO test target before this fix (only imported
     // by production code — replay_stage.zig / instruction_dispatch.zig —
@@ -2943,7 +2943,7 @@ pub fn build(b: *std.Build) void {
     test_stake_program_step.dependOn(&run_test_stake_program.step);
     // STANDALONE, NOT wired into test_migrated_step — same rationale as
     // test-bpf-loader-program (module-68): a fix-scoped compile+KAT gate,
-    // not a 1:1 fix105-ported target.
+    // not a 1:1 origin-tree-ported target.
 
     // ── modules 69/70: §E1+E2 replay_stage LEAF + SECOND-TIER sibling batch
     //    (15 files, ~8,928 LoC, all WHOLE-FILE KEEP verbatim; md5 src==dst) ──
@@ -2953,17 +2953,17 @@ pub fn build(b: *std.Build) void {
     // DELETE→KEEP re-dispositions) + the 2 second-tier (runtime DELETE→KEEP
     // re-dispose ← hashes; gossip_precompute ← gossip_votes). These sit DEAD
     // (uncalled) in the tree until replay_stage.zig (§E3) + the vex_svm umbrella
-    // (§E4) land — NONE has a standalone fix105 target (their real gates
+    // (§E4) land — NONE has a standalone origin-tree target (their real gates
     // test-core-bpf-stake-poc / test-vex-bpf2-v2-dispatch / test-cpi-carrier-
     // dispatch all `@import("vex_svm")`, §E-umbrella-blocked to E4). So the batch
     // is gated by this ad-hoc discovery-shim compile+inline-test run, both modes
     // (module-35/53/67-test-vex-bpf whole-cluster-gate precedent).
     //
-    // vex_bpf (V1) CREATE-AT-CONSUMER (fix105 build.zig:356-359; module-67 landed
+    // vex_bpf (V1) CREATE-AT-CONSUMER (origin-tree build.zig:356-359; module-67 landed
     // the 17 files but wired no createModule — no consumer then): v2_dispatch.zig
     // is the FIRST in-tree consumer of the named `vex_bpf` V1 module, so its
     // createModule is minted HERE (root src/vex_bpf/interpreter.zig, addImport
-    // vex_store/core/vex_crypto — exactly fix105's wiring), anchored by this gate.
+    // vex_store/core/vex_crypto — exactly origin-tree's wiring), anchored by this gate.
     const vex_bpf = b.createModule(.{ .root_source_file = b.path("src/vex_bpf/interpreter.zig") });
     // vex_store via the m46/m68 bank-closure stub (shared `core` instance — NOT
     // fix_vex_store, which carries its own fix_core/fix_vex_crypto graph and would
@@ -2979,7 +2979,7 @@ pub fn build(b: *std.Build) void {
     // native/vote_program.zig (→bls_pop) + vex_bpf2.syscalls (→bls12_381→extern
     // blst), so the target links the vendored blst C + linkLibC (m68/m66/m65
     // documented deviation). STANDALONE, NOT wired into test_migrated_step
-    // (rebuild-invented gate, no 1:1 fix105 counterpart → headline unchanged;
+    // (rebuild-invented gate, no 1:1 origin-tree counterpart → headline unchanged;
     // modules-35/45/47/49/68 philosophy). Superseded by the real §E4 behavioral
     // KATs once the umbrella lands.
     const test_replay_siblings = b.addTest(.{
@@ -3020,10 +3020,10 @@ pub fn build(b: *std.Build) void {
     // now-unblocked consumer KATs (test-hard-fork / test-bpf-loader-extend /
     // test-bpf-loader-setauth). Completes the vex_svm core.
     //
-    // THE LAZY NAMED-MODULE CYCLE (fix105 build.zig:282-415): the vex_svm module
+    // THE LAZY NAMED-MODULE CYCLE (origin-tree build.zig:282-415): the vex_svm module
     // (root src/vex_svm/root.zig) imports vex_store, and vex_store's accounts.zig/
     // snapshot_manifest.zig import vex_svm back — a legal Zig lazy import cycle
-    // that closes iff BOTH reciprocal edges exist at mint time. fix105 mints ONE
+    // that closes iff BOTH reciprocal edges exist at mint time. origin-tree mints ONE
     // vex_svm shared by exe/vex_store/vex_network=tvu; here vex_network is rooted
     // at the UNMIGRATED tvu.zig (§J, a bank.zig-class monolith) and vex_topo.zig
     // is likewise unmigrated, so the exe/vex_network reciprocal edges do NOT exist
@@ -3038,7 +3038,7 @@ pub fn build(b: *std.Build) void {
     // pre-existing real `vex_store` (line ~2130, vex_svm=stub) + test-snapshot-
     // create stay untouched. The KAT roots (kat_hard_fork_family.zig at
     // src/vex_svm/, the two loader KATs at src/) are NOT relative-reachable from
-    // root.zig, so no "file in two modules" collision (fix105 proves this green).
+    // root.zig, so no "file in two modules" collision (origin-tree proves this green).
     const svm_vex_store = b.createModule(.{
         .root_source_file = b.path("src/vex_store/root.zig"),
         .target = target,
@@ -3058,7 +3058,7 @@ pub fn build(b: *std.Build) void {
     });
     // reciprocal edge (closes the lazy cycle)
     svm_vex_store.addImport("vex_svm", vex_svm);
-    // vex_svm's own imports — mirror fix105:313-415 for every module that EXISTS
+    // vex_svm's own imports — mirror origin-tree:313-415 for every module that EXISTS
     // in this tree (vex_network=tvu + vex_topo are the only two omitted, both
     // unmigrated §J; they are only reachable via replay_stage, which these KATs
     // do not analyze).
@@ -3072,7 +3072,7 @@ pub fn build(b: *std.Build) void {
     vex_svm.addImport("vex_consensus", vex_consensus);
     vex_svm.addImport("vex_ledger", vex_ledger_mod);
 
-    // ── test-hard-fork (fix105 build.zig:2111-2124) ──
+    // ── test-hard-fork (origin-tree build.zig:2111-2124) ──
     const test_hard_fork = b.addTest(.{
         .name = "test-hard-fork",
         .root_module = b.createModule(.{
@@ -3090,7 +3090,7 @@ pub fn build(b: *std.Build) void {
     test_hard_fork_step.dependOn(&run_test_hard_fork.step);
     test_migrated_step.dependOn(&run_test_hard_fork.step);
 
-    // ── test-bpf-loader-extend (fix105 build.zig:2780-2799) ──
+    // ── test-bpf-loader-extend (origin-tree build.zig:2780-2799) ──
     const test_bpf_loader_extend = b.addTest(.{
         .name = "test-bpf-loader-extend",
         .root_module = b.createModule(.{
@@ -3107,7 +3107,7 @@ pub fn build(b: *std.Build) void {
     test_bpf_loader_extend_step.dependOn(&run_test_bpf_loader_extend.step);
     test_migrated_step.dependOn(&run_test_bpf_loader_extend.step);
 
-    // ── test-bpf-loader-setauth (fix105 build.zig:2815-2834) ──
+    // ── test-bpf-loader-setauth (origin-tree build.zig:2815-2834) ──
     const test_bpf_loader_setauth = b.addTest(.{
         .name = "test-bpf-loader-setauth",
         .root_module = b.createModule(.{
@@ -3124,19 +3124,19 @@ pub fn build(b: *std.Build) void {
     test_bpf_loader_setauth_step.dependOn(&run_test_bpf_loader_setauth.step);
     test_migrated_step.dependOn(&run_test_bpf_loader_setauth.step);
 
-    // ── module 33: SIMD-0437 rent-reduction KAT (fix105 build.zig:2549-2561) ──
+    // ── module 33: SIMD-0437 rent-reduction KAT (origin-tree build.zig:2549-2561) ──
     // std-only KAT root locking the 17-byte Rent sysvar serialization (golden
     // vectors per staged lamports_per_byte value) + the array selection rule.
     // The live epoch-boundary Rent re-serialize wiring is HELD per the KAT's
     // own header (none of the 5 gates active on testnet) — target ported 1:1,
-    // zero addImports, exactly as in fix105. Module 33 also lands
-    // native_system_v2_shim.zig (12 LoC KEEP — its real fix105 target
+    // zero addImports, exactly as in origin-tree. Module 33 also lands
+    // native_system_v2_shim.zig (12 LoC KEEP — its real origin-tree target
     // test-system-cpi-native-diff CANNOT port yet: the KAT root lives in
     // vex_bpf2 and imports builtins/system_program.zig + test_harness.zig,
     // which transitively import the HOT-FROZEN invoke_ctx.zig/builtins mod.zig
     // CU-meter surface; shim gated by ad-hoc compile until the §F builtins
     // module lands) and instructions_sysvar.zig (226 LoC KEEP, std-only,
-    // no fix105 target — ad-hoc, 2 in-file tests).
+    // no origin-tree target — ad-hoc, 2 in-file tests).
     const test_s437 = b.addTest(.{
         .name = "test-simd0437",
         .root_module = b.createModule(.{
@@ -3157,15 +3157,15 @@ pub fn build(b: *std.Build) void {
     // crypto_helpers / dispatch_mode / shadow_panic_safety / shadow_safety /
     // stake_bpf_flag / trace + curve25519_kat_test — none touch the HOT-FROZEN
     // CU-meter surface (all std-only or migrated-sibling imports, grepped
-    // fresh). Two real fix105 targets ported 1:1 below. NOT portable yet:
-    // test-vex-bpf2-stage-d-safety (fix105:3818-3838) roots
+    // fresh). Two real origin-tree targets ported 1:1 below. NOT portable yet:
+    // test-vex-bpf2-stage-d-safety (origin-tree:3818-3838) roots
     // stage_d_safety_test.zig against the FULL named `vex_bpf2` module
     // (root.zig — blocked: re-exports frozen interpreter/invoke_ctx + DELETE
     // loader); a narrower stub instance would be invented surface (the
     // kat_clock_unixts_414723807 precedent) — shadow_safety's 7 in-file tests
     // gate ad-hoc instead, and the stage-D suite re-arms when §G/§H unfreeze.
 
-    // task #8 curve25519 group_op/msm soft-vs-abort KATs (fix105:3501-3520).
+    // task #8 curve25519 group_op/msm soft-vs-abort KATs (origin-tree:3501-3520).
     const test_curve25519 = b.addTest(.{
         .name = "test-curve25519",
         .root_module = b.createModule(.{
@@ -3182,7 +3182,7 @@ pub fn build(b: *std.Build) void {
     test_curve25519_step.dependOn(&run_curve25519.step);
     test_migrated_step.dependOn(&run_curve25519.step);
 
-    // vex_bpf2 Wave 3.5 trace layer (fix105:3619-3638). Leaf-level, no deps.
+    // vex_bpf2 Wave 3.5 trace layer (origin-tree:3619-3638). Leaf-level, no deps.
     const test_vex_bpf2_trace = b.addTest(.{
         .name = "test-vex-bpf2-trace",
         .root_module = b.createModule(.{
@@ -3199,22 +3199,22 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_trace_step.dependOn(&run_test_vex_bpf2_trace.step);
     test_migrated_step.dependOn(&run_test_vex_bpf2_trace.step);
 
-    // ═══ module 37: src/vex_svm/conformance.zig — fix105 build.zig:530-560
+    // ═══ module 37: src/vex_svm/conformance.zig — origin-tree build.zig:530-560
     // verbatim wiring (minus the diagnostics.zig test, DELETE-disposition,
     // never migrated) ═══════════════════════════════════════════════════════
     // Test-only conformance-check runner (verifyBankHash/verifyAccountLtHash/
     // ConformanceResult) — manifest KEEP, "no production import, keep as test
-    // asset." One CLEAN edit made vs the fix105 blob: the dead
+    // asset." One CLEAN edit made vs the origin-tree blob: the dead
     // `const diagnostics = @import("diagnostics.zig");` line dropped (see the
     // in-file dated REBUILD-CLEAN comment) — diagnostics.zig is this rebuild's
     // DELETE disposition and the import was independently verified dead
-    // (zero further references in the 733-line file; fix105's own
+    // (zero further references in the 733-line file; origin-tree's own
     // test-conformance target below doesn't wire it either).
-    // Reuses fix105's own narrow `vex_crypto/core.zig` module instance (hash +
+    // Reuses origin-tree's own narrow `vex_crypto/core.zig` module instance (hash +
     // lthash only, avoids secp256k1.zig's pre-existing Zig-0.15.2 compile
     // error) — identical device already declared for module 3's
     // test-fork-choice (`test_fc_vex_crypto` above); a second, separately
-    // named instance is created here only because fix105 itself declares its
+    // named instance is created here only because origin-tree itself declares its
     // own fresh one at this exact call site (build.zig:535-539) rather than
     // reusing across the whole file — mirrored verbatim, not invented.
     const test_conformance_vex_crypto = b.createModule(.{
@@ -3241,7 +3241,7 @@ pub fn build(b: *std.Build) void {
     test_conformance_step.dependOn(&run_test_conformance.step);
     test_migrated_step.dependOn(&run_test_conformance.step);
 
-    // ── VOTEFORGE Stage 1: voteforge/vote_codec.zig byte-exactness KATs ───────
+    // ── vote executor, stage 1: voteforge/vote_codec.zig byte-exactness KATs ───────
     // The rewrite's codec layer (fixed-offset V3/V4 serde, derived from Agave
     // 4.2.0-beta.0, zero heap). KATs round-trip the CARRIER-419996256 real V4
     // vector + sigvote-minted V3 goldens (transplant as differential oracle)
@@ -3255,7 +3255,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_test_vote_codec = b.addRunArtifact(test_vote_codec);
-    const test_vote_codec_step = b.step("test-vote-codec", "VOTEFORGE Stage 1: fixed-offset V3/V4 vote-state codec byte-exactness KATs (real-account + transplant-differential)");
+    const test_vote_codec_step = b.step("test-vote-codec", "vote executor, stage 1: fixed-offset V3/V4 vote-state codec byte-exactness KATs (real-account + transplant-differential)");
     test_vote_codec_step.dependOn(&run_test_vote_codec.step);
     test_migrated_step.dependOn(&run_test_vote_codec.step);
 
@@ -3276,8 +3276,8 @@ pub fn build(b: *std.Build) void {
     test_vote_codec_step.dependOn(&run_test_vote_codec_b756.step);
     test_migrated_step.dependOn(&run_test_vote_codec_b756.step);
 
-    // ── VOTEFORGE Stage 2: voteforge/account_io.zig borrow-only-what's-touched
-    // account-I/O layer KATs (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 2
+    // ── vote executor, stage 2: voteforge/account_io.zig borrow-only-what's-touched
+    // account-I/O layer KATs (the vote-rewrite scope plan, stage 2
     // gate). `kat_account_io.zig` needs `sigvote` (differential leg vs the
     // transplant's BorrowedAccount, same pattern as test-vote-codec's leg 2)
     // and reaches `vote_codec.zig`/`account_io.zig` as sibling files by name —
@@ -3291,7 +3291,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_test_account_io = b.addRunArtifact(test_account_io);
-    const test_account_io_step = b.step("test-account-io", "VOTEFORGE Stage 2: borrow-only-what's-touched account-I/O layer KATs (borrow rules, lamport/data mutation, codec composition, sigvote-differential)");
+    const test_account_io_step = b.step("test-account-io", "vote executor, stage 2: borrow-only-what's-touched account-I/O layer KATs (borrow rules, lamport/data mutation, codec composition, sigvote-differential)");
     test_account_io_step.dependOn(&run_test_account_io.step);
     // account_io.zig also carries its own std-only self-tests (BorrowCounter
     // port, double-borrow/readonly/signer/lamport-overflow rules) — run them
@@ -3312,8 +3312,8 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_account_io.step);
     test_migrated_step.dependOn(&run_test_account_io_selftest.step);
 
-    // ── VOTEFORGE Stage 3: voteforge/vote_instructions.zig state-transition
-    // KATs (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 3 gate). Two
+    // ── vote executor, stage 3: voteforge/vote_instructions.zig state-transition
+    // KATs (the vote-rewrite scope plan, stage 3 gate). Two
     // artifacts: `vote_instructions.zig`'s own std+bls_pop-only self-tests
     // (getAndUpdateAuthorizedVoter unit pin), and the full family KAT suite
     // (`kat_vote_instructions.zig`), which additionally needs `sigvote` for
@@ -3340,7 +3340,7 @@ pub fn build(b: *std.Build) void {
     });
     test_vote_instructions.root_module.addImport("bls_pop", bls_pop);
     const run_test_vote_instructions = b.addRunArtifact(test_vote_instructions);
-    const test_vote_instructions_step = b.step("test-vote-instructions", "VOTEFORGE Stage 3: state-transition-layer KATs (Authorize/UpdateValidatorIdentity/UpdateCommission[Bps]/UpdateCommissionCollector/Withdraw/InitializeAccount[V2]/DepositDelegatorRewards — Agave-ported + sigvote-differential)");
+    const test_vote_instructions_step = b.step("test-vote-instructions", "vote executor, stage 3: state-transition-layer KATs (Authorize/UpdateValidatorIdentity/UpdateCommission[Bps]/UpdateCommissionCollector/Withdraw/InitializeAccount[V2]/DepositDelegatorRewards — Agave-ported + sigvote-differential)");
     test_vote_instructions_step.dependOn(&run_test_vote_instructions.step);
     test_vote_instructions_step.dependOn(&run_test_vote_instructions_selftest.step);
     test_account_io_step.dependOn(&run_test_vote_instructions.step);
@@ -3348,9 +3348,9 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_vote_instructions.step);
     test_migrated_step.dependOn(&run_test_vote_instructions_selftest.step);
 
-    // ── VOTEFORGE Stage 5: Vote/VoteSwitch/UpdateVoteState(+Switch)/
+    // ── vote executor, stage 5: Vote/VoteSwitch/UpdateVoteState(+Switch)/
     // CompactUpdateVoteState(+Switch)/TowerSync(+Switch) KATs
-    // (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 5 gate). Landed
+    // (the vote-rewrite scope plan, stage 5 gate). Landed
     // directly inside vote_instructions.zig (see that file's own Stage-5
     // section header) — this KAT file is the dedicated gate artifact, same
     // sigvote-differential pattern as test-vote-instructions.
@@ -3364,13 +3364,13 @@ pub fn build(b: *std.Build) void {
     });
     test_vote_towersync.root_module.addImport("bls_pop", bls_pop);
     const run_test_vote_towersync = b.addRunArtifact(test_vote_towersync);
-    const test_vote_towersync_step = b.step("test-vote-towersync", "VOTEFORGE Stage 5: Vote/TowerSync-family state-transition KATs (check_and_filter_proposed_vote_state/process_new_vote_state reject taxonomy, TVC boundaries, lockout doubling/expiry, root advance, Switch/Compact wire equivalence, sigvote-differential)");
+    const test_vote_towersync_step = b.step("test-vote-towersync", "vote executor, stage 5: Vote/TowerSync-family state-transition KATs (check_and_filter_proposed_vote_state/process_new_vote_state reject taxonomy, TVC boundaries, lockout doubling/expiry, root advance, Switch/Compact wire equivalence, sigvote-differential)");
     test_vote_towersync_step.dependOn(&run_test_vote_towersync.step);
     test_account_io_step.dependOn(&run_test_vote_towersync.step);
     test_migrated_step.dependOn(&run_test_vote_towersync.step);
 
-    // ── VOTEFORGE Stage 4: voteforge/vote_program.zig dispatch-glue/front-door
-    // KATs (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 4 gate). Same
+    // ── vote executor, stage 4: voteforge/vote_program.zig dispatch-glue/front-door
+    // KATs (the vote-rewrite scope plan, stage 4 gate). Same
     // two-artifact split as Stage 3: `vote_program.zig`'s own std+bls_pop-only
     // self-tests (classify/peekDiscriminant/owner-check-ordering pins), and
     // the full KAT suite (`kat_vote_program.zig`, decode-layer + dispatch-
@@ -3397,7 +3397,7 @@ pub fn build(b: *std.Build) void {
     });
     test_vote_program.root_module.addImport("bls_pop", bls_pop);
     const run_test_vote_program = b.addRunArtifact(test_vote_program);
-    const test_vote_program_step = b.step("test-vote-program", "VOTEFORGE Stage 4: instruction dispatch glue / front-door KATs (decode-layer, dispatch-table completeness, sigvote-differential-decode)");
+    const test_vote_program_step = b.step("test-vote-program", "vote executor, stage 4: instruction dispatch glue / front-door KATs (decode-layer, dispatch-table completeness, sigvote-differential-decode)");
     test_vote_program_step.dependOn(&run_test_vote_program.step);
     test_vote_program_step.dependOn(&run_test_vote_program_selftest.step);
     test_account_io_step.dependOn(&run_test_vote_program.step);
@@ -3411,7 +3411,7 @@ pub fn build(b: *std.Build) void {
     // (quic/quic_ingest_adapter/rpc/rpc_methods/solana_quic/tpu_client/
     // turbine_relay/verify_tile) as ONE circular unit (tvu↔verify_tile,
     // solana_quic↔tpu_client, rpc↔rpc_methods) — the module-51/67 whole-cluster-
-    // KEEP precedent. Mints a self-contained clone of fix105's FULL exe module
+    // KEEP precedent. Mints a self-contained clone of origin-tree's FULL exe module
     // graph (build.zig:200-415) with FRESH instances, leaving the module-71 3-KAT
     // `vex_svm` instance UNTOUCHED (the rebuild's per-target-instance convention,
     // and the rule that a .zig file may root many modules across SEPARATE targets).
@@ -3419,34 +3419,34 @@ pub fn build(b: *std.Build) void {
     // NAME (verified — root.zig:19-20, native/root.zig:24, replay_stage.zig:47-49),
     // so one shared instance of each avoids the "file in two modules" wall; the
     // gate root src/m72_test_root_vex_network.zig owns NO subtree file (all named).
-    // Two targets root this graph: test-rpc-history (REAL fix105 target,
+    // Two targets root this graph: test-rpc-history (REAL origin-tree target,
     // build.zig:1774-1789) + test-net-force-compile (rebuild-native — forces
     // TvuService + replay_stage.ReplayStage full type-surface analysis).
 
-    // Full fix105 build_options field set (build.zig:214-247) at canonical testnet
+    // Full origin-tree build_options field set (build.zig:214-247) at canonical testnet
     // defaults — tvu/rpc/verify_tile/replay_stage read ~20 flags, far more than the
     // 6-field test_bank_options.
     //
-    // vex_ledger MUST be a real -Dvex_ledger CLI option (mirrors fix105 build.zig:213),
+    // vex_ledger MUST be a real -Dvex_ledger CLI option (mirrors origin-tree build.zig:213),
     // NOT a hardcoded false: the exe imports net_build_options as its `build_options`,
     // and main.zig:2285 gates the ENTIRE offline-replay driver + [VEX-LEDGER-REPLAY]
     // markers behind `if (comptime build_options.vex_ledger)`. Hardcoding it false
     // comptime-eliminated the offline-replay harness → the §3.8 golden-master gate could
     // never exercise the rebuild binary's replay/consensus path (0 VEX-LEDGER-REPLAY
-    // symbols vs fix105's 8). Driven ON by the production+ledger build (-Dvex_ledger),
-    // exactly as fix105's build-production-ledger.sh. Default OFF = comptime-dead,
-    // byte-identical. See golden/GOLDEN-MASTER-CONTROL-2026-07-07.md.
+    // symbols vs origin-tree's 8). Driven ON by the production+ledger build (-Dvex_ledger),
+    // exactly as origin-tree's build-production-ledger.sh. Default OFF = comptime-dead,
+    // byte-identical. See the golden-master control notes.
     const vex_ledger_enabled = b.option(bool, "vex_ledger", "Wire the VexLedger persistent blockstore (default OFF = comptime-dead, byte-identical). ON arms persistence behind the VEX_LEDGER env. See ledger-docs/PHASE2-WIRING-PLAN.md.") orelse prod;
     const VerifyTicksLevel72 = enum { off, zerohash, full };
-    // Full-feature production-parity options (mirror fix105 build-production-ledger.sh).
+    // Full-feature production-parity options (mirror origin-tree build-production-ledger.sh).
     // Default OFF = the golden-master voting-only build; -Dflag=true arms each for the
     // production/live binary. The underlying code is already migrated + byte-identical to
-    // fix105 (replay_stage.zig/main.zig/verify_tile.zig); these only wire the comptime gate.
+    // origin-tree (replay_stage.zig/main.zig/verify_tile.zig); these only wire the comptime gate.
     const leader_mode = b.option(bool, "leader_mode", "Enable block production (leader tick loop + broadcast in replay_stage)") orelse prod;
     // Vote execution runs unconditionally through voteforge (the Vexor-authored
     // vote executor) — no build flag selects it. The retired Sig transplant
     // (-Dsig_vote), its A/B oracle harness (-Dvote_ab), and the Stage-7 flip
-    // gate (-Dvote_live) were removed 2026-07-12 once voteforge became the sole
+    // gate (-Dvote_live) were removed once voteforge became the sole
     // path; voteforge reads canonical LOCAL SlotHashes so the wave path is safe.
     const parallel_exec = b.option(bool, "parallel_exec", "Stage B wave-parallel tx execution over a persistent worker pool") orelse prod;
     const fec_dedup = b.option(bool, "fec_dedup", "Ed25519 FEC-set signature dedup cache in verify_tile (arms behind VEXOR_ED25519_FEC_DEDUP)") orelse prod;
@@ -3475,47 +3475,47 @@ pub fn build(b: *std.Build) void {
     net_opts.addOption(bool, "vex_ledger", vex_ledger_enabled);
     net_opts.addOption(bool, "rpc_store", false);
     net_opts.addOption(bool, "geyser", false);
-    // gate_hooks (fix105:option ~gate_hooks): read inside method BODIES the m72
+    // gate_hooks (origin-tree:option ~gate_hooks): read inside method BODIES the m72
     // @sizeOf field-layout gate never compiled (tvu.checkAndRequestRepairs /
     // replay_stage). The §3.7 exe + the replay_stage-touching KATs DO compile
-    // those bodies, so the full 26-field fix105 option set must be present here.
+    // those bodies, so the full 26-field origin-tree option set must be present here.
     net_opts.addOption(bool, "gate_hooks", false);
     net_opts.addOption(bool, "verify_ring_index", verify_ring_index);
     // Client-identity git stamp (main.zig → core.version.setGitHash at boot).
     net_opts.addOption([]const u8, "git_hash", git_hash);
     const net_build_options = net_opts.createModule();
 
-    // ONE real vex_store (src/vex_store/root.zig) shared graph-wide (fix105:281).
+    // ONE real vex_store (src/vex_store/root.zig) shared graph-wide (origin-tree:281).
     const net_vex_store = b.createModule(.{ .root_source_file = b.path("src/vex_store/root.zig"), .target = target, .optimize = optimize });
     net_vex_store.addImport("build_options", net_build_options);
     net_vex_store.addImport("core", core);
     net_vex_store.addImport("vex_crypto", vex_crypto);
 
-    // vex_bpf V1 (fresh, on the real store — fix105:355-358).
+    // vex_bpf V1 (fresh, on the real store — origin-tree:355-358).
     const net_vex_bpf = b.createModule(.{ .root_source_file = b.path("src/vex_bpf/interpreter.zig"), .target = target, .optimize = optimize });
     net_vex_bpf.addImport("vex_store", net_vex_store);
     net_vex_bpf.addImport("core", core);
     net_vex_bpf.addImport("vex_crypto", vex_crypto);
 
-    // shared block-production trio (fix105:330-354).
+    // shared block-production trio (origin-tree:330-354).
     const net_banking = b.createModule(.{ .root_source_file = b.path("src/vex_svm/banking_stage.zig"), .target = target, .optimize = optimize });
     const net_txingest = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
     net_txingest.addImport("core", core);
     net_txingest.addImport("vex_crypto", vex_crypto);
     const net_cb = b.createModule(.{ .root_source_file = b.path("src/vex_svm/compute_budget.zig"), .target = target, .optimize = optimize });
 
-    // shared block_produce (fix105:317-349) — owns entry.zig/leader_poh.zig, which
+    // shared block_produce (origin-tree:317-349) — owns entry.zig/leader_poh.zig, which
     // no root.zig/replay_stage-reachable vex_svm file imports relatively (verified).
     const net_block_produce = b.createModule(.{ .root_source_file = b.path("src/vex_svm/block_produce.zig"), .target = target, .optimize = optimize });
     net_block_produce.addImport("banking_stage", net_banking);
     net_block_produce.addImport("tx_ingest", net_txingest);
     net_block_produce.addImport("compute_budget", net_cb);
 
-    // vex_topo (fix105:277) — std-only declarative topology table.
+    // vex_topo (origin-tree:277) — std-only declarative topology table.
     const net_vex_topo = b.createModule(.{ .root_source_file = b.path("src/vex_topo.zig"), .target = target, .optimize = optimize });
 
-    // vex_network rooted at tvu.zig (fix105:301) ⇄ vex_svm rooted at root.zig
-    // (fix105:200) — the lazy import CYCLE, closed by the reciprocal edges below.
+    // vex_network rooted at tvu.zig (origin-tree:301) ⇄ vex_svm rooted at root.zig
+    // (origin-tree:200) — the lazy import CYCLE, closed by the reciprocal edges below.
     const net_vex_network = b.createModule(.{ .root_source_file = b.path("src/vex_network/tvu.zig"), .target = target, .optimize = optimize });
     const net_vex_svm = b.createModule(.{ .root_source_file = b.path("src/vex_svm/root.zig"), .target = target, .optimize = optimize });
 
@@ -3548,11 +3548,11 @@ pub fn build(b: *std.Build) void {
     net_vex_svm.addImport("compute_budget", net_cb);
     net_vex_svm.addImport("vex_network", net_vex_network);
 
-    // reciprocal store edges (fix105:369-370).
+    // reciprocal store edges (origin-tree:369-370).
     net_vex_store.addImport("vex_svm", net_vex_svm);
     net_vex_store.addImport("vex_network", net_vex_network);
 
-    // ── test-rpc-history (REAL fix105 target, build.zig:1774-1789) ──
+    // ── test-rpc-history (REAL origin-tree target, build.zig:1774-1789) ──
     const test_rpc_history = b.addTest(.{
         .name = "test-rpc-history",
         .root_module = b.createModule(.{ .root_source_file = b.path("src/vex_network/rpc_history_kat.zig"), .target = target, .optimize = optimize }),
@@ -3576,7 +3576,7 @@ pub fn build(b: *std.Build) void {
     test_net_fc.root_module.addImport("vex_svm", net_vex_svm);
     test_net_fc.linkLibC();
     const run_net_fc = b.addRunArtifact(test_net_fc);
-    const test_net_fc_step = b.step("test-net-force-compile", "Force-compile the tvu.zig hub + replay_stage.ReplayStage type surface (module 72)");
+    const test_net_fc_step = b.step("test-net-force-compile", "Force-compile the tvu.zig hub + replay_stage.ReplayStage type surface");
     test_net_fc_step.dependOn(&run_net_fc.step);
     test_migrated_step.dependOn(&run_net_fc.step);
 
@@ -3611,22 +3611,22 @@ pub fn build(b: *std.Build) void {
     });
     test_revive_detect.root_module.addImport("core", core);
     const run_test_revive_detect = b.addRunArtifact(test_revive_detect);
-    const test_revive_detect_step = b.step("test-revive-detect", "Switch-proof Part 2 M1 [REVIVE-WOULD-FIRE] detection tap + offline SlotHashes-injection pure-predicate KATs");
+    const test_revive_detect_step = b.step("test-revive-detect", "Switch-proof revive: [REVIVE-WOULD-FIRE] detection tap + offline SlotHashes-injection pure-predicate KATs");
     test_revive_detect_step.dependOn(&run_test_revive_detect.step);
     test_migrated_step.dependOn(&run_test_revive_detect.step);
 
     // ═════════════════════════════════════════════════════════════════════════
     // MODULE 73 — §3.7 exe (main.zig) + §3.8 golden-master gate arming + the
-    // remaining §1.1 root-level KATs. Mirrors fix105 build.zig:17-434.
+    // remaining §1.1 root-level KATs. Mirrors origin-tree build.zig:17-434.
     //
     // The exe is the CAPSTONE force-compile: main.zig calls into replay_stage
     // (main.zig:124/638/642 — the voting replay loop), tvu, bootstrap, so LINKING
     // a `vex-fd` binary compiles the replay_stage METHOD BODIES (m72's @sizeOf gate
     // only forced the field-LAYOUT). It reuses the SAME net_* exe module graph
-    // minted at module 72 (fresh instances of the fix105:200-415 graph) — a module
+    // minted at module 72 (fresh instances of the origin-tree:200-415 graph) — a module
     // instance may be imported by many targets; main.zig at src/ root is not
     // relative-reachable from any module root, so no file-in-two-modules collision
-    // (fix105 proves this green). vex_bpf_vm (fix105 wires it into the exe) is
+    // (origin-tree proves this green). vex_bpf_vm (origin-tree wires it into the exe) is
     // OMITTED: its root src/vex_bpf/vm_root.zig is a record-only DELETE (module 67,
     // dormant module, zero in-tree consumer) and main.zig never @imports it.
     // ═════════════════════════════════════════════════════════════════════════
@@ -3639,7 +3639,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     vexfd_exe.linkLibC();
-    // jemalloc as a real DT_NEEDED (fix105 RSS fix, build.zig:44-66): default ON,
+    // jemalloc as a real DT_NEEDED (origin-tree RSS fix, build.zig:44-66): default ON,
     // graceful glibc fallback if the versioned .so is absent.
     const vexfd_use_jemalloc = b.option(bool, "jemalloc", "Link jemalloc as the allocator (RSS fix; default true)") orelse true;
     if (vexfd_use_jemalloc) {
@@ -3652,7 +3652,7 @@ pub fn build(b: *std.Build) void {
         }
     }
     // main.zig's exact named-module @import set (verified: no vex_bpf_vm, no
-    // relative sibling import). vex_bpf is wired defensively to mirror fix105
+    // relative sibling import). vex_bpf is wired defensively to mirror origin-tree
     // (harmless if main.zig's lazy closure never reaches it).
     vexfd_exe.root_module.addImport("build_options", net_build_options);
     vexfd_exe.root_module.addImport("core", core);
@@ -3666,15 +3666,15 @@ pub fn build(b: *std.Build) void {
     vexfd_exe.root_module.addImport("vex_topo", net_vex_topo);
     vexfd_exe.root_module.addImport("vex_ledger", vex_ledger_mod);
     // Crypto is pure-Zig in-tree (ed25519 + bn254/poseidon + blake3); no leaf-crypto
-    // FFI is linked (the Firedancer Ballet backend was removed 2026-07-12).
+    // FFI is linked (the Firedancer Ballet backend was removed).
     const vexfd_install = b.addInstallArtifact(vexfd_exe, .{});
     b.getInstallStep().dependOn(&vexfd_install.step);
-    const vexfd_exe_step = b.step("vex-fd", "Build+install the rebuild `vex-fd` validator exe (§3.7; force-compiles replay_stage method bodies; arms the §3.8 golden-master gate)");
+    const vexfd_exe_step = b.step("vex-fd", "Build+install the rebuild `vex-fd` validator exe (force-compiles replay_stage method bodies; arms the golden-master gate)");
     vexfd_exe_step.dependOn(&vexfd_install.step);
 
-    // ── §1.1 root-level regression KATs (fix105 build.zig:2632-2724 / 2794) ──
+    // ── §1.1 root-level regression KATs (origin-tree build.zig:2632-2724 / 2794) ──
     // All import the `vex_svm` UMBRELLA as a named module (the "module-cycle dodge"
-    // fix105 documents). commit_owner (commitV2Mutations), failed_tx_rollback
+    // origin-tree documents). commit_owner (commitV2Mutations), failed_tx_rollback
     // (whole-tx rollback), mark_dead_cascade (markSlotDead) all reference
     // replay_stage decls → they need the FULL net_* graph (vex_network/vex_topo/
     // block_produce present), NOT the narrow m71 3-KAT vex_svm instance (which omits
@@ -3682,7 +3682,7 @@ pub fn build(b: *std.Build) void {
     // for uniformity. vex_store→net_vex_store / vex_bpf→net_vex_bpf are the SAME
     // instances the graph uses, so types unify.
 
-    // test-commit-owner-414352136 (fix105:2642)
+    // test-commit-owner-414352136 (origin-tree:2642)
     const test_commit_owner = b.addTest(.{
         .name = "test-commit-owner-414352136",
         .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_commit_owner_414352136.zig"), .target = target, .optimize = optimize }),
@@ -3698,11 +3698,11 @@ pub fn build(b: *std.Build) void {
     test_commit_owner_step.dependOn(&run_commit_owner.step);
     test_migrated_step.dependOn(&run_commit_owner.step);
 
-    // test-failed-tx-rollback-414386920 (fix105:2679) — DEFERRED, fix105-pre-existing
+    // test-failed-tx-rollback-414386920 (origin-tree:2679) — DEFERRED, origin-tree-pre-existing
     // RED. kat_failed_tx_rollback.zig:427 calls `replay.executeStakeInstruction(...)`
     // with 5 args but replay_stage.zig:14867 declares 6 ("expected 6 argument(s),
-    // found 5") — a stale KAT-vs-signature mismatch in fix105 itself, PROVEN by an
-    // isolated --cache-dir/--prefix build of fix105 HEAD (db9ccb1) reproducing the
+    // found 5") — a stale KAT-vs-signature mismatch in origin-tree itself, PROVEN by an
+    // isolated --cache-dir/--prefix build of origin-tree HEAD (db9ccb1) reproducing the
     // IDENTICAL error. Same class as test-cpi-carrier-dispatch / test-bank (m46) /
     // test-bpf-fixture (m67). Ported 1:1 + standalone step for re-adjudication, but
     // NOT wired into test_migrated_step (don't regress the green gate).
@@ -3717,12 +3717,12 @@ pub fn build(b: *std.Build) void {
     test_ftr73.root_module.addImport("core", core);
     test_ftr73.linkLibC();
     const run_ftr73 = b.addRunArtifact(test_ftr73);
-    const test_ftr73_step = b.step("test-failed-tx-rollback-414386920", "Regression KAT CARRIER #6: failed-tx whole-tx rollback (DEFERRED — fix105-pre-existing RED, standalone only)");
+    const test_ftr73_step = b.step("test-failed-tx-rollback-414386920", "Regression KAT: failed-tx whole-tx rollback carrier (DEFERRED — origin-tree-pre-existing RED, standalone only)");
     test_ftr73_step.dependOn(&run_ftr73.step);
 
-    // test-mark-dead-cascade (fix105:2714) — also imports vex_consensus; links
+    // test-mark-dead-cascade (origin-tree:2714) — also imports vex_consensus; links
     // jemalloc for the mallctl heap-stat symbol its markSlotDead path references
-    // (fix105:2755-2758 does the same; graceful if the .so is absent).
+    // (origin-tree:2755-2758 does the same; graceful if the .so is absent).
     const test_mdc73 = b.addTest(.{
         .name = "test-mark-dead-cascade",
         .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_mark_dead_cascade.zig"), .target = target, .optimize = optimize }),
@@ -3745,7 +3745,7 @@ pub fn build(b: *std.Build) void {
     test_mdc73_step.dependOn(&run_mdc73.step);
     test_migrated_step.dependOn(&run_mdc73.step);
 
-    // test-revive-would-fire (switch-proof Part 2, M1 — 2026-07-16) — live-path
+    // test-revive-would-fire (switch-proof Part 2, M1 —) — live-path
     // regression gate for the [REVIVE-WOULD-FIRE] detection tap. Same module
     // graph/linking as test-mark-dead-cascade immediately above (both drive
     // real ReplayStage methods that reach into dead_slots/markSlotDead-adjacent
@@ -3771,11 +3771,11 @@ pub fn build(b: *std.Build) void {
         } else |_| {}
     }
     const run_rwf73 = b.addRunArtifact(test_rwf73);
-    const test_rwf73_step = b.step("test-revive-would-fire", "Switch-proof Part 2 M1: [REVIVE-WOULD-FIRE] tap live-path regression KAT (real ReplayStage glue, not just the pure leaf)");
+    const test_rwf73_step = b.step("test-revive-would-fire", "Switch-proof revive: [REVIVE-WOULD-FIRE] tap live-path regression KAT (real ReplayStage glue, not just the pure leaf)");
     test_rwf73_step.dependOn(&run_rwf73.step);
     test_migrated_step.dependOn(&run_rwf73.step);
 
-    // test-epoch-schedule (fix105:2794) — imports only vex_svm
+    // test-epoch-schedule (origin-tree:2794) — imports only vex_svm
     const test_epoch73 = b.addTest(.{
         .name = "test-epoch-schedule",
         .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_epoch_schedule.zig"), .target = target, .optimize = optimize }),
@@ -3787,9 +3787,9 @@ pub fn build(b: *std.Build) void {
     test_epoch73_step.dependOn(&run_epoch73.step);
     test_migrated_step.dependOn(&run_epoch73.step);
 
-    // test-cpi-carrier-dispatch (fix105:2338) — DEFERRED, fix105-pre-existing RED
+    // test-cpi-carrier-dispatch (origin-tree:2338) — DEFERRED, origin-tree-pre-existing RED
     // (cpi_carrier_dispatch_test.zig:385/588/727 "expected 7 args, found 6": a
-    // stale test-vs-dispatch signature in fix105 itself — proven at scout on this
+    // stale test-vs-dispatch signature in origin-tree itself — proven at scout on this
     // same pin; test-bank/test-bpf-fixture precedent). Ported 1:1 + a standalone
     // step for re-adjudication, but NOT wired into test_migrated_step.
     const test_ccd73 = b.addTest(.{
@@ -3803,10 +3803,10 @@ pub fn build(b: *std.Build) void {
     test_ccd73.root_module.addImport("core", core);
     test_ccd73.linkLibC();
     const run_ccd73 = b.addRunArtifact(test_ccd73);
-    const test_ccd73_step = b.step("test-cpi-carrier-dispatch", "CPI-created-account commit carrier KAT (DEFERRED — fix105-pre-existing RED, standalone only)");
+    const test_ccd73_step = b.step("test-cpi-carrier-dispatch", "CPI-created-account commit carrier KAT (DEFERRED — origin-tree-pre-existing RED, standalone only)");
     test_ccd73_step.dependOn(&run_ccd73.step);
 
-    // ── vexor-program-test (M1, 2026-07-12) — LiteSVM-class sBPF harness ──────
+    // ── vexor-program-test (M1,) — LiteSVM-class sBPF harness ──────
     // Standalone CLI + fixture KAT over the UNMODIFIED v2_dispatch engine.
     // Rooted OUTSIDE vex_svm (imports it opaquely) — same module graph the
     // cpi-carrier KAT uses, so it dodges the vex_svm ⇄ replay_stage cycle.
@@ -3833,11 +3833,11 @@ pub fn build(b: *std.Build) void {
     const test_progtest_step = b.step("test-program-test", "M1 hello-fixture KAT: first Zig-SDK program in Vexor's sBPF VM");
     test_progtest_step.dependOn(&run_progtest.step);
 
-    // ── divergence-localize (P5 MOAT #2 · M1, 2026-07-12) ────────────────────
+    // ── divergence-localize (P5 MOAT #2 · M1,) ────────────────────
     // The offline bank_hash-divergence localizer: a std-only CLI over the pure
     // 4-input classifier engine (src/vex_ledger/divergence_alarm.zig). No vex_svm /
     // validator import — a tiny, fast, dependency-free binary the wrapper composes.
-    // DESIGN: vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
+    // DESIGN: the divergence-alarm design notes
     const divalarm_mod = b.createModule(.{ .root_source_file = b.path("src/vex_ledger/divergence_alarm.zig"), .target = target, .optimize = optimize });
 
     const divloc_exe = b.addExecutable(.{
@@ -3866,7 +3866,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_divalarm.step);
     test_migrated_step.dependOn(&run_test_divloc.step);
 
-    // ── divergence-alarm M2 (2026-07-14) — the LIVE runtime alarm KATs ─────────
+    // ── divergence-alarm M2 — the LIVE runtime alarm KATs ─────────
     // Ring (enqueue/drain/drop-oldest/wraparound/threaded) + debounce + rooted-both-sides
     // + latch + base58 + getBlock parse + classify()-seam integration + flag-off dormancy.
     // std-only module (imports the M1 classifier as a sibling file) so it tests standalone.

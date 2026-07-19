@@ -10,7 +10,7 @@
 //! promoted from the manual `/drift-localizer` skill to a native, KAT-covered pure
 //! function. Given our slot's 4 bank_hash inputs (from the FlightRecord / the
 //! [BANK-FROZEN] log line, bank.zig:4925) and the cluster's canonical inputs (public
-//! testnet RPC oracle: getBlock blockhash + Σ signatures; govnode bank-hash-details
+//! testnet RPC oracle: getBlock blockhash + Σ signatures; oracle-node bank-hash-details
 //! bank_hash — read-only, never a Vexor flag pointed at the oracle), it names the
 //! FIRST input that diverged in the fixed precedence:
 //!
@@ -91,8 +91,8 @@ pub const FlightInputs = struct {
 ///     parent's bank_hash match the cluster?). null when the parent hasn't been checked.
 ///   - `poh_hash`: getBlock(S).blockhash, base58→bytes (decoded by the caller/wrapper).
 ///   - `signature_count`: Σ signatures over getBlock(S) txs (summed the way Agave does).
-///   - `bank_hash`: govnode agave-ledger-tool bank-hash-details (RULE #2 cross-check,
-///     read-only). null when govnode is not consulted — EXECUTION is then by elimination.
+///   - `bank_hash`: oracle-node agave-ledger-tool bank-hash-details (RULE #2 cross-check,
+///     read-only). null when oracle-node is not consulted — EXECUTION is then by elimination.
 /// The lt_hash is intentionally absent: the cluster does not expose it over RPC.
 pub const OracleInputs = struct {
     parent_matches: ?bool = null,

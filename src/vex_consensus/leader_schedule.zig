@@ -278,7 +278,7 @@ pub const LeaderScheduleCache = struct {
     ///      `leader_schedule_agave.zig` — which performs sort by stake DESC
     ///      (tiebreak: vote_address DESC), dedup, prefix sum, then
     ///      WeightedU64Index alias-sampling under ChaChaRng(epoch) with
-    ///      NUM_CONSECUTIVE_LEADER_SLOTS = 4. Byte-equivalent to govnode's
+    ///      NUM_CONSECUTIVE_LEADER_SLOTS = 4. Byte-equivalent to oracle-node's
     ///      `getLeaderSchedule` RPC response.
     ///   4. Convert to legacy `EpochSchedule { slot_leaders: []Pubkey }`
     ///      so the existing `getSlotLeader` consumer path is unchanged.

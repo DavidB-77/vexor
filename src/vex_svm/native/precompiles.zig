@@ -47,7 +47,7 @@ pub const SECP256R1_VERIFY_COST: u64 = CU_TO_US * 160;
 // precompile is UNGATED (required_feature = null in PRECOMPILES below).
 //
 // HISTORY (module-31 rebuild verification, 2026-07-06 → fixed 2026-07-10, ported
-// from fix105 branch fix/secp256r1-gate-2026-07-07): the removed
+// from origin-tree branch fix/secp256r1-gate-2026-07-07): the removed
 // FEATURE_SECP256R1 constant carried WRONG bytes — base58
 // FMeV86fqwX6RxVPUEkmzg6uMEP1A1sC94kDAy6hqfv7B, a placeholder matching neither the
 // real feature key (srremy31J5…) nor its own in-file comment (Ew1HRpg9…). Because

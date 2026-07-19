@@ -69,8 +69,11 @@ Numbers below are cluster-attested, not benchmarks:
 - Voting: **~98.7% of maximum vote credits** (measured vs. the theoretical
   16/slot ceiling).
 - Block production: **~97%+ of leader slots produced and cluster-accepted**
-  (empty blocks; transaction-bearing block production exists behind a gate
-  and is **not yet enabled** — do not treat it as shipped).
+  (empty blocks). Transaction-bearing block production is **under live
+  testing** on testnet — currently restricted to a narrow transaction
+  whitelist, with an automatic in-process fallback to empty-block production
+  if a produce-parity check fails. Do not treat it as shipped or
+  production-ready.
 - Vote execution: Vexor's vote program executes vote instructions in
   **~1.9–2.0 µs**, **4.7× faster** than the reference transplant it replaced,
   measured over 990k+ live instructions with byte-identical results.
@@ -79,6 +82,40 @@ Numbers below are cluster-attested, not benchmarks:
   boundary, bank hashes byte-identical to the live cluster's) before deploy.
 - Networking: AF_XDP zero-copy RX on Mellanox ConnectX-6 Dx, io_uring
   snapshot writes, tile/core-pinned architecture.
+
+## Conformance
+
+Vexor is regularly measured against the ecosystem's own conformance tooling
+([`firedancer-io/solana-conformance`](https://github.com/firedancer-io/solana-conformance)
+with the [`firedancer-io/test-vectors`](https://github.com/firedancer-io/test-vectors)
+instruction-fixture corpus), executed live against a **version-matched** Agave
+reference — not against baked-in expected outputs. Latest full-corpus run
+(47,240 fixtures):
+
+- **85.80% raw** (40,533/47,240) and **92.73% under the harness's
+  consensus-compatibility mode** (`-c`, which normalizes error-code encoding).
+- Several families pass **100% raw**: `system` (7,400/7,400), `compute-budget`
+  (2,627/2,627), `precompile` (19,292/19,292).
+- The raw gap is dominated by **disclosed known gaps**: the BPF-loader-owned
+  ELF-loading fixture families (~2,900 fixtures) are not yet implemented to
+  byte-match, and most of the remaining `vote`/`vm-programs` raw failures are
+  error-code/CU-encoding differences that the harness's consensus mode
+  recovers.
+- One genuine discrepancy surfaced by this run — a small set of `zk_sdk`
+  fixtures where Vexor reports sysvar account data on certain failure paths
+  that Agave does not — is acknowledged and being fixed. Numbers here are
+  reported honestly, including the unflattering ones.
+
+## Acknowledgments
+
+Vexor exists because other teams built great validator clients in the open.
+Beyond the reference-oracle relationships credited in
+[`NOTICE`](./NOTICE)/[`PROVENANCE.md`](./PROVENANCE.md) (Agave, Firedancer,
+Sig), we're grateful to the wider Solana client ecosystem — including
+**[Jito-Solana](https://github.com/jito-foundation/jito-solana)** (Jito Labs)
+and **[Mithril](https://github.com/Overclock-Validator/mithril)** (Overclock)
+— whose public code, tooling, and client-diversity work shaped how Vexor was
+built and tested.
 
 ## License
 

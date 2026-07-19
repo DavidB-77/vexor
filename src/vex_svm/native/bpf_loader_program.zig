@@ -37,7 +37,7 @@
 //!   SetAuthority→None arm, the full loader-v3 non-CPI instruction set is now
 //!   handled. Loader ops are sparse on testnet (0 in a 184-block / 96.7k-tx
 //!   probe), so any first re-divergence post-deploy (agave-vexor-diff vs
-//!   govnode) names the next op to audit. Full CPI/program-cache parity remains
+//!   oracle-node) names the next op to audit. Full CPI/program-cache parity remains
 //!   required before mainnet (RULE#0).
 //!
 //! Commit model mirrors the other native handlers (system/stake): read with
@@ -244,7 +244,7 @@ pub fn execute(
     // "fix works" from "no loader op happened". We log, rate-limited, exactly
     // when the handler COMMITS a write on a real loader op, so the soak can
     // assert the corrected criterion: the handler FIRED on real ops AND
-    // bank_hash held across those exact slots (agave-vexor-diff vs govnode).
+    // bank_hash held across those exact slots (agave-vexor-diff vs oracle-node).
     const before = bank.pending_writes.items.len;
     switch (variant) {
         IX_WRITE => try doWrite(ix, ptx, bank, db, alloc),

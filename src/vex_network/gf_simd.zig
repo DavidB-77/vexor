@@ -177,7 +177,7 @@ pub const GfSimd = struct {
 
     // ═══════════════════════════════════════════════════════════════════
     // Tier 2 (AVX2 vpshufb split-table, 32 bytes/cycle) REMOVED at the
-    // vexor-rebuild migration (2026-07-06): the fix105 `mulAccumAvx2` kernel
+    // vexor-rebuild migration (2026-07-06): the origin-tree `mulAccumAvx2` kernel
     // was a documented-broken (lane-collapse), never-routed dead branch — its
     // only callers were its own now-deleted `lo_tables`/`hi_tables` fields and
     // populating init() loop. `mulAccum` never dispatched to it (only

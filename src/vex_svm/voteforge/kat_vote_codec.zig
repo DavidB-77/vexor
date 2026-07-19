@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 1 KATs — vote_codec.zig byte-exactness gate
+//! voteforge, stage 1 KATs — vote_codec.zig byte-exactness gate
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 1 gate).
 //!
 //! Two legs:

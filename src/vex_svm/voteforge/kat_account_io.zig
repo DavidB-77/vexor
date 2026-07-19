@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 2 KATs — account_io.zig gate
+//! voteforge, stage 2 KATs — account_io.zig gate
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 2 gate, item 4).
 //!
 //! IN-PLACE MUTATION THROUGH THE CODEC: borrow the real CARRIER-419996256

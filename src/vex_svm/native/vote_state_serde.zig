@@ -938,7 +938,7 @@ pub fn replaceTowerStateCheckedWithFallbackTraced(
     // (validators never emit zero-conf, >31-conf, or vote-below-root). But
     // Vexor's catchup-replay can encounter malformed/replay-residual IXs
     // that Agave silently rejects — Vexor's lack of these checks made it
-    // accept them, producing 31 consecutive lockouts where govnode had 31
+    // accept them, producing 31 consecutive lockouts where oracle-node had 31
     // skip-distributed lockouts (tip-root=31 vs 35). That tower-shape diff
     // = the 42 residual divergences at slot 500.
     //
@@ -2240,7 +2240,7 @@ test "convertToV4: V3(Current) -> V4 + idempotent on already-V4" {
 // 2026-06-09 freeze: 521/521 pass ⇒ the V4 in-place serialize is correct ⇒ a tag-2→V4 conversion
 // is byte-correct ⇒ the remaining divergence surface is the tag-1 realloc (replay_stage.zig).
 // (Caveat: this validates SERIALIZE fidelity on real V4 layouts; it does NOT replay a real
-// conversion's intervening votes — that needs consecutive-slot govnode ground truth.)
+// conversion's intervening votes — that needs consecutive-slot oracle-node ground truth.)
 test "V4 serialize fidelity: 521 real cluster goldens @414098450 round-trip byte-exact" {
     const blob = @embedFile("kat_goldens_414098450.bin");
     const REC: usize = VOTE_STATE_V3_SZ; // 3762

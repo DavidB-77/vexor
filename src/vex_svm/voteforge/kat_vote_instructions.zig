@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 3 — state-transition-layer KATs
+//! voteforge, stage 3 — state-transition-layer KATs
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 3 gate).
 //!
 //! Agave-source-derived positive/negative-case KATs (ported from

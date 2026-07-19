@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 1 KAT (supplement) — round-trip the OTHER named real-account
+//! voteforge, stage 1 KAT (supplement) — round-trip the OTHER named real-account
 //! fixture from the scope doc's Stage-1 gate: canon-756 (271KPMd vote account,
 //! V4 3762B, AV=[967,968], the carrier-@413005757 golden from
 //! kat_vote_authorize_canon.zig). Rooted at src/vex_svm/ (not voteforge/)

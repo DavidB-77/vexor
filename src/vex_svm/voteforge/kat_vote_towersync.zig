@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 5 — Vote/VoteSwitch/UpdateVoteState(+Switch)/
+//! voteforge, stage 5 — Vote/VoteSwitch/UpdateVoteState(+Switch)/
 //! CompactUpdateVoteState(+Switch)/TowerSync(+Switch) KATs
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 5 gate).
 //!

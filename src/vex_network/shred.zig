@@ -3,7 +3,7 @@
 //! + Merkle-root types, ~380 LoC) and `shred_assembler.zig` (the receive-side
 //! `ShredAssembler`/`SlotAssembly` engine, ~2,180 LoC), mirroring the
 //! module-25 `accounts.zig` SPLIT precedent. This file exists purely so
-//! every pre-split `@import("shred.zig")` call site (fix105: `tvu.zig`,
+//! every pre-split `@import("shred.zig")` call site (origin-tree: `tvu.zig`,
 //! `verify_tile.zig`, `repair_abandon.zig`, `fec_chained_recovery_kat.zig`,
 //! `shredder.zig` (DELETE), `main.zig`'s `shred_pub` re-export) keeps
 //! resolving unchanged once those files migrate. See REBUILD-LEDGER.md

@@ -47,7 +47,7 @@ pub const BankSysvarAdapter = struct {
         // read the PRE-slot sysvar bytes (whatever was last persisted to
         // db at end of previous slot or snapshot bootstrap), so BPF
         // programs that called Clock::get / SlotHashes::get / etc. saw
-        // stale data. Govnode's MessageProcessor reads fresh per-slot
+        // stale data. The reference node's MessageProcessor reads fresh per-slot
         // sysvars. This was a likely carrier of any post-slot-N divergence
         // where a BPF program reads sysvars and writes derived state.
         // Same pattern as the V2 dispatch account-snapshot overlay at

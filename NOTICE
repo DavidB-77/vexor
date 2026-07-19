@@ -19,15 +19,16 @@ reimplementation; see PROVENANCE.md).
       Reference for leaf cryptography (the "Ballet" ed25519 / blake3 / bn254 /
       poseidon routines) and select high-performance data structures.
       NOTE: Vexor no longer links Firedancer at all — its cryptography is an
-      independent pure-Zig reimplementation (build flag -Dpure_zig).
+      independent pure-Zig reimplementation, unconditionally (the historical
+      -Dpure_zig build flag is retained as a no-op for recipe compatibility).
 
   • Sig — Syndica  (Syndica/sig), Apache-2.0.
       Reference for Zig-idiomatic Solana structures during early bring-up.
       NOTE: the one subsystem that carried Sig-derived code — the vote-program
       transplant used as a differential oracle while Vexor's own vote executor
-      (voteforge) was validated — was removed 2026-07-12. Vexor's vote program,
-      like the rest of the client, is now an independent reimplementation;
-      Vexor's implementations are independent of Sig at both build and runtime.
+      was validated — has been removed. Vexor's vote program, like the rest of
+      the client, is now an independent reimplementation; Vexor's
+      implementations are independent of Sig at both build and runtime.
 
 Per-subsystem provenance — exactly which Vexor file/function reimplements which
 upstream source, and whether it was reimplemented, ported, or verified

@@ -30,7 +30,7 @@ pub const AccountStorage = account_storage.AccountStorage;
 // (vex_svm/replay_stage.zig:9040-9046 / :4381 heap-report). Re-exported as
 // pointer-aliases: a container-level `const` cannot bind a mutable `var`, but
 // `.load()/.fetchAdd()` auto-deref through the pointer, so the call sites are
-// unchanged from the fix105 monolith's direct `pub var` access.
+// unchanged from the origin-tree monolith's direct `pub var` access.
 //
 // REBUILD module 73 (2026-07-07): the §3.7 exe force-compiles the replay_stage
 // heap-report method body (via main.zig → replayWorker/onSlotCompleted), which

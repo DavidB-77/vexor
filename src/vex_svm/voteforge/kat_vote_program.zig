@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 4 — `vote_program.zig` (dispatch glue / front door) KATs
+//! voteforge, stage 4 — `vote_program.zig` (dispatch glue / front door) KATs
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 4 gate).
 //!
 //! Legs:

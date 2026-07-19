@@ -12,7 +12,7 @@
 //                   that absence is WHAT makes 417/419 reject; with sh_data=null the
 //                   RootOnDifferentFork check is unreachable and the reject assertion FAILS).
 //   * `hash417/9` = each tx's real proposed TowerSync hash (must match SH[last_slot]).
-//   * call sig    = verify against fix105 replaceTowerStateCheckedWithFallbackTraced
+//   * call sig    = verify against origin-tree replaceTowerStateCheckedWithFallbackTraced
 //                   (current arity incl. the trailing current_epoch/voter args).
 const std = @import("std");
 const vss = @import("vote_state_serde.zig");

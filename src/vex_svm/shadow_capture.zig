@@ -3,7 +3,7 @@
 // Activated by env var `VEX_SHADOW_CAPTURE_DIR=<path>`. When set, every
 // shadow dispatch that has a non-empty ix_data, at least one account, and a
 // successful V1 result (V1 IS our truth-source-of-record per vex-061 caveat
-// — disagreements get arbitrated against govnode by replay-time triage, not
+// — disagreements get arbitrated against oracle-node by replay-time triage, not
 // at capture time) is dumped as a JSON fixture matching `vex_bpf2/fixture.zig`'s
 // schema. accounts_post is computed by applying V1's mutations to the
 // pre-state we just snapshotted from AccountsDb.
@@ -20,9 +20,9 @@
 //   1. Run V2 offline (`zig build test-bpf-fixture-v2`) outside the
 //      validator process, where we can attach a debugger, change one line,
 //      rerun without redeploying.
-//   2. Cross-check against the govnode oracle when V2 disagrees with V1
+//   2. Cross-check against the oracle-node oracle when V2 disagrees with V1
 //      (vex-061 says V1 silent-eats writes on Anchor panic-handler programs;
-//      govnode is byte-exact Agave truth on the same testnet).
+//      oracle-node is byte-exact Agave truth on the same testnet).
 // Each disagreement = one V2 port bug retired = V2 closer to commit-able.
 
 const std = @import("std");
@@ -175,7 +175,7 @@ fn writeFixtureJson(
     try w.print("  \"name\": \"{s}_{d}\",\n", .{ args.name, args.seq });
     try w.print("  \"v1_skip_reason\": \"shadow capture: V1 ElfLoader does not support SBPFv3\",\n", .{});
 
-    // Phase 7: triage metadata. Lets a govnode arbitration script find the
+    // Phase 7: triage metadata. Lets a oracle-node arbitration script find the
     // canonical on-chain truth for this dispatch via getTransaction +
     // getAccountInfo <writable account> at source_slot {-1, +0}.
     if (args.tx_signature) |sig| {

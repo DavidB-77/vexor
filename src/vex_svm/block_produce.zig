@@ -836,8 +836,8 @@ test "produceSlotBytes: N txs packed into entries, canonical per-entry mixin, ch
     for (0..N) |i| {
         var buf: [256]u8 = undefined;
         const tx = buildValidTx(kp, @intCast(i + 1), &buf);
-        // MODULE-20 MIGRATION TEST FIX (pre-existing fix105 test bug, block_produce.zig itself
-        // unchanged — production code byte-identical to fix105): the original line queued every
+        // MODULE-20 MIGRATION TEST FIX (pre-existing origin-tree test bug, block_produce.zig itself
+        // unchanged — production code byte-identical to origin-tree): the original line queued every
         // tx with cu_price=0 and asserted "same priority → tie-broken by arrival time → FIFO
         // drain order = i order". That assumption is TIMING-DEPENDENT: banking_stage.zig:132
         // stamps received_at with std.time.milliTimestamp() (millisecond resolution), and
@@ -853,7 +853,7 @@ test "produceSlotBytes: N txs packed into entries, canonical per-entry mixin, ch
         // cu_price is a queue-side parameter only (the built tx has 0 instructions), so block
         // BYTES are unaffected except for entry order. The underlying production behavior —
         // same-priority same-millisecond txs drain in unspecified order — is a real (benign,
-        // LIVENESS-tier: any tx order in a produced block is valid) fix105 latent, recorded in
+        // LIVENESS-tier: any tx order in a produced block is valid) origin-tree latent, recorded in
         // REBUILD-LEDGER.md module-20 row; a stable FIFO tie-break (e.g. monotonic sequence
         // number) is a production behavior change and stays DEFERRED per the migration contract.
         try banking.queueTransaction(tx, N - i, false, .tpu);

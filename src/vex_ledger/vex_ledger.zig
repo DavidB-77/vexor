@@ -73,7 +73,7 @@ const KIND_BLOCKHEIGHT: u8 = 11; // block_height (payload = u64 LE; slot key in 
 // bank_hash INPUT decomposition co-stored next to the shreds so any future
 // divergence carrier is diagnosable from the ledger alone. Payload = the fixed
 // 2152-byte FlightRecord (slot key in header). Opt-in (the freeze tap is env-gated
-// VEX_LEDGER_FLIGHT in fix105; the module API is comptime-dead on default build).
+// VEX_LEDGER_FLIGHT in origin-tree; the module API is comptime-dead on default build).
 const KIND_FLIGHT: u8 = 12;
 // @prov:ledger.column-families (bank_hashes, byte-exact interop): payload =
 // the 37-byte wincode FrozenHashVersioned::Current value (agave_wire.encodeFrozenHash;
@@ -1528,7 +1528,7 @@ pub const VexLedger = struct {
 
     /// Store a per-slot FLIGHT RECORD (P5 #1) — the bank_hash INPUT decomposition
     /// read off the frozen bank at freeze time. Payload = the fixed 2152-byte
-    /// FlightRecord (slot key in the header). Last-wins. The CALLER (the fix105
+    /// FlightRecord (slot key in the header). Last-wins. The CALLER (the origin-tree
     /// freeze tap) gates this on the `VEX_LEDGER_FLIGHT` env; the module just
     /// stores. Stored by value (no allocation, no free).
     pub fn putFlightRecord(self: *VexLedger, slot: u64, rec: FlightRecord) !void {
@@ -2038,7 +2038,7 @@ pub const VexLedger = struct {
     /// repair-serve / archival-block byte SOURCE. Caller frees each `.wire` and the
     /// returned slice. The entry assembly (strip shred headers, concat
     /// completed_data_indexes ranges) + bincode-deserialize into Entries stays on
-    /// the PROVEN fix105 ShredAssembler side — the std-only module serves the raw
+    /// the PROVEN origin-tree ShredAssembler side — the std-only module serves the raw
     /// shreds it stored (the same bytes Boot-B replays bank-exactly), it does not
     /// re-implement shred-format/entry parsing. A rooted-only archival read gates
     /// on `isRoot(slot)`.

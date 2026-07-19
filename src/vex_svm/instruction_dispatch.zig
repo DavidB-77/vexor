@@ -28,7 +28,7 @@ const vote_state_serde = @import("native/vote_state_serde.zig");
 // differential-oracle module was removed with the Sig transplant, 2026-07-12);
 // kept here as the vote path's own invariant.
 const MAX_VOTE_ROUTE_ACCOUNTS: usize = 8;
-// VOTEFORGE: the vote program's own front door + its dependency layers.
+// voteforge: the vote program's own front door + its dependency layers.
 // Short names `vp`/`vi`/`aio` — `vote_program` above is already taken by the
 // OLD native/vote_program.zig (the pre-voteforge Vexor implementation, still
 // used for vote-state reads elsewhere; unrelated to this executor).
@@ -79,11 +79,11 @@ pub fn dispatchBpfExecution(
     /// cluster).
     tx_meter: ?*u64,
 ) !void {
-    // F8i (Helm SEQ:62-helm 2026-04-26): per-ELF sBPF version routing.
+    // F8i: per-ELF sBPF version routing.
     // V1 ElfLoader silently swallows SBPFv3 ELFs (HistoryJT, ATokenG, Jito,
     // Router) → no mutations applied → PDAs freeze post-snapshot → continuous
     // bank_hash divergence (root cause of multi-week blocker, byte-confirmed
-    // by Helm SEQ:61-helm via R17b disp=0 vs govnode). Force V3 ELFs through
+    // by via R17b disp=0 vs oracle-node). Force V3 ELFs through
     // V2 producer regardless of --bpf-stack flag.
     //
     // r75-bug-class-d13 (2026-05-10): also force V0 ELFs through V2 producer.
@@ -94,7 +94,7 @@ pub fn dispatchBpfExecution(
     // program (a28f..8ffc) — every CPI-using V0 program produces 0 mutations.
     // Routing V0 through V2 uses the rc0-canonical solana-sbpf 0.14.4 vendored
     // implementation (the same crate Agave's testnet validator binary uses,
-    // verified via /home/sol/agave_src/Cargo.lock on govnode). This is NOT a
+    // verified via /home/sol/agave_src/Cargo.lock on oracle-node). This is NOT a
     // band-aid: the V2 producer IS the Agave-canonical code path; V1 is
     // Vexor's hand-written interpreter that pre-dated the V2 vendoring.
     // V1/V2 ELFs continue to honor the --bpf-stack flag for now (no observed
@@ -166,7 +166,7 @@ pub fn dispatchBpfExecution(
                         for (muts) |*m| alloc.free(m.data);
                         alloc.free(muts);
                     }
-                    // Forge SEQ:78-helm always-on V2-producer capture: write
+                    // Always-on V2-producer capture: write
                     // a fixture BEFORE commit so /tmp/vex-shadow-fixtures gets
                     // populated under --bpf-stack=v2 (shadowDispatch path is
                     // bypassed in producer mode). Best-effort — failure is
@@ -221,7 +221,7 @@ pub fn dispatchBpfExecution(
     }
 }
 
-/// F8i (Helm SEQ:62-helm 2026-04-26): V3 ELF dispatch through V2 producer.
+/// F8i: V3 ELF dispatch through V2 producer.
 ///
 /// SBPFv3 ELFs (HistoryJT, ATokenG, Jito, Router et al.) are routed here
 /// regardless of `--bpf-stack` mode because V1 ElfLoader can't parse V3
@@ -256,7 +256,7 @@ pub fn dispatchV3ViaV2Producer(
             for (muts) |*m| alloc.free(m.data);
             alloc.free(muts);
         }
-        // Forge SEQ:78-helm always-on V2-producer capture (V3 path).
+        // Always-on V2-producer capture (V3 path).
         captureShadowFixture(ix, ptx, bank, db, alloc, muts) catch |e| {
             std.log.warn("[V2-PRODUCER-CAPTURE] failed (V3 route): {s}", .{@errorName(e)});
         };
@@ -402,7 +402,7 @@ pub fn v2DispatchInternal(
     // (typically Ed25519SigVerify precompile readback). Vexor previously had
     // no construction code → BPF read empty/stale bytes → `get_instruction_relative(-1)`
     // returned garbage → tx aborted with NotSigVerified → PDA write dropped
-    // → bank_hash diverged from govnode (carrier of slot 406443919 + cascade).
+    // → bank_hash diverged from oracle-node (carrier of slot 406443919 + cascade).
     // Build the blob byte-exactly per Agave canonical
     // (`solana-instructions-sysvar-3.0.0/src/lib.rs:69-141`) and inject it
     // when the IX references the Sysvar1Instructions pubkey. Find the
@@ -1578,7 +1578,7 @@ pub fn shadowDispatch(
     // fixture using V1's mutations as expected_post. Reads accounts BEFORE
     // V1 commit so accounts_pre reflects true pre-state. The corpus feeds
     // `zig build test-bpf-fixture-v2` for offline V2 triage; disagreements
-    // get arbitrated against the govnode oracle later. Best-effort.
+    // get arbitrated against the oracle-node oracle later. Best-effort.
     if (shadow_capture.isEnabled() and !shadow_capture.isFull()) {
         captureShadowFixture(ix, ptx, bank, db, alloc, v1_muts) catch {};
     }
@@ -1779,7 +1779,7 @@ pub fn captureShadowFixture(
     var tx_fp: [8]u8 = undefined;
     @memcpy(&tx_fp, ptx.fee_payer[0..8]);
 
-    // Phase 7: pass tx signature through if available — enables govnode
+    // Phase 7: pass tx signature through if available — enables oracle-node
     // arbitration via getTransaction <base58(sig)>.
     const tx_sig: ?[64]u8 = if (ptx.first_signature) |sig_ptr| sig_ptr.* else null;
 
@@ -2094,7 +2094,7 @@ pub fn executeBpfProgram(
     // Agave at the first such slot; SH ring stored Vexor's wrong
     // bank_hash; subsequent votes against Vexor's local SH rejected
     // (100% mutate_fail). Bisect confirmed: 8 oldest slots in this boot
-    // (no new-account txs) all matched govnode; slot ~1700 later (with
+    // (no new-account txs) all matched oracle-node; slot ~1700 later (with
     // new-account tx) diverged with single-slot delta. Mirror the V2
     // path's Dead-state-aware logic: when orig is null, treat
     // pre-state as Dead (lamports=0 → accountLtHash returns identity).
@@ -2480,7 +2480,7 @@ pub fn executeVoteInstruction(
     // Empty = legacy flat-read.
     ancestor_slots: []const u64,
 ) !void {
-    // r31 [VOTE-WRITE-PATH] (Helm SEQ:107-helm 2026-04-27): comprehensive
+    // r31 [VOTE-WRITE-PATH]: comprehensive
     // counter coverage closing every silent-return path so we can name
     // EXACTLY which class of vote-tx is dropping out before reaching the
     // pending_writes.append call site.
@@ -2657,7 +2657,7 @@ pub fn executeVoteInstruction(
         return;
     }
 
-    // VOTEFORGE production vote seam: voteforge's own front door
+    // voteforge production vote seam: voteforge's own front door
     // (`voteforge/vote_program.zig:dispatch()` via `executeVoteViaVoteforge`)
     // executes every vote instruction for real against the LIVE bank accounts.
     // This is the sole vote-execution path. The retired Sig-derived transplant

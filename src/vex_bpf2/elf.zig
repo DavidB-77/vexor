@@ -482,7 +482,7 @@ pub const Executable = struct {
     /// - V3 strict: equals MM_RODATA_START (=0) for separate-rodata layout.
     /// Caller (v2_dispatch.zig) MUST use this — NOT the hardcoded
     /// MM_RODATA_START — to construct the rodata MemoryRegion. Otherwise
-    /// vmap shifts by `lowest_sh_addr` bytes (Forge SEQ:72 finding).
+    /// vmap shifts by `lowest_sh_addr` bytes (ELF-vmap forensic finding).
     pub fn rodataVaddr(self: *const Executable) u64 {
         return switch (self.ro_section) {
             .owned => |o| @intCast(o.offset),

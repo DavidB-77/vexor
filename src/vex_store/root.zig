@@ -40,7 +40,7 @@ pub const TxStatusStore = tx_status_store.TxStatusStore;
 // module-27's CLEAN dropped as "DEAD" (StorageManager was its only caller then).
 // It is now LIVE: the module-72 §J/§K network landing brought in tvu.zig
 // (`storage.LedgerDb` field on TvuService's ctx) + rpc_methods.zig
-// (`ledger_db: ?*storage.LedgerDb` on RpcContext), matching fix105 root.zig:47/94.
+// (`ledger_db: ?*storage.LedgerDb` on RpcContext), matching origin-tree root.zig:47/94.
 // ledger.zig re-disposed DELETE→KEEP verbatim-carry (403 LoC, imports only
 // core+std — self-contained; md5 58397b93…). The pointer is null in the live
 // binary (never instantiated), but its TYPE must resolve for the RPC/TVU closure.

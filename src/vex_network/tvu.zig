@@ -5446,7 +5446,7 @@ pub const TvuService = struct {
                                 // sides (coverage proof) while X itself is ABSENT — that IS is_skipped, and a
                                 // forked validator's lie can never enter getBlocks (it returns only the
                                 // cluster's rooted/confirmed slots). Default OFF; armed only after an
-                                // offline-replay gate (VEX_SKIP_CANON_FILE feeds a govnode-derived produced
+                                // offline-replay gate (VEX_SKIP_CANON_FILE feeds a oracle-node-derived produced
                                 // list so a 12h-old wedge slot, absent from live RPC retention, still gates).
                                 if (repairSkipAbandonedEnabled()) {
                                     if (self.slot_sink) |rs| {

@@ -3,8 +3,8 @@
 Five libFuzzer-ABI harnesses over Vexor's untrusted-input wire-format parsers —
 the byte-decode layer that runs on data received from peers (shreds, gossip
 packets, transactions) before any consensus or execution logic sees it. This
-is the surface class implicated in the slot-422359406 truncated-block
-incident: a malformed or adversarial buffer reaching one of these parsers
+is the surface class implicated in a truncated-block incident Vexor hit
+live on testnet: a malformed or adversarial buffer reaching one of these parsers
 must fail cleanly (a returned error), never panic, overflow, or read out of
 bounds.
 
@@ -24,7 +24,7 @@ OSS-Fuzz/libFuzzer toolchain should be able to build these files unchanged.
 | File | Target symbol | Surface |
 |---|---|---|
 | `fuzz_shred_parse.zig` | `vex_network/shred_parse.zig: parseShred` + `Shred.*` accessors + `merkleRoot`/`merkleRoot32`/`chainedMerkleRoot` | Shred wire-format decode: common header, variant byte, Merkle-proof reconstruction — the parsing layer a received shred goes through before FEC/replay logic runs. |
-| `fuzz_entry_batch.zig` | `vex_svm/entry.zig: readEntryCount/readEntryHeader` + `vex_svm/tx_ingest.zig: parse` (self-contained instruction-list skip reimplemented in the harness) | The deshredded entry-batch buffer walk `replayEntries` performs after FEC reassembly — same raw-buffer surface as the 422359406 incident. |
+| `fuzz_entry_batch.zig` | `vex_svm/entry.zig: readEntryCount/readEntryHeader` + `vex_svm/tx_ingest.zig: parse` (self-contained instruction-list skip reimplemented in the harness) | The deshredded entry-batch buffer walk `replayEntries` performs after FEC reassembly — same raw-buffer surface as the truncated-block incident above. |
 | `fuzz_gossip_protocol.zig` | `vex_network/crds.zig: Protocol.deserialize` (+ `CrdsValue.verify` on the `PullRequest` path) | Gossip wire decode: `Protocol` tag dispatch into `PullRequest`/`PullResponse`/`PushMessage`/`PruneMessage`/`Ping`/`Pong`, and — for `PullRequest` — the full `CrdsValue`/`CrdsData` union (`ContactInfo`, `LegacyContactInfo`, `Vote`, `EpochSlots`, `DuplicateShred`, ...). |
 | `fuzz_tx_ingest.zig` | `vex_svm/tx_ingest.zig: parse` + `verifySignatures` | Transaction wire decode + sanitize: the "accept a tx off the wire" stage shared by RPC `sendTransaction`/`simulateTransaction` and TPU ingest. |
 | `fuzz_compute_budget.zig` | `vex_svm/compute_budget.zig: parsePriorityFeeFromWire` / `parseComputeUnitPriceFromWire` / `parsePrecompileSigCountFromWire` | Compute-budget instruction parse, driven with the same `keys_offset`/`instructions_offset` `tx_ingest.parse` computes for the identical buffer — the real integrated call shape used on the fee path. |
@@ -52,7 +52,7 @@ that transaction), and two gossip `Protocol` messages (`PingMessage`, and a
 
 ## Building and running locally
 
-The Zig 0.15.2 toolchain on this box cannot produce a binary a stock
+The pinned Zig 0.15.2 toolchain cannot produce a binary a stock
 libFuzzer runtime will actually drive in coverage-guided mode — see
 "OSS-Fuzz readiness" below. `fuzz/runner.zig` is a small local substitute:
 a fork-per-input mutation driver linked directly against the harness's
@@ -129,7 +129,7 @@ pass, and the one bug it did find was a genuine memory-safety issue in a
 ## OSS-Fuzz readiness — known gap
 
 **These harnesses are not turnkey OSS-Fuzz-submittable yet.** The concrete
-gap, found empirically on this box:
+gap, found empirically:
 
 - `zig build-obj -fsanitize-coverage-trace-pc-guard` compiles and emits real
   `__sanitizer_cov_trace_pc_guard[_init]` calls — Zig 0.15.2 does expose

@@ -22,9 +22,9 @@ pub const AccountView = struct {
 /// snapshot_manifest sub-namespace — bank.zig (module-46 KEEP) references
 /// @import("vex_store").snapshot_manifest.{HardFork,VoteAccountStake} at module
 /// scope (bank.zig:36 HardFork / :1207 stakes). Field-faithful mirrors of
-/// snapshot_manifest.zig's real value structs (both trivial POD). fix105's
+/// snapshot_manifest.zig's real value structs (both trivial POD). origin-tree's
 /// byte-identical stub omits this namespace (bank.zig's hard_forks read forces
-/// its analysis), part of why fix105's own test-bank is red at pin 011a30f.
+/// its analysis), part of why origin-tree's own test-bank is red at pin 011a30f.
 pub const snapshot_manifest = struct {
     pub const HardFork = struct {
         slot: u64,
@@ -57,8 +57,8 @@ pub const accounts = struct {
         /// bank.zig's whole-file KEEP migration (module 46) references it at
         /// comptime, so the stub must carry a signature-faithful method. Mirrors
         /// the real `accounts_db.zig:getAccountInSlot(self, *const core.Pubkey,
-        /// core.Slot, []const core.Slot) ?AccountView`. fix105's own byte-identical
-        /// stub LACKS this method (its bank.zig grew past the stub), so fix105's
+        /// core.Slot, []const core.Slot) ?AccountView`. origin-tree's own byte-identical
+        /// stub LACKS this method (its bank.zig grew past the stub), so origin-tree's
         /// test-bank is red at pin 011a30f; this additive test-only extension
         /// (module-28/29 fresh-stub-instance device) makes the rebuild's target
         /// green — see REBUILD-LEDGER module-46 row.
@@ -96,7 +96,7 @@ pub const recorder = struct {
     // so emit* bodies are never taken at runtime; signature-faithful stubs
     // (matching recorder.zig:422/1033/1005) satisfy comptime analysis of the
     // freeze/distributePartitionedRewards path. Additive fresh-stub-instance
-    // extension (module-28/29 device); fix105's byte-identical stub lacks these,
+    // extension (module-28/29 device); origin-tree's byte-identical stub lacks these,
     // hence its own test-bank is red at pin 011a30f — see LEDGER module-46 row.
     pub fn isEnabled() bool {
         return false;

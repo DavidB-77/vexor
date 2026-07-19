@@ -23,6 +23,7 @@ instead of being duplicated here.
 - Conflict-DAG parallel transaction executor.
 - AF_XDP zero-copy networking (receive path).
 - VexLedger: a Zig-native append-segment blockstore.
-- Vexor-authored vote program (`voteforge`) as the sole vote executor.
+- Vexor-authored vote program (`src/vex_svm/voteforge/`) as the sole vote
+  executor.
 
 [0.9.0]: https://github.com/DavidB-77/vexor/releases/tag/v0.9.0

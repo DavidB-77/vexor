@@ -488,7 +488,7 @@ pub fn loadedAccountsDataSizeLimit(parsed: ComputeBudgetParsed) LoadedAccountsDa
 ///   limit = 3,000 + 200,000 + 200,000 = 403,000
 ///   priority_fee = 403,000 * 100,000 / 1,000,000 = 40,300
 /// Pre-r71-fix-3 (non_cb_count × 200,000) gave 40,000 — undercount of 300 per tx,
-/// which was the slot-483 leader-fee carrier verified against govnode.
+/// which was the slot-483 leader-fee carrier verified against oracle-node.
 pub fn priorityFee(parsed: ComputeBudgetParsed) u64 {
     const price = parsed.explicit_price orelse 0;
     if (price == 0) return 0;

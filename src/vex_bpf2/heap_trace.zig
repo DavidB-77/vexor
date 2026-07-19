@@ -28,7 +28,7 @@ pub threadlocal var g_call_count: u32 = 0;
 pub var g_dispatch_id_seq: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
 pub fn enable() u64 {
-    // R18 (Helm SEQ:55-helm Step 1): production build leaves g_active = false
+    // R18: production build leaves g_active = false
     // so every record/dump function below returns at its `if (!g_active) return`
     // guard. No log emission, no /tmp file writes, no PROGRAM_FILTER work.
     // F-track invariants (F3 bank_prune, F4 vm.reg[1] = MM_INPUT_START,
@@ -74,12 +74,12 @@ pub fn recordReadIntent(vm_addr: u64, len: u64) void {
 }
 
 /// One-shot dump of 80 bytes (10 BPF instructions) at a target pc, used to
-/// give Helm the AUTHORITATIVE bytes Vexor reads in fn 43636's first 10 insns.
-/// Helm SEQ:33 — R9 path-2 byte verification; r6=0x3479 set by some non-CALL
+/// give the debugger the AUTHORITATIVE bytes Vexor reads in fn 43636's first 10 insns.
+/// R9 path-2 byte verification; r6=0x3479 set by some non-CALL
 /// non-SYSCALL instruction in Vexor's runtime view of pcs 43636-43645.
 ///
 /// Hardcoded to fn 43636 entry (HistoryJT). Logs the full 80 bytes as 10
-/// little-endian u64 hex words — same format Helm decodes from V2-CALL insn=
+/// little-endian u64 hex words — same format the debug tooling decodes from V2-CALL insn=
 /// field. Fires ONCE per dispatch (gated by g_fn43636_dumped threadlocal),
 /// reset by enable() on each dispatch.
 pub threadlocal var g_fn43636_dumped: bool = false;
@@ -103,20 +103,20 @@ pub fn dumpFn43636Bytes(program: []const u8) void {
 
 /// One-shot dump of V2's serialize2 input region — first 256 bytes hex + total
 /// length. Throttled to first INPUT_DUMP_LIMIT dispatches globally to keep log
-/// volume sane. Helm SEQ:45 — F7 direction needs the bytes Vexor packs at
-/// MM_INPUT_START so Helm can byte-diff against Agave's expected layout.
+/// volume sane. F7 direction needs the bytes Vexor packs at
+/// MM_INPUT_START so a debugger can byte-diff against Agave's expected layout.
 pub const INPUT_DUMP_LIMIT: u32 = 5;
 pub var g_input_dump_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
 /// One-shot full-buffer dump to /tmp/v2_input_disp{N}_prog{P}.bin —
-/// throttled to FILE_DUMP_LIMIT dispatches globally. Helm SEQ:48 F8:
-/// Helm runs `python3 scripts/agave_serialize_expected.py | diff` against
+/// throttled to FILE_DUMP_LIMIT dispatches globally. F8:
+/// The debug workflow runs `python3 scripts/agave_serialize_expected.py | diff` against
 /// these to find any byte divergence beyond the first 256 already verified.
 pub const FILE_DUMP_LIMIT: u32 = 5;
 pub var g_file_dump_count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
 
-/// R17 (Helm SEQ:50): per-program guard for HistoryJT / validator-history
-/// (program_id_short = f8755962, dominant V2 fail at 88% in SEQ:48). Filter
+/// R17: per-program guard for HistoryJT / validator-history
+/// (program_id_short = f8755962, dominant V2 fail at 88% in the earlier forensic round). Filter
 /// gates BEFORE the global counter so other programs don't exhaust the
 /// 5-slot budget. Empty string disables filter (revert to global throttle).
 pub const PROGRAM_FILTER: []const u8 = "f8755962";
@@ -143,7 +143,7 @@ pub fn dumpInputToFile(disp_id: u64, program_short: []const u8, bytes: []const u
 
 /// One-shot dump of 64 bytes (8 u64 LE) at a vm_addr — used at
 /// CALL_REG/CallOutsideTextSegment to capture the &Arguments struct
-/// the panic was given (Helm SEQ:48 F7-or-F8).
+/// the panic was given.
 pub fn dumpStructAtVaddr(tag: []const u8, caller_pc: u64, vm_addr: u64, slice: []const u8) void {
     if (!g_active) return;
     if (g_call_count >= CALL_LOG_LIMIT) return;
@@ -192,7 +192,7 @@ pub fn dumpInputRegion(program_short: []const u8, bytes: []const u8) void {
 }
 
 /// Hook for CALL_REG (callx) when target is OUTSIDE program text segment.
-/// Helm SEQ:43 — F6 round, both Jito (pc=44475) and ATokenG (pc=9117)
+/// F6 round, both Jito (pc=44475) and ATokenG (pc=9117)
 /// CallOutsideTextSegment failures originate from CALL_REG paths where the
 /// target register holds a .rodata vaddr instead of a .text vaddr.
 /// Capture caller_pc, target value, source reg, r1, r10 for upstream trace.
@@ -221,7 +221,7 @@ pub fn recordCallxOk(caller_pc: u64, target: u64, source_reg: u8) void {
 /// Hook for SYSCALL CALL_IMM dispatch — fires AT entry (r6_before) and AT exit
 /// (r6_after) of every syscall. Used to confirm/refute the hypothesis that a
 /// syscall at HistoryJT pc=43643 is the source of r6=0x3479 corruption.
-/// Helm SEQ:31 — r8 instrument round.
+/// r8 instrument round.
 pub fn recordSyscallEntry(caller_pc: u64, hash: u32, r1: u64, r2: u64, r3: u64, r4: u64, r5: u64, r6_before: u64) void {
     if (!g_active) return;
     if (g_call_count >= CALL_LOG_LIMIT) return;
@@ -249,7 +249,7 @@ pub fn recordSyscallExit(caller_pc: u64, hash: u32, r0: u64, r6_after: u64) void
 /// calls, so r6 here equals r6 at callee entry.
 ///
 /// `insn_bytes` lets static-disasm verify Vexor's pc convention against
-/// the ELF byte layout — Helm SEQ:29 needs this to resolve the
+/// the ELF byte layout — needs this to resolve the
 /// 49134-vs-58630 target_pc mismatch.
 ///
 /// Used to identify the caller that loads r6 with a read-only program-

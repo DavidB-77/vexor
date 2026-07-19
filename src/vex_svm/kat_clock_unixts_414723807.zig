@@ -1,6 +1,6 @@
 //! Carrier #15 differential KAT: Clock.unix_timestamp @ testnet slot 414723807.
 //!
-//! GROUND TRUTH (govnode agave-ledger-tool oracle, 2026-06-11):
+//! GROUND TRUTH (oracle-node agave-ledger-tool oracle, 2026-06-11):
 //!   Clock@414723806 = { slot 414723806, epoch_start_ts 1781078800, epoch 972,
 //!                       lse 973, unix_timestamp 1781210359 }   (Vexor MATCHED)
 //!   Clock@414723807 = { slot 414723807, epoch_start_ts 1781078800, epoch 972,
@@ -12,7 +12,7 @@
 //!   * vote-accounts blob extracted from `agave-ledger-tool create-snapshot
 //!     414723806` (EVERY vote account's bytes as-of-parent-of-onset), parsed
 //!     here by Vexor's own vote_state_serde.deserializeVoteState.
-//!   * stake table from govnode RPC getVoteAccounts during epoch 972
+//!   * stake table from oracle-node RPC getVoteAccounts during epoch 972
 //!     (activatedStake is epoch-frozen).
 //!
 //! VERDICTS:

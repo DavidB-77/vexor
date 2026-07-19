@@ -1360,15 +1360,15 @@ pub const Vm = struct {
                 try self.pushFrame(v_manual_stack_bump, v_stack_frame_gaps);
                 const target_pc: u64 = (target_addr -% self.program_vm_addr) / INSN_SIZE;
                 if (!isPcInProgram(self.program.len, target_pc)) {
-                    // F6 (Helm SEQ:43): CallOutsideTextSegment from CALL_REG —
+                    // F6: CallOutsideTextSegment from CALL_REG —
                     // capture caller_pc, target_addr, source_reg for upstream trace.
                     heap_trace.recordCallxFail(self.reg[11], target_addr, @intCast(which_reg_idx), self.reg[1], self.reg[10]);
-                    // F8 (Helm SEQ:48): also dump 64 bytes at r1 vmaddr to
+                    // F8: also dump 64 bytes at r1 vmaddr to
                     // see the struct/&Arguments panic was given.
                     if (self.mm.vmap(.load, self.reg[1], 64)) |r1_slice| {
                         heap_trace.dumpStructAtVaddr("r1", self.reg[11], self.reg[1], r1_slice);
                     } else |_| {}
-                    // Forge SEQ:67 diag — print version/target-reg semantics for the abort
+                    // diag — print version/target-reg semantics for the abort
                     std.log.warn("[CALLX-DIAG] caller_pc={d} v={s} which_reg=r{d} target_addr=0x{x} program_vm_addr=0x{x} target_pc={d} text_len={d} insn.imm={d} insn.src=r{d} insn.dst=r{d}", .{
                         self.reg[11],                 @tagName(v),
                         which_reg_idx,                target_addr,

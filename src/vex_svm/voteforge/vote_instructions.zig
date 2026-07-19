@@ -1,4 +1,4 @@
-//! VOTEFORGE Stage 3 — state-transition layer, non-TowerSync instructions
+//! voteforge, stage 3 — state-transition layer, non-TowerSync instructions
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 3).
 //!
 //! Derived DIRECTLY from Agave 4.2.0-beta.0 (semantics authority):

@@ -3,10 +3,10 @@
 //! V1 ElfLoader does NOT support SBPFv3 (e_machine=263 / e_flags=3). Under
 //! `--bpf-stack=v1|shadow`, V1 silently swallows V3 dispatches → produces 0
 //! mutations → HistoryJT/ATokenG/Jito/Router PDAs freeze post-snapshot →
-//! continuous bank_hash divergence (multi-week blocker confirmed by Helm
-//! SEQ:61-helm via byte-diff vs govnode).
+//! continuous bank_hash divergence (multi-week blocker confirmed
+//! via byte-diff vs oracle-node).
 //!
-//! F8i (Helm SEQ:62-helm 2026-04-26): replay_stage routes V3 ELFs through
+//! F8i: replay_stage routes V3 ELFs through
 //! the V2 producer regardless of `--bpf-stack` flag. V0/V1/V2 ELFs continue
 //! to honor the flag (V1 default) since V1 handles them correctly.
 //!

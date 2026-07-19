@@ -825,7 +825,7 @@ test "inflationTotal decreases with time and floors at terminal" {
 test "epoch-990 inflation pool = canonical (libm pow byte-parity regression, incident 422156256)" {
     const testing = std.testing;
     // Exact live inputs at slot 422156256 (first slot epoch 990), from the live
-    // log + govnode canonical bank. Zig std.math.pow gave rate …535 → pool
+    // log + oracle-node canonical bank. Zig std.math.pow gave rate …535 → pool
     // …237 (1 lamph short); glibc pow gives rate …537 → pool …238 (canonical).
     const inf = Inflation{ .initial = 0.15, .terminal = 0.015, .taper = 0.15, .foundation = 0.0, .foundation_term = 0.0 };
     const slots_per_year: f64 = 78_892_314.984;
@@ -837,7 +837,7 @@ test "epoch-990 inflation pool = canonical (libm pow byte-parity regression, inc
     const cap: f64 = @floatFromInt(@as(u64, 2_106_790_928_481_151_500));
     const duration: f64 = 432_000.0 / slots_per_year;
     const pool: u64 = @intFromFloat(rate * cap * duration);
-    // Canonical total reward pool (govnode bank commission log: "out of 802826326344238").
+    // Canonical total reward pool (oracle-node bank commission log: "out of 802826326344238").
     try testing.expectEqual(@as(u64, 802_826_326_344_238), pool);
 }
 

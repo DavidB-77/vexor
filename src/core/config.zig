@@ -26,7 +26,7 @@ pub const Config = struct {
     /// Vexor will download it. Populated by repeated `--known-validator <pubkey>`.
     /// EMPTY (default) ⇒ Layer A is OFF ⇒ trust-on-download (current behavior),
     /// exactly mirroring Agave (no `--known-validator` → path skipped). Owned by
-    /// this Config's allocator. RULE #1: a 9F-prefix (govnode) key is REFUSED here.
+    /// this Config's allocator. RULE #1: a 9F-prefix (oracle-node) key is REFUSED here.
     known_validators: []const [32]u8 = &.{},
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -396,12 +396,12 @@ pub const Config = struct {
             } else if (std.mem.eql(u8, arg, "--known-validator")) {
                 i += 1;
                 if (i >= args.len) return error.MissingArgument;
-                // RULE #1 (key isolation): NEVER let a govnode 9F-prefix (base58)
+                // RULE #1 (key isolation): NEVER let a oracle-node 9F-prefix (base58)
                 // key into Vexor's known-validator set — that would cross
                 // consensus-affecting trust between the two independently-operated
                 // validators on this host. Refuse loudly rather than ingest it.
                 if (std.mem.startsWith(u8, args[i], "9f") or std.mem.startsWith(u8, args[i], "9F")) {
-                    std.log.err("[CONFIG] --known-validator {s} has the 9F govnode prefix — REFUSED (RULE #1 key isolation)", .{args[i]});
+                    std.log.err("[CONFIG] --known-validator {s} has the 9F oracle-node prefix — REFUSED (key-isolation policy)", .{args[i]});
                     return error.KnownValidatorIsGovnode;
                 }
                 var pk: [32]u8 = undefined;

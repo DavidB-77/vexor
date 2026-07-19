@@ -26,14 +26,14 @@
 const std = @import("std");
 const vex_crypto = @import("vex_crypto");
 
-// REBUILD-CLEAN (2026-07-07, module 37): fix105's own `const diagnostics =
+// REBUILD-CLEAN (2026-07-07, module 37): origin-tree's own `const diagnostics =
 // @import("diagnostics.zig");` line dropped here. diagnostics.zig is this
 // rebuild's manifest DELETE-disposition (VEXOR-REBUILD-FILE-MANIFEST-2026-07-06.md
 // §diagnostics.zig: "Only consumer is conformance.zig:28, which itself has no
 // live callers" — i.e. the manifest's own text already documents this exact
 // import as dead). Verified independently in this tree, not merely trusted
 // from the manifest note: grepped the full 733-line file for every use of the
-// `diagnostics` binding beyond its import line — zero hits. fix105's own
+// `diagnostics` binding beyond its import line — zero hits. origin-tree's own
 // `test-conformance` target (build.zig:551-559) wires ONLY `vex_crypto_core`,
 // no diagnostics import either, confirming upstream never needed it live.
 // Zero logic/behavior change — pure dead-import removal, CLEAN per the

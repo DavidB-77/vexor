@@ -325,10 +325,10 @@ test "BlockhashQueue eviction on overflow" {
 
     // Fill to max. Counter widened to u16 + hash discriminator spread across 2
     // bytes (2026-07-06 rebuild session-13 TEST-FILE-ONLY fix; PRE-EXISTING bug
-    // confirmed present byte-identical in fix105, read-only, via a direct
-    // `zig test` against fix105's own file: BLOCKHASHES_MAX=301 does not fit a
+    // confirmed present byte-identical in origin-tree, read-only, via a direct
+    // `zig test` against origin-tree's own file: BLOCKHASHES_MAX=301 does not fit a
     // u8 (max 255), so the original `var i: u8` panics on integer overflow at
-    // i==255 in both Debug and ReleaseSafe. This test has NO fix105 build.zig
+    // i==255 in both Debug and ReleaseSafe. This test has NO origin-tree build.zig
     // target, so it was never exercised by `zig build test-*` and the bug was
     // never caught upstream. A single-byte discriminator would also collide
     // every 256 entries (301 > 256), which silently breaks the post-fill

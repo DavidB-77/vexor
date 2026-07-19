@@ -1155,14 +1155,14 @@ pub fn v2DispatchBpfProgramMetered(
     // so region 1 is rodata-at-1<<32. executable_ptr.rodata() returns the
     // parsed RO section (Section.borrowed pointing at the subset of
     // elf_bytes the M1 parser identified).
-    // Forge SEQ:72 BUG #2 fix: rodata region's vm_addr MUST come from the
+    // vmap BUG #2 fix: rodata region's vm_addr MUST come from the
     // parsed ro_section's offset (which encodes lowest_sh_addr), NOT the
     // hardcoded MM_RODATA_START constant. For V0/V1/V2 lenient with
     // .text sh_addr=0x120, the canonical ro_vaddr is 0x100000120, NOT
     // 0x100000000. Using the constant shifted every rodata read by
     // lowest_sh_addr bytes — surfaced by HistoryJT's seed-vmaddr-resolves-
     // to-wrong-bytes pattern (vmaddr 0x100074E57 → "idator" via Vexor's
-    // off-by-0x120 vmap, vs canonical "config"). Verified Helm-side via
+    // off-by-0x120 vmap, vs canonical "config"). Verified reference-side via
     // Python solders.
     //
     // V3 strict (enable_lower_rodata_vaddr, SIMD-0189): rodata lives at vmaddr 0
@@ -1333,7 +1333,7 @@ pub fn v2DispatchBpfProgramMetered(
     ) catch return DispatchError.M4_InitFailed;
     defer vm.deinit();
 
-    // R18 (Helm SEQ:55-helm Step 1): V2-INVOKE-ENTRY + dumpInputRegion +
+    // R18: V2-INVOKE-ENTRY + dumpInputRegion +
     // dumpInputToFile diagnostic block removed for production build. The
     // diagnostic byte-diffs they enabled (R14-R17) confirmed serialize2
     // correctness + located snapshot-staleness root cause for HistoryJT.
@@ -1341,7 +1341,7 @@ pub fn v2DispatchBpfProgramMetered(
     // residual heap_trace.* call sites in interpreter.zig early-return at
     // their `if (!g_active) return` guard.
 
-    // F4 (Helm SEQ:38, verified by R10 r1-instrument across 5 dispatches):
+    // F4:
     // Solana sBPF entrypoint contract requires r1 = MM_INPUT_START so the BPF
     // program can read the serialized input region. interpreter.zig:537's
     // contract puts this on the caller; v2_dispatch.zig was missing it,
@@ -1350,7 +1350,7 @@ pub fn v2DispatchBpfProgramMetered(
     // Agave's loader. project_v2_r1_input_addr_root_cause_2026_04_26.md.
     vm.reg[1] = memory2.MM_INPUT_START;
 
-    // F5 (Helm SEQ:41): SIMD-0321 feature `provide_instruction_data_offset_in_vm_r2`
+    // F5: SIMD-0321 feature `provide_instruction_data_offset_in_vm_r2`
     // (pubkey 5xXZc66h4UdB6Yq7FzdBxBiRAFMMScMLwHxk2QZDaNZL) is ACTIVE on testnet
     // since slot 388028256. Agave's vm.rs:265-267 passes the RAW offset (not
     // absolute vm_addr) as r2 when active. Feature is permanently active going
@@ -1392,8 +1392,7 @@ pub fn v2DispatchBpfProgramMetered(
     }
 
     const r0_value = vm.run() catch |run_err| {
-        // Stage-4 R3 forensic: extend AV/abort log with reg state. Per Helm
-        // SEQ:18 the leading hypothesis is r2 (struct base) lands in stack
+        // Stage-4 R3 forensic: extend AV/abort log with reg state. The leading hypothesis is r2 (struct base) lands in stack
         // gap → hypothesis (2). Region bucket of r2 discriminates:
         //   0x200000000-0x2FFFFFFFF = stack → (2) confirmed
         //   0x400000000+            = input → (1) confirmed

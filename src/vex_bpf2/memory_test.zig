@@ -309,7 +309,7 @@ test "config: direct_mapping defaults false (testnet gates value:null)" {
 
 test "config: direct_mapping=true with no populated input regions falls through to normal per-region translate (post PR-5h2)" {
     // CORRECTED 2026-07-06 (rebuild migration, module 5): this test predates
-    // fix105 commit 95c8f6c ("PR-5h2: MODE 3 (SIMD-0257 ADDM) — wire vmap
+    // origin-tree commit 95c8f6c ("PR-5h2: MODE 3 (SIMD-0257 ADDM) — wire vmap
     // direct_mapping branch") and asserted the OLD, since-REMOVED behavior
     // where `direct_mapping=true` short-circuited EVERY vmap call to
     // AccessViolation. PR-5h2 replaced that blanket short-circuit because it
@@ -322,7 +322,7 @@ test "config: direct_mapping=true with no populated input regions falls through 
     // direct_mapping=true but no populated input_mem_regions is NOT special-
     // cased — it falls through to the same per-region `translate()` path as
     // direct_mapping=false and succeeds normally. `memory.zig` itself is
-    // BYTE-IDENTICAL to fix105 (unchanged) — only this stale test assertion
+    // BYTE-IDENTICAL to origin-tree (unchanged) — only this stale test assertion
     // is corrected to match already-shipped, documented production behavior.
     const alloc = T.allocator;
     var bytecode_buf = [_]u8{0} ** 4;

@@ -1019,7 +1019,7 @@ pub fn emitTxResult(
 /// bank.zig:freeze() as each pubkey's accountLtHash() is mixed into the
 /// slot's accumulator. The 4.1% of vote-state mismatches in the wider
 /// recorder window are genuine bank_hash divergence — for those, comparing
-/// per-account contributions vs govnode's bank_hash_details JSON points at
+/// per-account contributions vs oracle-node's bank_hash_details JSON points at
 /// the EXACT pubkey whose hash drifted (out of 86M loaded accounts).
 ///
 /// Schema: slot, pk (full hex32), lthash_delta_prefix (first 8 bytes of
