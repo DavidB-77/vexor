@@ -101,19 +101,21 @@ instruction-fixture corpus), executed live against a **version-matched** Agave
 reference — not against baked-in expected outputs. Latest full-corpus run
 (47,240 fixtures):
 
-- **85.80% raw** (40,533/47,240) and **92.73% under the harness's
+- **85.82% raw** (40,542/47,240) and **92.74% under the harness's
   consensus-compatibility mode** (`-c`, which normalizes error-code encoding).
 - Several families pass **100% raw**: `system` (7,400/7,400), `compute-budget`
-  (2,627/2,627), `precompile` (19,292/19,292).
+  (2,627/2,627), `precompile` (19,292/19,292), `zk_sdk` (3,124/3,124).
 - The raw gap is dominated by **disclosed known gaps**: the BPF-loader-owned
   ELF-loading fixture families (~2,900 fixtures) are not yet implemented to
   byte-match, and most of the remaining `vote`/`vm-programs` raw failures are
   error-code/CU-encoding differences that the harness's consensus mode
   recovers.
 - One genuine discrepancy surfaced by this run — a small set of `zk_sdk`
-  fixtures where Vexor reports sysvar account data on certain failure paths
-  that Agave does not — is acknowledged and being fixed. Numbers here are
-  reported honestly, including the unflattering ones.
+  fixtures where Vexor reported sysvar account data on certain failure paths
+  that Agave does not — was root-caused to a missing effects-encoding rule,
+  fixed at the shared execution seam, and re-validated: 3,124/3,124 with every
+  other family byte-identical. Numbers here are reported honestly, including
+  the unflattering ones while they lasted.
 
 ## Acknowledgments
 
