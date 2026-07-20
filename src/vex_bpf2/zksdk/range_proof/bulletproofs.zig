@@ -1,23 +1,47 @@
-//! Bulletproofs range-proof implementation over Curve25519 Ristretto points.
+//! Bulletproofs range proof: proves a set of Pedersen-committed values each
+//! lie in `[0, 2^n)` for their declared bit length, without revealing the
+//! values — the on-chain primitive confidential-transfer amounts use to
+//! prove a balance/transfer amount is non-negative and doesn't overflow,
+//! without decrypting it. Implements the non-interactive range-proof
+//! AGGREGATION scheme from the original Bulletproofs paper
+//! (https://eprint.iacr.org/2017/1066, Section 4.3): up to `MAX_COMMITMENTS`
+//! independently-committed values are batched into one proof whose size
+//! grows with `log₂` of the SUM of their bit lengths rather than linearly
+//! per value.
 //!
-//! Specifically implements non-interactive range proof aggregation
-//! that is described in the original Bulletproofs
-//! [paper](https://eprint.iacr.org/2017/1066) (Section 4.3).
+//! Protocol shape: bit-decompose every value into a single aggregated
+//! `bit_size`-length vector, commit to it (`A`) and a blinding vector (`S`),
+//! derive challenges `y`/`z` that fold the per-bit range constraints
+//! (`bᵢ ∈ {0,1}`) into one degree-2 vector polynomial `l(x)`,`r(x)` whose
+//! inner product `t(x) = <l(x),r(x)>` is what actually proves the range
+//! (Pedersen-committed via `T_1`,`T_2` and opened at a challenge `x`), then
+//! hand the now-linear `l(x)`,`r(x)` off to ipp.zig's inner-product argument
+//! to compress the final check from `O(n)` to `O(log n)` group elements. See
+//! ipp.zig's file header for the inner-product argument itself.
+//!
+//! CONSENSUS-CRITICAL — see merlin.zig's file header: the exact transcript
+//! append order/domain separators and the final aggregated MSM check in
+//! `verify` must match Agave's `zk-sdk` bit-for-bit. Allocation-free:
+//! everything here is a `[bit_size]`/`[MAX_COMMITMENTS]`-sized stack array
+//! bounded by the proof's comptime `bit_size` parameter, never a heap
+//! allocation.
+//!
+//! [agave] https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/range_proof/mod.rs
 
 const std = @import("std");
 const builtin = @import("builtin");
 const std14 = @import("../std14.zig");
-const sig = @import("../root.zig");
 const table = @import("table.zig");
 pub const InnerProductProof = @import("ipp.zig").Proof; // pub so tests can run
 
-const pedersen = sig.zksdk.pedersen;
+const pedersen = @import("../pedersen.zig");
+const ed25519 = @import("../ed25519.zig");
+const merlin = @import("../merlin.zig");
 const Edwards25519 = std.crypto.ecc.Edwards25519;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const ed25519 = sig.crypto.ed25519;
-const Transcript = sig.zksdk.Transcript;
-const ProofType = sig.runtime.program.zk_elgamal.ProofType;
+const Transcript = merlin.Transcript;
+const ProofType = @import("../zk_elgamal_types.zig").ProofType;
 
 pub const ZERO = Scalar.fromBytes(Edwards25519.scalar.zero);
 pub const ONE = Scalar.fromBytes(.{1} ++ .{0} ** 31);
@@ -187,7 +211,7 @@ pub fn Proof(bit_size: comptime_int) type {
             }
             const s_blinding = Scalar.random();
 
-            const S = sig.crypto.ed25519.mulMulti(
+            const S = ed25519.mulMulti(
                 1 + bit_size * 2,
                 .{pedersen.H} ++ table.G[0..bit_size].* ++ table.H[0..bit_size].*,
                 .{s_blinding.toBytes()} ++ s_L ++ s_R,
@@ -465,7 +489,7 @@ pub fn Proof(bit_size: comptime_int) type {
             scalars.appendAssumeCapacity(basepoint_scalar.toBytes()); // G
             points.appendAssumeCapacity(pedersen.G);
 
-            const check: Ristretto255 = sig.crypto.ed25519.mulMultiRuntime(
+            const check: Ristretto255 = ed25519.mulMultiRuntime(
                 max,
                 false,
                 true,
@@ -650,12 +674,12 @@ pub fn Data(bit_size: comptime_int) type {
             fn newTranscript(self: Context) Transcript {
                 var transcript: Transcript = .init(.@"batched-range-proof-instruction");
 
-                // sig fmt: off
+                // zig fmt: off
                 comptime var session = Transcript.getInitSession(contract);
                 defer session.finish();
                 transcript.append(&session, .bytes, "commitments", std.mem.sliceAsBytes(&self.commitments));
                 transcript.append(&session, .bytes, "bit-lengths", std.mem.sliceAsBytes(&self.bit_lengths));
-                // sig fmt: on
+                // zig fmt: on
 
                 return transcript;
             }

@@ -1,17 +1,57 @@
-//! [fd](https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_percentage_with_cap.c)
-//! [agave](https://github.com/anza-xyz/agave/blob/5a9906ebf4f24cd2a2b15aca638d609ceed87797/zk-sdk/src/sigma_proofs/percentage_with_cap.rs)
+//! Percentage-with-cap sigma proof: proves that a "delta" Pedersen commitment
+//! — computed off-circuit as `delta = percentage·10_000 - base·rate` — is
+//! consistent with whichever of two mutually-exclusive cases actually holds:
+//! either the percentage amount exceeds `max_value` (in which case `delta`
+//! may be anything, but `claimed_commitment` is asserted to commit to `0`),
+//! or the percentage amount is at most `max_value` (in which case
+//! `claimed_commitment` is asserted to commit to the SAME value as
+//! `delta_commitment`). Used by confidential-transfer-fee instructions to cap
+//! the fee taken, without the proof revealing which branch applied.
+//!
+//! Protocol: a Cramer-Damgård-Schoenmakers OR-proof over two sigma
+//! sub-protocols sharing one Fiat-Shamir challenge `c`:
+//!   - `MaxProof` — proves `percentage_commitment` opens to the known public
+//!     constant `max_value` (an equality-to-known-constant proof against
+//!     `pedersen.H` alone, since the `pedersen.G` component cancels once the
+//!     committed value is fixed and public).
+//!   - `EqualityProof` — proves `delta_commitment` and `claimed_commitment`
+//!     open to the SAME value (structurally the same two-nonce equality
+//!     construction ciphertext_commitment.zig uses for its ciphertext/
+//!     commitment link, here applied commitment-to-commitment).
+//! The prover always builds BOTH proof shapes (`createProofAboveMax`,
+//! `createProofBelowMax`), but only one is "real" — the other is a
+//! zero-knowledge SIMULATION: its challenge share (`c_max_proof` or
+//! `c_equality`) is drawn at random FIRST, and its responses are solved
+//! backwards from that share rather than from a real nonce. `verify` enforces
+//! `c_equality = c - c_max_proof`, so a valid proof always has
+//! `c_max_proof + c_equality == c`; since both branches produce
+//! transcript-indistinguishable entries and MSM shapes, the verifier cannot
+//! tell which branch was real. This is the standard technique for proving a
+//! DISJUNCTION in zero knowledge without revealing which disjunct holds. The
+//! shared `init_contract` transcript prefix is appended once, then CLONED
+//! into two independent per-branch transcripts (`transcript_percentage_
+//! above_max`/`_below_max`) before either `createProofAboveMax`/
+//! `createProofBelowMax` runs — so simulating one branch never observes or
+//! perturbs the other's transcript state.
+//!
+//! CONSENSUS-CRITICAL — see merlin.zig's file header: the exact transcript
+//! append order/domain separator and the final MSM check must match Agave's
+//! `zk-sdk` bit-for-bit.
+//!
+//! [fd] https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_percentage_with_cap.c
+//! [agave] https://github.com/anza-xyz/agave/blob/5a9906ebf4f24cd2a2b15aca638d609ceed87797/zk-sdk/src/sigma_proofs/percentage_with_cap.rs
 
 const std = @import("std");
 const builtin = @import("builtin");
-const sig = @import("../root.zig");
+const ed25519 = @import("../ed25519.zig");
+const pedersen = @import("../pedersen.zig");
+const merlin = @import("../merlin.zig");
 
-const ed25519 = sig.crypto.ed25519;
 const Edwards25519 = std.crypto.ecc.Edwards25519;
-const pedersen = sig.zksdk.pedersen;
-const ProofType = sig.runtime.program.zk_elgamal.ProofType;
+const ProofType = @import("../zk_elgamal_types.zig").ProofType;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const Transcript = sig.zksdk.Transcript;
+const Transcript = merlin.Transcript;
 const DomainSeperator = Transcript.DomainSeperator;
 
 pub const Proof = struct {
@@ -61,13 +101,13 @@ pub const Proof = struct {
             comptime var session = Transcript.getInitSession(init_contract);
             defer session.finish();
 
-            // sig fmt: off
+            // zig fmt: off
             transcript.appendNoValidate(&session, .commitment, "percentage-commitment", percentage_commitment.*);
             transcript.appendNoValidate(&session, .commitment, "delta-commitment", delta_commitment.*);
             transcript.appendNoValidate(&session, .commitment, "claimed-commitment", claimed_commitment.*);
             transcript.append(&session, .u64, "max-value", max_value);
             transcript.appendDomSep(&session, .@"percentage-with-cap-proof");
-            // sig fmt: on
+            // zig fmt: on
         }
 
         var transcript_percentage_above_max = transcript.*;
@@ -293,13 +333,13 @@ pub const Proof = struct {
             comptime var session = Transcript.getInitSession(init_contract);
             defer session.finish();
 
-            // sig fmt: off
+            // zig fmt: off
             try transcript.append(&session, .validate_commitment, "percentage-commitment", percentage_commitment.*);
             try transcript.append(&session, .validate_commitment, "delta-commitment", delta_commitment.*);
             try transcript.append(&session, .validate_commitment, "claimed-commitment", claimed_commitment.*);
             transcript.append(&session, .u64, "max-value", max_value);
             transcript.appendDomSep(&session, .@"percentage-with-cap-proof");
-            // sig fmt: on
+            // zig fmt: on
         }
 
         const m = pedersen.scalarFromInt(u64, max_value);

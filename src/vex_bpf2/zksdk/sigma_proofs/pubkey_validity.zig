@@ -1,18 +1,41 @@
-//! [fd](https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_pubkey_validity.c)
-//! [agave](https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/sigma_proofs/pubkey_validity.rs)
+//! Pubkey-validity sigma proof: proves that an ElGamal public key is
+//! well-formed — i.e. that the prover knows the secret scalar `s` for which
+//! `pubkey = s⁻¹·H` — without revealing `s`. This is a Schnorr-style proof of
+//! knowledge of a discrete log, specialized to the inverted-secret form
+//! `Pubkey.fromSecret` uses (see elgamal.zig).
+//!
+//! Protocol: the prover picks a random nonce `y`, commits to it as
+//! `Y = y·H`, and the transcript (Fiat-Shamir) turns `y`'s random challenge
+//! into a deterministic scalar `c` derived from everything committed so far
+//! (the pubkey, the domain separator, and `Y` itself) — binding the proof to
+//! exactly this pubkey and no other. The response `z = c·s⁻¹ + y` lets a
+//! verifier, who does NOT know `s` or `y`, check the single MSM relation
+//! `z·H - c·pubkey == Y` (rearranged from `z·H == Y + c·pubkey`): only someone
+//! who knew `s⁻¹` could have produced a `z` satisfying this for the `c` that
+//! the transcript deterministically produces, since `c` cannot be predicted
+//! before `Y` is fixed.
+//!
+//! CONSENSUS-CRITICAL: transcript append order/domain separator and the final
+//! MSM check must match Agave's `zk-sdk` bit-for-bit — see merlin.zig's file
+//! header for why this can't be established by "any correct implementation
+//! converges" reasoning alone.
+//!
+//! [fd] https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_pubkey_validity.c
+//! [agave] https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/sigma_proofs/pubkey_validity.rs
 
 const std = @import("std");
-const sig = @import("../root.zig");
+const ed25519 = @import("../ed25519.zig");
+const elgamal = @import("../elgamal.zig");
+const pedersen = @import("../pedersen.zig");
+const merlin = @import("../merlin.zig");
 
-const ed25519 = sig.crypto.ed25519;
 const Edwards25519 = std.crypto.ecc.Edwards25519;
-const ElGamalKeypair = sig.zksdk.ElGamalKeypair;
-const ElGamalPubkey = sig.zksdk.ElGamalPubkey;
-const pedersen = sig.zksdk.pedersen;
-const ProofType = sig.runtime.program.zk_elgamal.ProofType;
+const ElGamalKeypair = elgamal.Keypair;
+const ElGamalPubkey = elgamal.Pubkey;
+const ProofType = @import("../zk_elgamal_types.zig").ProofType;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const Transcript = sig.zksdk.Transcript;
+const Transcript = merlin.Transcript;
 const DomainSeperator = Transcript.DomainSeperator;
 
 pub const Proof = struct {
@@ -50,7 +73,7 @@ pub const Proof = struct {
         transcript.appendNoValidate(&session, .point, "Y", Y);
         const c = transcript.challengeScalar(&session, "c");
 
-        // Compute the masked secret key
+        // Compute the masked secret key.
         const z = c.mul(s_inv).add(y);
 
         return .{
@@ -67,7 +90,7 @@ pub const Proof = struct {
         comptime var session = Transcript.getSession(contract);
         defer session.finish();
 
-        // Setup
+        // Setup.
         // [agave] https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/sigma_proofs/pubkey_validity.rs#L102-L104
         try transcript.append(&session, .validate_pubkey, "pubkey", pubkey.*);
         transcript.appendDomSep(&session, .@"pubkey-proof");
@@ -205,10 +228,10 @@ test "proof string" {
     const pubkey_string = "lhKgvZ+xRsKTR7wfKNlpltvPZk0Pc5MfpyVlqRmDcAk=";
     const pubkey = try ElGamalPubkey.fromBase64(pubkey_string);
 
-    // sig fmt: off
+    // zig fmt: off
     const proof_string = "utgoLBANuVRtvN7YyZrUwz0dZL+ObsDlRpJdb6erXiQZWCtkvRbSJ8mSBKPvkahHunah80JooQWqhFQXkOCWBw==";
     const proof = try Proof.fromBase64(proof_string);
-    // sig fmt: on
+    // zig fmt: on
 
     var verifier_transcript = Transcript.initTest("test");
     try proof.verify(&pubkey, &verifier_transcript);

@@ -1,22 +1,56 @@
-//! [fd](https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_grouped_ciphertext_2_handles_validity.c)
-//! [agave](https://github.com/anza-xyz/agave/blob/5a9906ebf4f24cd2a2b15aca638d609ceed87797/zk-sdk/src/sigma_proofs/grouped_ciphertext_validity/handles_2.rs)
+//! Grouped-ciphertext (2-handle) validity proof: proves that a Pedersen
+//! commitment `C = x·G + r·H` and TWO ElGamal decrypt handles
+//! `D_1 = r·P_1`, `D_2 = r·P_2` (under `first_pubkey`/`second_pubkey`) all
+//! share the SAME opening `r` and message `x` — i.e. the grouped ciphertext
+//! `(C, D_1, D_2)` really does let both keyholders decrypt the same amount,
+//! without revealing `x` or `r`. Used, e.g., for confidential-transfer
+//! instructions that must prove a transfer amount is simultaneously
+//! decryptable by both sender and recipient (or recipient + auditor).
+//!
+//! Protocol: a two-nonce Chaum-Pedersen-style proof —
+//!   - `Y_0 = y_r·H + y_x·G`  — binds the nonce pair to the commitment's own
+//!     `r·H + x·G` form.
+//!   - `Y_1 = y_r·first_pubkey`   — binds `y_r` to the SAME opening the first
+//!     handle needs.
+//!   - `Y_2 = y_r·second_pubkey`  — binds `y_r` to the SAME opening the second
+//!     handle needs (this is what forces `D_1` and `D_2` to share one `r`).
+//! Responses `z_r = c·r + y_r`, `z_x = c·x + y_x` let the verifier check one
+//! combined MSM relation (folded via `w`/`w²` — batch-verification support)
+//! against `Y_0`. `Y_2`'s transcript entry is deliberately unvalidated
+//! (`.point`, not `.validate_point`) since `second_pubkey` is allowed to be
+//! the identity (a caller may pass an all-zero optional-auditor key).
+//!
+//! `initBatched`/`verifyBatched` fold TWO grouped ciphertexts (a `lo`/`hi`
+//! split for wide amounts) into a single proof: a challenge `t` is drawn
+//! from the transcript BEFORE the base contract runs, then
+//! `message = hi·t + lo` and `opening = opening_hi·t + opening_lo` are proved
+//! directly via `initDirect`/`verifyDirect`'s ordinary (unbatched) relation —
+//! `verifyDirect`'s `batched` comptime flag only changes which extra MSM
+//! terms (the `_hi` commitment/handles, scaled by `t`) get folded in.
+//!
+//! CONSENSUS-CRITICAL — see merlin.zig's file header: the exact transcript
+//! append order/domain separators and the final MSM check must match
+//! Agave's `zk-sdk` bit-for-bit.
+//!
+//! [fd] https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_grouped_ciphertext_2_handles_validity.c
+//! [agave] https://github.com/anza-xyz/agave/blob/5a9906ebf4f24cd2a2b15aca638d609ceed87797/zk-sdk/src/sigma_proofs/grouped_ciphertext_validity/handles_2.rs
 
 const std = @import("std");
 const builtin = @import("builtin");
 const std14 = @import("../../std14.zig");
-const sig = @import("../../root.zig");
+const ed25519 = @import("../../ed25519.zig");
+const elgamal = @import("../../elgamal.zig");
+const pedersen = @import("../../pedersen.zig");
+const merlin = @import("../../merlin.zig");
 
 const Edwards25519 = std.crypto.ecc.Edwards25519;
-const elgamal = sig.zksdk.elgamal;
-const pedersen = sig.zksdk.pedersen;
-const ElGamalKeypair = sig.zksdk.ElGamalKeypair;
-const ElGamalPubkey = sig.zksdk.ElGamalPubkey;
+const ElGamalKeypair = elgamal.Keypair;
+const ElGamalPubkey = elgamal.Pubkey;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const Transcript = sig.zksdk.Transcript;
-const ed25519 = sig.crypto.ed25519;
+const Transcript = merlin.Transcript;
 const GroupedElGamalCiphertext = elgamal.GroupedElGamalCiphertext(2);
-const ProofType = sig.runtime.program.zk_elgamal.ProofType;
+const ProofType = @import("../../zk_elgamal_types.zig").ProofType;
 const DomainSeperator = Transcript.DomainSeperator;
 
 pub const Proof = struct {
@@ -78,10 +112,10 @@ pub const Proof = struct {
 
         transcript.appendNoValidate(&session, .pubkey, "first-pubkey", first_pubkey.*);
         transcript.append(&session, .pubkey, "second-pubkey", second_pubkey.*);
-        // sig fmt: off
+        // zig fmt: off
         transcript.appendNoValidate(&session, .grouped_2, "grouped-ciphertext-lo", grouped_ciphertext_lo.*);
         transcript.appendNoValidate(&session, .grouped_2, "grouped-ciphertext-hi", grouped_ciphertext_hi.*);
-        // sig fmt: on
+        // zig fmt: on
 
         transcript.appendDomSep(&session, .@"batched-validity-proof");
         transcript.append(&session, .u64, "handles", 2);
@@ -204,11 +238,11 @@ pub const Proof = struct {
         comptime var session = Transcript.getInitSession(init_contract);
         defer session.finish();
 
-        // sig fmt: off
+        // zig fmt: off
         try transcript.append(&session, .validate_pubkey, "first-pubkey", first_pubkey.*);
         transcript.append(&session, .pubkey, "second-pubkey", second_pubkey.*);
         try transcript.append(&session, .validate_grouped_2, "grouped-ciphertext", grouped_ciphertext.*);
-        // sig fmt: on
+        // zig fmt: on
 
         try self.verifyDirect(false, .{
             .first_pubkey = first_pubkey,
@@ -231,12 +265,12 @@ pub const Proof = struct {
         comptime var session = Transcript.getInitSession(batched_contract);
         defer session.finish();
 
-        // sig fmt: off
+        // zig fmt: off
         try transcript.append(&session, .validate_pubkey, "first-pubkey", first_pubkey.*);
         transcript.append(&session, .pubkey, "second-pubkey", second_pubkey.*);
         try transcript.append(&session, .validate_grouped_2, "grouped-ciphertext-lo", grouped_ciphertext_lo.*);
         try transcript.append(&session, .validate_grouped_2, "grouped-ciphertext-hi", grouped_ciphertext_hi.*);
-        // sig fmt: on
+        // zig fmt: on
 
         transcript.appendDomSep(&session, .@"batched-validity-proof");
         transcript.append(&session, .u64, "handles", 2);
@@ -766,13 +800,13 @@ test "proof string" {
     const second_pubkey_string = "2n1QN21P9Sct2VLIPZPnMrKaaOk32HgJswBSrnS//2c=";
     const second_pubkey = try ElGamalPubkey.fromBase64(second_pubkey_string);
 
-    // sig fmt: off
+    // zig fmt: off
     const grouped_ciphertext_string = "ZBw1CGUSTw+HUMOz5kZfudrvpA06RRXZ3r1Fbbl9W2NgowjM+0pXGDX3o+15YjMOdYLMpATyRVOAn/tvViyndEZy4BYO6P9gK3snCDVBqVLWe3NhpYqZODiy0KycRLo1";
     const grouped_ciphertext = try GroupedElGamalCiphertext.fromBase64(grouped_ciphertext_string);
 
     const proof_string = "0KudqgloR0IekkFmhDTz63kwtqecTVEMZtmb1qruARuqqki5AjgZoyHy6qJG3AugO4Ur8AP6/4RbH+EJExAzNKJincDYZUxe1VFZRgmD4pRnfYz2NEqZ3YizYC3NQ051ii91O1FxQzYfXOjsnQl4qvtkZqM6c6gZMxWtVmlMJAuu3buONyUOsyDHEx0gXBWTN5hv/CvSZij7owfPnZ36CA==";
     const proof = try Proof.fromBase64(proof_string);
-    // sig fmt: on
+    // zig fmt: on
 
     var verifier_transcript = Transcript.initTest("Test");
     try proof.verify(
@@ -838,7 +872,7 @@ test "batched proof string" {
     const second_pubkey_string = "evcjLw8+v2mcWRisCCKXbjWVNRsC0JufOoSV5cR9ixg=";
     const second_pubkey = try ElGamalPubkey.fromBase64(second_pubkey_string);
 
-    // sig fmt: off
+    // zig fmt: off
     const grouped_ciphertext_lo_string = "MsnlU3s9YjWFaC3IjIKS52yl41X1xH+mre0BbAwE2j3E28wjWQPZn4B4nM+eV0zgihHq7uUSY57a4l42HJRULIBlCR/8G2Wfuq63WVbBroxmRbbJzZFGgdpGVLoFA8Aw";
     const grouped_ciphertext_lo = try GroupedElGamalCiphertext.fromBase64(grouped_ciphertext_lo_string);
 
@@ -847,7 +881,7 @@ test "batched proof string" {
 
     const proof_string = "GqVxS3sISd9hw3r0jDx3qwNFArLpiXMcySvtQqu5PSGoZDTtRgXMDiSEPSRoTER7/pjI/z2G8yNWYBMS6E28U8rnVCAS6k1K8anbrTF4n7TRmAac4CdpKCh8AZPzvi40kpWskl20Fogq8WPVf1r2i6nesQGTrMsKXH5j7ShC8QZbPtTn878eTdB7K9DNWFxGshxL8KzMh0dLMlj7IAJnAg==";
     const proof = try Proof.fromBase64(proof_string);
-    // sig fmt: on
+    // zig fmt: on
 
     var verifier_transcript = Transcript.initTest("Test");
 

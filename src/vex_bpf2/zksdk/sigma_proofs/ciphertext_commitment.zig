@@ -1,21 +1,57 @@
-//! [fd](https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_ciphertext_commitment_equality.c)
-//! [agave](https://github.com/anza-xyz/agave/blob/5a9906ebf4f24cd2a2b15aca638d609ceed87797/zk-sdk/src/sigma_proofs/ciphertext_commitment_equality.rs)
+//! Ciphertext-commitment-equality sigma proof: proves that an ElGamal
+//! ciphertext and a separate Pedersen commitment both encode the SAME amount
+//! `x`, without revealing `x`, the ElGamal secret key `s`, or the commitment's
+//! opening `r`. Used, e.g., to link a confidential-transfer ciphertext to a
+//! plaintext commitment the runtime can range-check.
+//!
+//! Protocol: this is three intertwined Schnorr-style proofs of knowledge
+//! (of `s`, `x`, and `r` respectively), sharing the fresh nonces `y_s, y_x,
+//! y_r` and combined into a single MSM check via the challenge `c`:
+//!   - `Y_0 = y_s·pubkey`             — binds the nonce to the ElGamal secret.
+//!   - `Y_1 = y_x·G + y_s·handle`     — binds `y_x` to the SAME `x` the
+//!     ciphertext's decrypt handle would need, cross-linking the ciphertext
+//!     and commitment openings through the shared secret `s`.
+//!   - `Y_2 = y_x·G + y_r·H`          — the commitment-side nonce pair for
+//!     Pedersen's `x·G + r·H` form.
+//! The responses `z_s = c·s + y_s`, `z_x = c·x + y_x`, `z_r = c·r + y_r` let
+//! the verifier check one combined MSM relation (folded via a second
+//! challenge `w`, batch-verification support — see zero_ciphertext.zig's file
+//! header for the general pattern) against `Y_2`, without ever learning `s`,
+//! `x`, or `r` individually — only that all three commitments (`pubkey`,
+//! `ciphertext`, `commitment`) are internally consistent for some fixed
+//! `(s, x, r)`.
+//!
+//! `Proof.init`'s trailing `z_s`/`z_x`/`z_r`/`w` transcript append+challenge
+//! is a release-build optimization, not dead code: `w`'s VALUE is never used
+//! by `init` (the responses above are already fully computed), but running it
+//! in Debug builds satisfies `Transcript.Session.finish`'s "was the whole
+//! protocol contract consumed" check (merlin.zig) — a compile-time-only
+//! safety net that a `ReleaseSafe`/`ReleaseFast` build skips for speed. This
+//! has zero effect on the emitted proof bytes; do not "clean up" by making it
+//! unconditional or removing it.
+//!
+//! CONSENSUS-CRITICAL — see merlin.zig's file header: the exact transcript
+//! append order/domain separator and the final MSM check must match Agave's
+//! `zk-sdk` bit-for-bit.
+//!
+//! [fd] https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_ciphertext_commitment_equality.c
+//! [agave] https://github.com/anza-xyz/agave/blob/5a9906ebf4f24cd2a2b15aca638d609ceed87797/zk-sdk/src/sigma_proofs/ciphertext_commitment_equality.rs
 
 const std = @import("std");
 const builtin = @import("builtin");
-const sig = @import("../root.zig");
+const ed25519 = @import("../ed25519.zig");
+const elgamal = @import("../elgamal.zig");
+const pedersen = @import("../pedersen.zig");
+const merlin = @import("../merlin.zig");
 
-const ed25519 = sig.crypto.ed25519;
 const Edwards25519 = std.crypto.ecc.Edwards25519;
-const elgamal = sig.zksdk.elgamal;
-const ElGamalCiphertext = sig.zksdk.ElGamalCiphertext;
-const ElGamalKeypair = sig.zksdk.ElGamalKeypair;
-const ElGamalPubkey = sig.zksdk.ElGamalPubkey;
-const pedersen = sig.zksdk.pedersen;
-const ProofType = sig.runtime.program.zk_elgamal.ProofType;
+const ElGamalCiphertext = elgamal.Ciphertext;
+const ElGamalKeypair = elgamal.Keypair;
+const ElGamalPubkey = elgamal.Pubkey;
+const ProofType = @import("../zk_elgamal_types.zig").ProofType;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const Transcript = sig.zksdk.Transcript;
+const Transcript = merlin.Transcript;
 const DomainSeperator = Transcript.DomainSeperator;
 
 pub const Proof = struct {
@@ -99,6 +135,9 @@ pub const Proof = struct {
         const z_x = c.mul(x).add(y_x);
         const z_r = c.mul(r).add(y_r);
 
+        // See file header: release builds skip this — the responses above are
+        // already final, and `w` is unused here (batch verification is a
+        // `verify`-side concern only).
         if (builtin.mode == .Debug) {
             transcript.append(&session, .scalar, "z_s", z_s);
             transcript.append(&session, .scalar, "z_x", z_x);
@@ -518,13 +557,13 @@ test "proof strings" {
     const commitment_string = "RNst9nTGL7PkluExuhmD1kJNM86ZZH6OE8R4P1pPFHQ=";
     const commitment = try pedersen.Commitment.fromBase64(commitment_string);
 
-    // sig fmt: off
+    // zig fmt: off
     const ciphertext_string = "PsM4qA4ImFKGui57JZKzIFl1RO30GG+saCMmI9gAAENu82mvud6uhZ6YLJoLcq5hLSLPY48R8p//H24gNjxoBg==";
     const ciphertext = try ElGamalCiphertext.fromBase64(ciphertext_string);
 
     const proof_string = "ELyazp4KuO/vLn91GiiEBgwYlMvisVisVRf8DWRjE1KoFGV2mxRX370N/roHFXArVXGTzL1e0C8UAPHHVYI5M+rE7mXhpGJ1rpMuGduCavOb7WIvzYE0xO6gQmPMeow08x5O/e4SlyGfA2s1S/Z8J+t9yxqbfqTugn9TNjFBFAcM3WOOFGk0dQdi7V3YGpNQMz3P9oWE7d1SsVohUDYEAvyaqXYWc0+YSJEdC7BaRdTqXp4ft8ybAjNB6SmCeisO";
     const proof = try Proof.fromBase64(proof_string);
-    // sig fmt: on
+    // zig fmt: on
 
     var verifier_transcript = Transcript.initTest("Test");
     try proof.verify(

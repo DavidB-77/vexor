@@ -1,21 +1,56 @@
-//! [fd](https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_ciphertext_ciphertext_equality.c)
-//! [agave](https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/sigma_proofs/ciphertext_ciphertext_equality.rs)
+//! Ciphertext-ciphertext-equality sigma proof: proves that two ElGamal
+//! ciphertexts — the first under `first_pubkey`, the second under a
+//! (possibly different) `second_pubkey` — encrypt the SAME amount `x`,
+//! without revealing `x`, the first secret key `s`, or the second
+//! ciphertext's opening `r`. Used, e.g., when a confidential-transfer
+//! instruction re-encrypts an amount under a different party's pubkey and
+//! must prove the re-encryption is faithful to the original.
+//!
+//! Protocol: an extension of ciphertext_commitment.zig's three-nonce
+//! construction with a FOURTH nonce/response pair for the second
+//! ciphertext's ElGamal handle:
+//!   - `Y_0 = y_s·first_pubkey`          — binds the nonce to the first secret key `s`.
+//!   - `Y_1 = y_x·G + y_s·first_handle`  — binds `y_x` to the SAME `x` the first
+//!     ciphertext's decrypt handle needs, cross-linked through `s`.
+//!   - `Y_2 = y_x·G + y_r·H`             — commitment-side nonce pair for the second
+//!     ciphertext's Pedersen `x·G + r·H` form (same shape ciphertext_commitment.zig
+//!     uses for its own commitment link).
+//!   - `Y_3 = y_r·second_pubkey`         — binds `y_r` to the second ciphertext's
+//!     handle key, so the SAME opening `r` used in `Y_2` is also the one
+//!     `second_ciphertext.handle` was formed with.
+//! Responses `z_s = c·s + y_s`, `z_x = c·x + y_x`, `z_r = c·r + y_r` let the
+//! verifier check one combined MSM relation (folded via `w`/`w²`/`w³` —
+//! batch-verification support, see zero_ciphertext.zig's file header) against
+//! `Y_0`. The second ciphertext's commitment is deliberately allowed to be
+//! the identity point in the transcript contract (`.type = .ciphertext`, not
+//! `.validate_ciphertext`) — Token-2022 confidential accounts commonly start
+//! with a zeroed pending/available balance, and this proof still needs to
+//! bind that state into the transcript without rejecting it outright at
+//! decode time (the algebraic check itself, not `fromBytes`, is what
+//! enforces correctness).
+//!
+//! CONSENSUS-CRITICAL — see merlin.zig's file header: the exact transcript
+//! append order/domain separator and the final MSM check must match Agave's
+//! `zk-sdk` bit-for-bit.
+//!
+//! [fd] https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_ciphertext_ciphertext_equality.c
+//! [agave] https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/sigma_proofs/ciphertext_ciphertext_equality.rs
 
 const std = @import("std");
 const builtin = @import("builtin");
-const sig = @import("../root.zig");
+const ed25519 = @import("../ed25519.zig");
+const elgamal = @import("../elgamal.zig");
+const pedersen = @import("../pedersen.zig");
+const merlin = @import("../merlin.zig");
 
-const ed25519 = sig.crypto.ed25519;
 const Edwards25519 = std.crypto.ecc.Edwards25519;
-const elgamal = sig.zksdk.elgamal;
-const ElGamalCiphertext = sig.zksdk.ElGamalCiphertext;
-const ElGamalKeypair = sig.zksdk.ElGamalKeypair;
-const ElGamalPubkey = sig.zksdk.ElGamalPubkey;
-const pedersen = sig.zksdk.pedersen;
-const ProofType = sig.runtime.program.zk_elgamal.ProofType;
+const ElGamalCiphertext = elgamal.Ciphertext;
+const ElGamalKeypair = elgamal.Keypair;
+const ElGamalPubkey = elgamal.Pubkey;
+const ProofType = @import("../zk_elgamal_types.zig").ProofType;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const Transcript = sig.zksdk.Transcript;
+const Transcript = merlin.Transcript;
 const DomainSeperator = Transcript.DomainSeperator;
 
 pub const Proof = struct {
@@ -141,13 +176,13 @@ pub const Proof = struct {
         comptime var session = Transcript.getSession(contract);
         defer session.finish();
 
-        // sig fmt: off
+        // zig fmt: off
         try transcript.append(&session, .validate_pubkey, "first-pubkey", first_pubkey.*);
         try transcript.append(&session, .validate_pubkey, "second-pubkey", second_pubkey.*);
         try transcript.append(&session, .validate_ciphertext, "first-ciphertext", first_ciphertext.*);
         transcript.append(&session, .ciphertext, "second-ciphertext", second_ciphertext.*);
         transcript.appendDomSep(&session, .@"ciphertext-ciphertext-equality-proof");
-        // sig fmt: on
+        // zig fmt: on
 
         const P_first = first_pubkey.point;
         const C_first = first_ciphertext.commitment.point;
@@ -518,7 +553,7 @@ test "proof string" {
     const second_pubkey_string = "Iph2rhdueZ+zu80qqol50HpCDSZUi8Dsnj5HgG1SLxo=";
     const second_pubkey = try ElGamalPubkey.fromBase64(second_pubkey_string);
 
-    // sig fmt: off
+    // zig fmt: off
     const first_ciphertext_string = "JN53y4eNNDlLVT9/K1RaEmduNZGes/8tJYN9IxI6519cyvae5bOZEEGWeHmxaTRwV/84/yw54AdezYWIl1KDeg==";
     const first_ciphertext = try ElGamalCiphertext.fromBase64(first_ciphertext_string);
 
@@ -527,7 +562,7 @@ test "proof string" {
 
     const proof_string = "ij/fhClZeoguA0RvwPqbzU0Df3lqWwZgQdOLCiRmq2KA79t4/EOaHeWlXNugCRDC/SMdbVLt1k32Ko3P3BjNA7zXoI19g4ex61/UGL4+ScL9xpcsJRVheqFENxhbZjZ7CLRWXkYAl+UvVcvHjSuO2bVHPpuHBoBONlUt5rP5K2cxrg1sgH7wXvrV2cMEtZOqA9MQ0WYemEb2N9c77BycArJgGc/wlRu58VygHmbEuwbmWsrfc1xdpjb5LFSBuaoEeCvywXJmR7iL9JgfkIhvv//jvDCeK6BkqsfStocFrQQ=";
     const proof = try Proof.fromBase64(proof_string);
-    // sig fmt: on
+    // zig fmt: on
 
     var verifier_transcript = Transcript.initTest("Test");
     try proof.verify(

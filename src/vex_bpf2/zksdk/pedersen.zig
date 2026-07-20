@@ -1,13 +1,31 @@
+//! Pedersen commitments over Ristretto255.
+//!
+//! A commitment is `commit(m, r) = m·G + r·H` for message scalar `m` and opening
+//! (blinding) scalar `r`, where `G` and `H` are fixed, independent generators —
+//! nobody knows `log_G(H)`, which is what makes the scheme both binding (can't
+//! open a commitment to two different messages) and hiding (the commitment
+//! alone reveals nothing about `m`). Twisted ElGamal (elgamal.zig) builds on
+//! this: a ciphertext is a commitment plus a "decrypt handle" that binds the
+//! same opening to a specific public key.
+//!
+//! CONSENSUS-CRITICAL: `G`/`H` are fixed wire constants and every combination
+//! here is Ristretto255 group arithmetic — any correct implementation of that
+//! arithmetic produces the byte-identical compressed encoding as Agave's
+//! curve25519-dalek, so there is no room for behavioral drift as long as the
+//! scalar/point math itself is correct. Allocation-free: everything here is
+//! value math over fixed-size types.
+//!
+//! https://github.com/anza-xyz/agave/blob/b11ca828cfc658b93cb86a6c5c70561875abe237/zk-sdk/src/encryption/pedersen.rs
+
 const std = @import("std");
-const sig = @import("root.zig");
+const ed25519 = @import("ed25519.zig");
+const elgamal = @import("elgamal.zig");
 
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Edwards25519 = std.crypto.ecc.Edwards25519;
 const Scalar = Edwards25519.scalar.Scalar;
-const ed25519 = sig.crypto.ed25519;
-const Pubkey = sig.zksdk.ElGamalPubkey;
 
-/// Pedersen basepoint.
+/// Pedersen base generator — the standard Ristretto255 basepoint, fixed by the wire protocol.
 pub const G = b: {
     @setEvalBranchQuota(10_000);
     break :b Ristretto255.fromBytes(.{
@@ -18,10 +36,10 @@ pub const G = b: {
     }) catch unreachable;
 };
 
-/// Hash-to-ristretto of SHA3-512(G), with G in compressed form.
+/// Second generator, independent of G with unknown discrete log: hash-to-ristretto
+/// of SHA3-512(compressed G). Pinned as a constant rather than derived at comptime —
+/// hash-to-group is far too slow to run through the compile-time evaluator.
 pub const H = b: {
-    // We could compute `H` at comptime, but that would take *way* too long!
-    // Maybe we could look into it once comptime execution is sped up a bit.
     @setEvalBranchQuota(10_000);
     break :b Ristretto255.fromBytes(.{
         0x8c, 0x92, 0x40, 0xb4, 0x56, 0xa9, 0xe6, 0xdc,
@@ -31,9 +49,13 @@ pub const H = b: {
     }) catch unreachable;
 };
 
+/// A commitment's blinding factor. Also doubles as the shared secret between a
+/// commitment and every decrypt handle bound to it (same opening, different pubkey).
 pub const Opening = struct {
     scalar: Scalar,
 
+    /// Decodes a canonical (fully-reduced) scalar. Non-canonical encodings are rejected
+    /// rather than silently reduced — an opening must round-trip exactly.
     pub fn fromBytes(bytes: [32]u8) !Opening {
         const scalar = Scalar.fromBytes(bytes);
         try Edwards25519.scalar.rejectNonCanonical(bytes);
@@ -45,6 +67,7 @@ pub const Opening = struct {
     }
 };
 
+/// `m·G + r·H` compressed to its 32-byte Ristretto255 encoding.
 pub const Commitment = struct {
     point: Ristretto255,
 
@@ -72,10 +95,13 @@ pub const Commitment = struct {
     }
 };
 
+/// Binds a commitment's opening to a specific ElGamal public key: `r·pubkey`.
+/// Whoever holds the matching secret key can combine this with the commitment
+/// to recover (and decrypt) the message; nobody else can, without the opening.
 pub const DecryptHandle = struct {
     point: Ristretto255,
 
-    pub fn init(pubkey: *const Pubkey, opening: *const Opening) DecryptHandle {
+    pub fn init(pubkey: *const elgamal.Pubkey, opening: *const Opening) DecryptHandle {
         const point = ed25519.mul(true, pubkey.point, opening.scalar.toBytes());
         return .{ .point = point };
     }
@@ -96,14 +122,10 @@ pub const DecryptHandle = struct {
     }
 };
 
-// init with a scalar and an opening
-// init with a scalar and generate opening
-// init with a value and an opening
-// init with a value and generate opening
-
+/// Commits to an already-reduced scalar with a caller-supplied opening.
+/// G and H are non-identity and `opening.scalar` is never required to be nonzero
+/// for the MSM itself, so this can't fail — no error union needed.
 pub fn init(s: Scalar, opening: *const Opening) Commitment {
-    // G and H are not identities and opening.scalar cannot be zero,
-    // so this function cannot return an error.
     const point = ed25519.mulMulti(
         2,
         .{ G, H },
@@ -112,21 +134,25 @@ pub fn init(s: Scalar, opening: *const Opening) Commitment {
     return .{ .point = point };
 }
 
+/// Commits to a scalar with a freshly-generated random opening.
 pub fn initScalar(s: Scalar) struct { Commitment, Opening } {
     const opening = Opening.random();
     return .{ init(s, &opening), opening };
 }
 
+/// Commits to an integer value (encoded as a scalar) with a freshly-generated opening.
 pub fn initValue(comptime T: type, value: T) struct { Commitment, Opening } {
     const opening = Opening.random();
     return .{ initOpening(T, value, &opening), opening };
 }
 
+/// Commits to an integer value with a caller-supplied opening.
 pub fn initOpening(comptime T: type, value: T, opening: *const Opening) Commitment {
     const scalar = scalarFromInt(T, value);
     return init(scalar, opening);
 }
 
+/// Encodes an unsigned integer as a little-endian scalar, zero-extended to 32 bytes.
 pub fn scalarFromInt(comptime T: type, value: T) Scalar {
     var buffer: [32]u8 = .{0} ** 32;
     std.mem.writeInt(T, buffer[0..@sizeOf(T)], value, .little);

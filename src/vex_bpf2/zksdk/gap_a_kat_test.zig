@@ -3,7 +3,7 @@
 //! This is THE deploy gate. It proves the ported Zig verifier (zksdk.*) is byte-faithful to
 //! canonical Agave solana-zk-sdk 5.0.1 — NOT merely self-consistent. The fixtures in
 //! testdata/agave_zk_vectors.txt are REAL proof bytes emitted by the Agave 5.0.1 off-host PROVER
-//! (zk-vector-harness/), each one self-verified Ok by Agave's own verifier. They are
+//! (/home/davidb/zk-vector-harness/), each one self-verified Ok by Agave's own verifier. They are
 //! non-deterministic one-shot captures (random openings + Fiat-Shamir), so they cannot be
 //! regenerated — they are committed (testdata/) as the empirical Sig==Agave oracle.
 //!
@@ -15,7 +15,7 @@
 //!     (fromBytes error OR verify error). Guards against a verifier that accepts anything.
 //!
 //! Run: `zig test src/vex_bpf2/zksdk/gap_a_kat_test.zig` (module root = zksdk/, so the proof modules'
-//! `../root.zig` imports resolve, same as `zig test zksdk.zig`).
+//! direct sibling imports resolve, same as `zig test zksdk.zig`).
 
 const std = @import("std");
 const zksdk = @import("zksdk.zig");

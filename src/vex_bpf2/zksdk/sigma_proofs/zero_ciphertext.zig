@@ -1,20 +1,43 @@
-//! [fd](https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_zero_ciphertext.c)
-//! [agave](https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/sigma_proofs/zero_ciphertext.rs)
+//! Zero-ciphertext sigma proof: proves an ElGamal ciphertext encrypts the
+//! scalar `0` under `pubkey`, without decrypting it or revealing the opening.
+//! Used, e.g., to prove an account's confidential balance is zero before
+//! closing it.
+//!
+//! Protocol: `commitment = 0·G + r·H = r·H` and `handle = r·pubkey` for the
+//! (secret, to the verifier) opening `r`. The prover picks a random nonce `y`
+//! and forms `Y_P = y·pubkey`, `Y_D = y·handle_pubkey`... concretely here
+//! `Y_P, Y_D = y·P, y·D` where `P = pubkey.point` and `D = handle.point`,
+//! using the SAME nonce for both so a single response `z = s·c + y` (where `s`
+//! is the ElGamal secret key) can be checked against both simultaneously via
+//! one MSM. The transcript absorbs pubkey/ciphertext (so the proof is bound to
+//! exactly this ciphertext/key pair) before the domain separator and `Y_P`
+//! commit — `c` is unpredictable until then. A second challenge `w` (drawn
+//! after `z` is committed) folds two otherwise-independent group relations
+//! into one combined MSM check (`w` is otherwise unused here; it exists so
+//! this same Proof shape composes into a batch-verified sum over many proofs,
+//! as `zk_elgamal_proof_program.zig`'s batched instruction variants do).
+//!
+//! CONSENSUS-CRITICAL — see merlin.zig's file header: the exact transcript
+//! append order/domain separator and the final MSM check must match Agave's
+//! `zk-sdk` bit-for-bit.
+//!
+//! [fd] https://github.com/firedancer-io/firedancer/blob/33538d35a623675e66f38f77d7dc86c1ba43c935/src/flamenco/runtime/program/zksdk/instructions/fd_zksdk_zero_ciphertext.c
+//! [agave] https://github.com/solana-program/zk-elgamal-proof/blob/zk-sdk%40v5.0.0/zk-sdk/src/sigma_proofs/zero_ciphertext.rs
 
 const std = @import("std");
-const sig = @import("../root.zig");
+const ed25519 = @import("../ed25519.zig");
+const elgamal = @import("../elgamal.zig");
+const pedersen = @import("../pedersen.zig");
+const merlin = @import("../merlin.zig");
 
-const ed25519 = sig.crypto.ed25519;
 const Edwards25519 = std.crypto.ecc.Edwards25519;
-const elgamal = sig.zksdk.elgamal;
-const ElGamalCiphertext = sig.zksdk.ElGamalCiphertext;
-const ElGamalKeypair = sig.zksdk.ElGamalKeypair;
-const ElGamalPubkey = sig.zksdk.ElGamalPubkey;
-const pedersen = sig.zksdk.pedersen;
-const ProofType = sig.runtime.program.zk_elgamal.ProofType;
+const ElGamalCiphertext = elgamal.Ciphertext;
+const ElGamalKeypair = elgamal.Keypair;
+const ElGamalPubkey = elgamal.Pubkey;
+const ProofType = @import("../zk_elgamal_types.zig").ProofType;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const Transcript = sig.zksdk.Transcript;
+const Transcript = merlin.Transcript;
 const DomainSeperator = Transcript.DomainSeperator;
 
 pub const Proof = struct {
@@ -348,13 +371,13 @@ test "proof string" {
     const pubkey_string = "iKeujRa2kL82Az2fl7MXHYVMc0XJFoGZckD7LvPtSU8=";
     const pubkey = try ElGamalPubkey.fromBase64(pubkey_string);
 
-    // sig fmt: off
+    // zig fmt: off
     const ciphertext_string = "crvDqbMD4OVe4mkuzqUJrhyblxTAu3vaUqMvfYuAHybADkpXli9m1zXHrvdpO1PfDQ6U/RHxLgr3XUvDg2sLBA==";
     const ciphertext = try ElGamalCiphertext.fromBase64(ciphertext_string);
 
     const proof_string = "fMibXtwhpBMr5FWg9CrBqlCrLq/cC2RmiwMpToMHxSyCI5AT+Ns4orbzcbqTiOJzF+tCgaJj+XCLXHk/YQLcQ4G+g3bppv3RDOLmGnVuyepMsSCVI4CGykTBqXb+ReQJ";
     const proof = try Proof.fromBase64(proof_string);
-    // sig fmt: on
+    // zig fmt: on
 
     var verifier_transcript = Transcript.initTest("test");
     try proof.verify(&pubkey, &ciphertext, &verifier_transcript);

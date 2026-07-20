@@ -1,41 +1,54 @@
+//! Inner-product argument (IPA): the logarithmic-size sub-proof that lets a
+//! Bulletproofs range proof (bulletproofs.zig) compress a linear-size
+//! statement into `O(log n)` group elements.
+//!
+//! The prover holds two secret length-`n` vectors `a`,`b` with known inner
+//! product `c = <a,b>` and wants to convince the verifier of that fact
+//! without revealing `a`/`b`, given only a commitment
+//! `P = <a,G> + <b,H'> + c·Q` to them (`G`,`H'`,`Q` public generators). Each
+//! round halves the vectors: fold `a = a_L·u + a_R·u⁻¹` (and symmetrically
+//! for `b`,`G`,`H'`) under a challenge `u` drawn from the transcript AFTER
+//! the round's cross terms (`L`,`R` — the two group elements the prover
+//! sends per round) are absorbed. Recursing `log₂(n)` times collapses the
+//! vectors to a single `(a,b)` pair, which the proof carries directly. The
+//! verifier never reconstructs the folded vectors; `verificationScalars`
+//! instead derives the same `u`/`u⁻¹` challenges and the `s` vector
+//! (`s[i] = ∏ u_j^(±1)` depending on bit `i` of `j`) that let it check the
+//! final relation as a single multiscalar multiplication against the
+//! ORIGINAL (unfolded) generators.
+//!
+//! CONSENSUS-CRITICAL: every `L`/`R`/`u` append order and the exact
+//! `verificationScalars` derivation must match Agave's `zk-sdk` bit-for-bit
+//! (see merlin.zig's file header) — a proof and its verifier fold under
+//! DIFFERENT transcripts otherwise, and either every proof breaks or, worse,
+//! a wrong-but-internally-consistent variant quietly diverges from cluster
+//! consensus. Allocation-free: every vector here is a `[bit_size]`-sized
+//! stack array bounded by the proof's comptime `bit_size` parameter (64,
+//! 128, or 256 — the batched range-proof sizes this program supports), never
+//! a heap allocation.
+//!
+//! - Bulletproofs paper (Bünz et al., 2018): https://eprint.iacr.org/2017/1066
+//! - Dalek Bulletproofs implementation and docs: https://doc.dalek.rs/bulletproofs/
+//! [agave] https://github.com/anza-xyz/agave/blob/93699947720534741b2b4d9b6e1696d81e386dcc/zk-sdk/src/range_proof/inner_product.rs
+
 const std = @import("std");
 const std14 = @import("../std14.zig");
 const table = @import("table.zig");
-const sig = @import("../root.zig");
+const ed25519 = @import("../ed25519.zig");
+const merlin = @import("../merlin.zig");
+// bp: bulletproofs.zig's `innerProduct`/`ONE`/`genPowers` — a direct sibling
+// import completing the same bulletproofs<->ipp cross-reference the two
+// production files have always had (bulletproofs.zig imports
+// `InnerProductProof` from THIS file below); none of `bp`'s decls used here
+// depend on the other file's proof TYPE, so the cycle resolves at comptime
+// exactly as it did through the old root.zig indirection, just without the hop.
+const bp = @import("bulletproofs.zig");
 
 const Edwards25519 = std.crypto.ecc.Edwards25519;
 const Sha3 = std.crypto.hash.sha3.Sha3_512;
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Scalar = std.crypto.ecc.Edwards25519.scalar.Scalar;
-const ed25519 = sig.crypto.ed25519;
-const Transcript = sig.zksdk.Transcript;
-const bp = sig.zksdk.bulletproofs;
-
-/// Inner-Product (Sub)Proof
-///
-/// This proof allows the prover to convince the verifier that the inner
-/// product of two secret vectors `a` and `b` equals a known scalar
-/// `c = <a, b>`, without revealing the vectors themselves.
-///
-/// In the context of the Bulletproofs range proofs, the vectors `a` and `b`
-/// are part of a larger commitment to a vector of bit values (used to
-/// prove a value lies within a range), and the inner product argument is used
-/// to reduce the size of the overall proof from linear to logarithmic in the
-/// size of the range.
-///
-/// The protocol works by recursively folding the vectors `a` and `b` into
-/// smaller vectors, committing to linear combinations at each step. This folding
-/// is done in logarithmic rounds, and in each round the prover sends two group
-/// elements (`Lᵢ` and `Rᵢ`) that allow the verifier to reconstruct the
-/// final scalar product from the compressed vectors.
-///
-/// The security of the proof relies on the discrete logarithm harness assumption,
-/// and the commitment scheme used (Pedersen commitment) ensures that the
-/// vectors remain hidden while the correctness of the inner product is verifiable.
-///
-/// - Bulletproofs paper (Bünz et al., 2018): https://eprint.iacr.org/2017/1066
-/// - Dalek Bulletproofs implementation and docs: https://doc.dalek.rs/bulletproofs/
-/// - Agave IPP implementation: https://github.com/anza-xyz/agave/blob/93699947720534741b2b4d9b6e1696d81e386dcc/zk-sdk/src/range_proof/inner_product.rs
+const Transcript = merlin.Transcript;
 pub fn Proof(comptime bit_size: u64) type {
     const logn: u64 = std.math.log2_int(u64, bit_size);
     const max_elements =
@@ -128,7 +141,7 @@ pub fn Proof(comptime bit_size: u64) type {
                 for (H_L) |hi| points.appendAssumeCapacity(hi);
                 points.appendAssumeCapacity(Q);
 
-                const L = sig.crypto.ed25519.pippenger.mulMultiRuntime(
+                const L = ed25519.pippenger.mulMultiRuntime(
                     257, // 128 + 128 + 1
                     false,
                     true,
@@ -157,7 +170,7 @@ pub fn Proof(comptime bit_size: u64) type {
                 for (H_R) |hi| points.appendAssumeCapacity(hi);
                 points.appendAssumeCapacity(Q);
 
-                const R = sig.crypto.ed25519.pippenger.mulMultiRuntime(
+                const R = ed25519.pippenger.mulMultiRuntime(
                     257, // 128 + 128 + 1
                     false,
                     true,
@@ -258,7 +271,7 @@ pub fn Proof(comptime bit_size: u64) type {
             for (self.L_vec) |l| points.appendAssumeCapacity(l);
             for (self.R_vec) |r| points.appendAssumeCapacity(r);
 
-            const check = sig.crypto.ed25519.mulMultiRuntime(
+            const check = ed25519.mulMultiRuntime(
                 max_elements,
                 false,
                 true,

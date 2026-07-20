@@ -1,31 +1,34 @@
 //! Twisted ElGamal encryption.
 //!
+//! A twisted ElGamal ciphertext is a Pedersen commitment to the plaintext plus
+//! a decrypt handle binding that commitment's opening to the recipient's public
+//! key: `{commitment: m·G + r·H, handle: r·pubkey}`. The plaintext is encoded as
+//! a scalar, so recovering it from a decrypted point means solving discrete log
+//! — practical here because the amounts this protects (token balances) fit a
+//! bounded search space, unlike general ElGamal.
+//!
+//! CONSENSUS-CRITICAL: every value here is Ristretto255/Edwards25519 group math
+//! or scalar arithmetic — correct group-law implementations are byte-identical
+//! by construction, so parity with Agave's curve25519-dalek reduces entirely to
+//! getting the underlying MSM right (see ed25519.zig). Allocation-free.
+//!
 //! https://github.com/anza-xyz/agave/blob/b11ca828cfc658b93cb86a6c5c70561875abe237/zk-sdk/src/encryption/elgamal.rs
 //! https://spl.solana.com/assets/files/twisted_elgamal-2115c6b1e6c62a2bb4516891b8ae9ee0.pdf
-//!
-//! Similar to the ElGamal encryption scheme, twisted ElGamal encodes messages directly as
-//! a Pedersen commitment. Since the messages (scalars) are encrypted as scalar elements for
-//! Curve25519, you'd need to solve the discrete log problem to recover the original encrypted value.
-//!
-//! (Taken from Agave comment):
-//! A twisted ElGamal ciphertext consists of two components:
-//! - A Pedersen commitment that encodes a message to be encrypted
-//! - A "decryption handle" that binds the Pedersen opening to a specific public ke
-//!
 
 const std = @import("std");
-const sig = @import("root.zig");
+const ed25519 = @import("ed25519.zig");
+const pedersen = @import("pedersen.zig");
 
 const Ristretto255 = std.crypto.ecc.Ristretto255;
 const Edwards25519 = std.crypto.ecc.Edwards25519;
 const Scalar = Edwards25519.scalar.Scalar;
-const ed25519 = sig.crypto.ed25519;
-const pedersen = sig.zksdk.pedersen;
 
 pub const Pubkey = struct {
     point: Ristretto255,
 
-    /// Derives a `Pubkey` that uniquely relates to a `Secret`.
+    /// Derives the public key matching a secret scalar `s` as `s⁻¹·H`. Inverting
+    /// (rather than multiplying) is what lets `DecryptHandle.init` and decryption
+    /// both land on `r·s⁻¹·H` from either side without needing the secret to be public.
     pub fn fromSecret(secret: Keypair.Secret) Pubkey {
         const scalar = secret.scalar;
         std.debug.assert(!scalar.isZero());
@@ -118,6 +121,7 @@ pub const Ciphertext = struct {
     }
 };
 
+/// Encrypts `value` under `pubkey` with a freshly-generated opening.
 pub fn encrypt(comptime T: type, value: T, pubkey: *const Pubkey) Ciphertext {
     const commitment, const opening = pedersen.initValue(T, value);
     const handle = pedersen.DecryptHandle.init(pubkey, &opening);
@@ -127,6 +131,8 @@ pub fn encrypt(comptime T: type, value: T, pubkey: *const Pubkey) Ciphertext {
     };
 }
 
+/// Encrypts `value` under `pubkey` with a caller-supplied opening (e.g. to produce
+/// a ciphertext whose commitment matches one already committed to elsewhere).
 pub fn encryptWithOpening(
     comptime T: type,
     value: T,
@@ -141,6 +147,9 @@ pub fn encryptWithOpening(
     };
 }
 
+/// A single commitment shared by `N` decrypt handles — one ciphertext, readable by
+/// N different keyholders (e.g. sender + recipient + auditor) without revealing the
+/// amount to anyone else, since every handle binds the SAME opening to the SAME commitment.
 pub fn GroupedElGamalCiphertext(comptime N: u64) type {
     return struct {
         commitment: pedersen.Commitment,
