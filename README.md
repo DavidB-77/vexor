@@ -54,7 +54,7 @@ subsystems are instead declared **ports**, and every one is enumerated in
 
 - **[Agave](https://github.com/anza-xyz/agave)** (Anza) — primary behavioral reference; no Agave (Rust) code is compiled into Vexor.
 - **[Firedancer](https://github.com/firedancer-io/firedancer)** (Jump Crypto) — leaf-crypto reference (**no C linked** — crypto is pure-Zig), plus declared whole-file Zig ports of several SVM-core and networking modules (executor, runtime, system/vote/nonce programs, rewards, hashes, scheduler, and more — see `NOTICE`).
-- **[Sig](https://github.com/Syndica/sig)** (Syndica) — Zig-idiomatic structure reference during bring-up; the zk-ElGamal proof subsystem (`src/vex_bpf2/zksdk/`) is a Sig port carried substantially verbatim, and the legacy sBPF interpreter has Sig lineage (see `NOTICE`).
+- **[Sig](https://github.com/Syndica/sig)** (Syndica) — Zig-idiomatic structure reference during bring-up; the zk-ElGamal proof subsystem (`src/vex_bpf2/zksdk/`) is an independent Vexor re-implementation, written from scratch in Zig and verified byte-for-byte against Sig's implementation as a reference oracle, and the legacy sBPF interpreter has Sig lineage (see `NOTICE`).
 
 Full credit and per-subsystem provenance:
 

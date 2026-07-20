@@ -54,8 +54,9 @@ trustworthy as the project grows.
 - Changes that alter consensus-affecting behavior without a KAT.
 - Undeclared code copied or ported from other clients. Vexor **does** contain
   declared ports and carried upstream files (e.g. the Sig-derived
-  `src/vex_bpf2/zksdk/` subtree and the Firedancer-derived SVM-core ports —
-  see `NOTICE` and `PROVENANCE.md`); contributions touching those files must
+  `src/vex_crypto/ed25519/{avx512,generic}.zig` IFMA kernels and the
+  Firedancer-derived SVM-core ports — see `NOTICE` and `PROVENANCE.md`);
+  contributions touching those files must
   preserve their upstream attribution, and any *new* ported or adapted code
   must arrive with its own `PROVENANCE.md` row and license-compatible
   attribution. Vexor's crypto leaf and vote executor (voteforge) are
