@@ -450,7 +450,6 @@ pub const VerifyTile = struct {
         return .queue_full; // all rings full → caller releases the frame
     }
 
-
     /// Worker loop: pop shreds, verify signatures, batch-insert into assembler.
     fn verifyWorkerLoop(self: *Self, worker_id: usize) void {
         // Pin verify worker to dedicated core (cores 8+, CCD-aware layout).

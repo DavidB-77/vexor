@@ -454,7 +454,9 @@ pub const TowerBft = struct {
         try file.writeAll(buf[0..off]);
 
         // Only log periodically (every 100 votes)
-        const TowerSaveDbg = struct { var count: u64 = 0; };
+        const TowerSaveDbg = struct {
+            var count: u64 = 0;
+        };
         TowerSaveDbg.count += 1;
         if (TowerSaveDbg.count <= 3 or TowerSaveDbg.count % 100 == 0) std.log.debug("[Tower] Saved: last_vote={d} root={?d} lockouts={d} [#{d}]\n", .{
             self.last_vote_slot, self.vote_state.root_slot, num, TowerSaveDbg.count,

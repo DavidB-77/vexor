@@ -268,15 +268,15 @@ test "FIX#95-cpi: ATA createIdempotent through dispatchBpfExecution — does the
 
     // Seed the 7 accounts. Program accounts carry their ELF as data (so
     // resolveProgramSbpfVersion can read e_flags → V3). ATA absent (lam=0).
-    try seed(db,ATA_PROG, OWN_BPF2, 2731913600, true, ata_elf);
-    try seed(db,FUNDER, OWN_SYSTEM, FUNDER_PRE, false, &[_]u8{});
-    try seed(db,ATA, OWN_SYSTEM, 0, false, &[_]u8{});
-    try seed(db,WALLET, OWN_RESTAKE, 4510080, false, wallet_data);
+    try seed(db, ATA_PROG, OWN_BPF2, 2731913600, true, ata_elf);
+    try seed(db, FUNDER, OWN_SYSTEM, FUNDER_PRE, false, &[_]u8{});
+    try seed(db, ATA, OWN_SYSTEM, 0, false, &[_]u8{});
+    try seed(db, WALLET, OWN_RESTAKE, 4510080, false, wallet_data);
     // NB: the MINT is intentionally NOT seeded to rooted db — it is written into
     // pending_writes below (collectWrite), modeling "created+initialized THIS
     // slot" (the live ix1/ix2), the untested axis (advisor's decisive test).
-    try seed(db,SYS_PROG, OWN_NATIVE, 1, true, sys_data);
-    try seed(db,TOKEN_PROG, OWN_BPF_UP, 11141440, true, token_elf);
+    try seed(db, SYS_PROG, OWN_NATIVE, 1, true, sys_data);
+    try seed(db, TOKEN_PROG, OWN_BPF_UP, 11141440, true, token_elf);
     try seed(db, SYSVAR_RENT, OWN_SYSVAR, 1009200, false, &RENT_DATA);
 
     // Pre-warm the process-global V2 program cache (live replay's warm cache;

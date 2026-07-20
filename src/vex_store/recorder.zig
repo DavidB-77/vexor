@@ -507,25 +507,46 @@ fn shutdown(reason: []const u8) void {
     defer files_mutex.unlock();
     if (files_initialized) {
         var rit = read_files.iterator();
-        while (rit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
+        while (rit.next()) |e| {
+            e.value_ptr.sync() catch {};
+            e.value_ptr.close();
+        }
         read_files.deinit();
         var wit = write_files.iterator();
-        while (wit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
+        while (wit.next()) |e| {
+            e.value_ptr.sync() catch {};
+            e.value_ptr.close();
+        }
         write_files.deinit();
         var mit = meta_files.iterator();
-        while (mit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
+        while (mit.next()) |e| {
+            e.value_ptr.sync() catch {};
+            e.value_ptr.close();
+        }
         meta_files.deinit();
         var vmit = vote_mismatch_files.iterator();
-        while (vmit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
+        while (vmit.next()) |e| {
+            e.value_ptr.sync() catch {};
+            e.value_ptr.close();
+        }
         vote_mismatch_files.deinit();
         var deit = dead_event_files.iterator();
-        while (deit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
+        while (deit.next()) |e| {
+            e.value_ptr.sync() catch {};
+            e.value_ptr.close();
+        }
         dead_event_files.deinit();
         var txit = tx_result_files.iterator();
-        while (txit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
+        while (txit.next()) |e| {
+            e.value_ptr.sync() catch {};
+            e.value_ptr.close();
+        }
         tx_result_files.deinit();
         var ltit = lthash_contrib_files.iterator();
-        while (ltit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
+        while (ltit.next()) |e| {
+            e.value_ptr.sync() catch {};
+            e.value_ptr.close();
+        }
         lthash_contrib_files.deinit();
         files_initialized = false;
     }

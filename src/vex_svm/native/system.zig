@@ -65,14 +65,14 @@ pub fn executeCreateAccount(
     if (!from.isSystem()) {
         return error.InstructionError_ExternalAccountLamportSpend;
     }
-    
+
     // [FIREDANCER INVARIANT 2]: Sufficient funds
     if (from.lamports < lamports) {
         return error.InstructionError_InsufficientFunds;
     }
 
     // [FIREDANCER INVARIANT 3]: You cannot blindly overwrite an existing account in Solana.
-    // If the target account already exists, the creation FAILS unless it is mathematically 
+    // If the target account already exists, the creation FAILS unless it is mathematically
     // empty (zero data length) AND the current owner is the System Program.
     if (to.data.len > 0) {
         return error.InstructionError_AccountAlreadyInitialized;
@@ -80,7 +80,7 @@ pub fn executeCreateAccount(
     if (!to.isSystem()) {
         return error.InstructionError_AccountAlreadyInitialized;
     }
-    
+
     // Firedancer limits account space allocations strictly.
     const MAX_PERMITTED_DATA_LENGTH = 10 * 1024 * 1024; // 10MB
     if (space > MAX_PERMITTED_DATA_LENGTH) {
@@ -91,7 +91,7 @@ pub fn executeCreateAccount(
     from.lamports -= lamports;
     to.lamports += lamports;
     to.owner = owner;
-    
+
     // Memory mapping logic (Handled by the lock-free pipeline/VEXstore above)
     // to.data = allocateAndZeroSpace(space);
 }

@@ -226,11 +226,11 @@ test "program id sanity: System is all-zero, others are not" {
 
     // Every other builtin id must be non-zero and unique.
     const ids = [_][32]u8{
-        VOTE_PROGRAM_ID,         STAKE_PROGRAM_ID,
-        CONFIG_PROGRAM_ID,       COMPUTE_BUDGET_PROGRAM_ID,
+        VOTE_PROGRAM_ID,                 STAKE_PROGRAM_ID,
+        CONFIG_PROGRAM_ID,               COMPUTE_BUDGET_PROGRAM_ID,
         ADDRESS_LOOKUP_TABLE_PROGRAM_ID, BPF_LOADER_DEPRECATED_ID,
-        BPF_LOADER_ID,           BPF_LOADER_UPGRADEABLE_ID,
-        LOADER_V4_ID,            SECP256K1_PROGRAM_ID,
+        BPF_LOADER_ID,                   BPF_LOADER_UPGRADEABLE_ID,
+        LOADER_V4_ID,                    SECP256K1_PROGRAM_ID,
         ED25519_PROGRAM_ID,
     };
     for (ids, 0..) |a, i| {

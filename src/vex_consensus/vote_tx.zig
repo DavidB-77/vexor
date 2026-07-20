@@ -371,4 +371,3 @@ test "vote-refresh: re-build re-sends UNCHANGED tower, only blockhash differs (s
     try std.testing.expectEqualSlices(u8, &bh2.data, &tx2.recent_blockhash.data);
     try std.testing.expect(!std.mem.eql(u8, &tx1.recent_blockhash.data, &tx2.recent_blockhash.data));
 }
-

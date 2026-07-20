@@ -296,8 +296,7 @@ pub fn detectTierRuntime() GfTier {
           [ecx] "={ecx}" (ecx),
         : [eax] "{eax}" (@as(u32, 7)),
           [in_ecx] "{ecx}" (@as(u32, 0)),
-        : .{ .edx = true }
-    );
+        : .{ .edx = true });
 
     const cpu_avx2 = (ebx & (1 << 5)) != 0;
     const cpu_avx512f = (ebx & (1 << 16)) != 0;
@@ -308,8 +307,7 @@ pub fn detectTierRuntime() GfTier {
     asm volatile ("xgetbv"
         : [eax] "={eax}" (xcr0_lo),
         : [in_ecx] "{ecx}" (@as(u32, 0)),
-        : .{ .edx = true }
-    );
+        : .{ .edx = true });
     const os_avx = (xcr0_lo & 0x06) == 0x06; // SSE + AVX state
     const os_avx512 = os_avx and (xcr0_lo & 0xE0) == 0xE0; // opmask + ZMM state
 

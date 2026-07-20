@@ -48,7 +48,7 @@ const MapUpdateAttr = extern struct {
 
 const LinkCreateAttr = extern struct {
     prog_fd: u32,
-    target_ifindex: u32 = 0,  // Union with target_fd in kernel - must be at offset 4
+    target_ifindex: u32 = 0, // Union with target_fd in kernel - must be at offset 4
     attach_type: u32,
     flags: u32 = 0,
     // Padding to match kernel struct size
@@ -94,7 +94,7 @@ pub const SharedXdpManager = struct {
     allocator: Allocator,
     ifindex: u32,
     interface: []const u8,
-    ports: []u16,  // Owned copy
+    ports: []u16, // Owned copy
     xsks_map_fd: i32,
     port_filter_fd: i32,
     prog_fd: i32,

@@ -125,7 +125,6 @@ pub const Inflation = struct {
 /// The old libm extern is kept below, commented out, as a documented
 /// fallback if a future glibc/table mismatch is ever suspected:
 ///   extern fn pow(x: f64, y: f64) f64;
-
 /// Total inflation rate at a given year in the schedule.
 /// fd_rewards.c:17 — agave: sdk/src/inflation.rs#L85 Inflation::total()
 pub fn inflationTotal(inf: Inflation, year: f64) f64 {

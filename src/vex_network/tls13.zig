@@ -113,7 +113,7 @@ pub fn hkdfExpand(prk: []const u8, info: []const u8, out: []u8) void {
         const copy_len = @min(32, out.len - offset);
         @memcpy(out[offset..][0..copy_len], t[0..copy_len]);
         offset += copy_len;
-        
+
         // Overflow protection for counter
         if (counter == 255) break;
         counter += 1;
@@ -326,13 +326,13 @@ pub fn applyHeaderProtection(
 ) void {
     // Bounds check: header must have at least 1 byte
     if (header.len == 0) return;
-    
+
     // Bounds check: pn_offset + pn_length must fit in header
     if (pn_offset + pn_length > header.len) return;
-    
+
     // Bounds check: pn_length must be 1-4 and fit in mask (bytes 1-4)
     if (pn_length == 0 or pn_length > 4) return;
-    
+
     // Generate mask using AES-ECB(hp_key, sample)
     // Explicit zero initialization for safety
     var mask: [16]u8 = [_]u8{0} ** 16;
@@ -364,7 +364,7 @@ pub fn removeHeaderProtection(
 ) usize {
     // Bounds check: header must have at least 1 byte
     if (header.len == 0) return 0;
-    
+
     // Generate mask using AES-ECB(hp_key, sample)
     // Explicit zero initialization for safety
     var mask: [16]u8 = [_]u8{0} ** 16;
@@ -791,7 +791,7 @@ pub fn parseServerHello(data: []const u8) !ServerHello {
 
     // Bounds check: ensure we have 32 bytes for random
     if (offset + 32 > data.len) return error.MessageTooShort;
-    
+
     // Random - use explicit initialization
     var random: [32]u8 = [_]u8{0} ** 32;
     @memcpy(&random, data[offset..][0..32]);
@@ -799,11 +799,11 @@ pub fn parseServerHello(data: []const u8) !ServerHello {
 
     // Bounds check: session ID length byte
     if (offset >= data.len) return error.MessageTooShort;
-    
+
     // Session ID
     const session_id_len = data[offset];
     offset += 1;
-    
+
     // Bounds check: session ID data
     if (offset + session_id_len > data.len) return error.MessageTooShort;
     const session_id = data[offset..][0..session_id_len];
@@ -811,7 +811,7 @@ pub fn parseServerHello(data: []const u8) !ServerHello {
 
     // Bounds check: cipher suite (2 bytes)
     if (offset + 2 > data.len) return error.MessageTooShort;
-    
+
     // Cipher suite
     const cs_val = (@as(u16, data[offset]) << 8) | data[offset + 1];
     const cipher_suite = std.meta.intToEnum(CipherSuite, cs_val) catch return error.UnsupportedCipherSuite;
@@ -819,7 +819,7 @@ pub fn parseServerHello(data: []const u8) !ServerHello {
 
     // Bounds check: compression method (1 byte)
     if (offset >= data.len) return error.MessageTooShort;
-    
+
     // Compression method (should be 0)
     offset += 1;
 
@@ -833,11 +833,11 @@ pub fn parseServerHello(data: []const u8) !ServerHello {
 
         // Bounds check: extension data
         const ext_end = @min(offset + ext_len, data.len);
-        
+
         while (offset + 4 <= ext_end and offset + 4 <= data.len) {
             const ext_type = (@as(u16, data[offset]) << 8) | data[offset + 1];
             offset += 2;
-            
+
             // Bounds check before reading ext_data_len
             if (offset + 2 > data.len) break;
             const ext_data_len = (@as(u16, data[offset]) << 8) | data[offset + 1];
@@ -1192,4 +1192,3 @@ test "AEAD encrypt/decrypt" {
 
     try std.testing.expectEqualSlices(u8, plaintext, &decrypted);
 }
-

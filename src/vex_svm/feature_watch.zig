@@ -429,10 +429,10 @@ test "M3 emit format: one well-formed JSONL record with all required fields" {
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, line, "\n"));
     // every required key present
     for ([_][]const u8{
-        "\"schema\":1",                            "\"kind\":\"feature-pending-crossing\"",
-        "\"ts_unix\":1752000000",                  "\"slot\":421310719",
-        "\"epoch\":974",                           "\"pubkey\":\"Feature11111",
-        "\"name\":\"some_wired_feature\"",         "\"class\":\"wired\"",
+        "\"schema\":1",                    "\"kind\":\"feature-pending-crossing\"",
+        "\"ts_unix\":1752000000",          "\"slot\":421310719",
+        "\"epoch\":974",                   "\"pubkey\":\"Feature11111",
+        "\"name\":\"some_wired_feature\"", "\"class\":\"wired\"",
         "\"build_id\":\"9aa44e0\"",
     }) |needle| {
         try std.testing.expect(std.mem.indexOf(u8, line, needle) != null);

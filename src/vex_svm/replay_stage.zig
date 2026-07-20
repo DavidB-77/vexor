@@ -2205,7 +2205,7 @@ pub const ReplayStage = struct {
         // bytes (-d body, URL, -m 3) are IDENTICAL to the prior fork+exec path.
         const out_path = "/dev/shm/vex-bh.json";
         const argv = [_][]const u8{
-            "/usr/bin/curl", "-s",                             "-o", out_path, "-m", "3",                                                                "-X",   "POST",
+            "/usr/bin/curl", "-s",                             "-o", out_path,                                                           "-m",   "3", "-X", "POST",
             "-H",            "Content-Type: application/json", "-d", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\"}", rpc_bh,
         };
         // Null-terminate each arg (runtime rpc_bh included) into a c_argv; free
@@ -2395,7 +2395,7 @@ pub const ReplayStage = struct {
             .{ lo, hi },
         ) catch return null;
         const argv = [_][]const u8{
-            "/usr/bin/curl", "-s",                             "-m", "3", "-X",   "POST",
+            "/usr/bin/curl", "-s",                             "-m", "3",  "-X", "POST",
             "-H",            "Content-Type: application/json", "-d", body, rpc,
         };
         var child = std.process.Child.init(&argv, self.allocator);
@@ -2514,8 +2514,8 @@ pub const ReplayStage = struct {
         // bytes (-d req, URL, -m 3) are IDENTICAL to the prior fork+exec path.
         const out_path = "/dev/shm/vex-sh.json";
         const argv = [_][]const u8{
-            "/usr/bin/curl", "-s",                             "-o", out_path, "-m", "3", "-X",   "POST",
-            "-H",            "Content-Type: application/json", "-d", req, rpc_sh,
+            "/usr/bin/curl", "-s",                             "-o", out_path, "-m",   "3", "-X", "POST",
+            "-H",            "Content-Type: application/json", "-d", req,      rpc_sh,
         };
         // Null-terminate each arg (runtime rpc_sh included) into a c_argv; free
         // the z-copies after waitpid. Any failure (dupe/spawn/curl-exit/read) →
@@ -5071,8 +5071,8 @@ pub const ReplayStage = struct {
                             "[FORK-CHOICE-DELTA] addVotes failed at slot {d}: {any} " ++
                                 "(votes={d} candidates={d} no_account={d} no_lv={d} no_bh={d})",
                             .{
-                                slot,                 e,                     out.votes.len,
-                                out.stats.candidates, out.stats.no_account, out.stats.no_last_vote,
+                                slot,                   e,                    out.votes.len,
+                                out.stats.candidates,   out.stats.no_account, out.stats.no_last_vote,
                                 out.stats.no_bank_hash,
                             },
                         );
@@ -5089,8 +5089,8 @@ pub const ReplayStage = struct {
                         "[FORK-CHOICE-DELTA] slot={d} candidates={d} emitted={d} " ++
                             "no_account={d} no_lv={d} no_bh={d} parse_fail={d}",
                         .{
-                            slot,                  out.stats.candidates, out.stats.emitted,
-                            out.stats.no_account,  out.stats.no_last_vote, out.stats.no_bank_hash,
+                            slot,                 out.stats.candidates,   out.stats.emitted,
+                            out.stats.no_account, out.stats.no_last_vote, out.stats.no_bank_hash,
                             out.stats.parse_fail,
                         },
                     );
@@ -7545,10 +7545,9 @@ pub const ReplayStage = struct {
                     std.log.warn(
                         "[SWITCH-PROOF-BREAKDOWN] landed: seen={d} excl_root={d} excl_no_gca={d} counted={d} stake={d} | gossip: seen={d} excl_not_newer={d} excl_dup={d} excl_not_frozen={d} excl_no_gca={d} counted={d} stake={d}",
                         .{
-                            breakdown.landed_seen,     breakdown.landed_excluded_root,        breakdown.landed_excluded_no_gca, breakdown.landed_counted,
-                            breakdown.landed_stake,    breakdown.gossip_seen,                 breakdown.gossip_excluded_not_newer,
-                            breakdown.gossip_excluded_dup, breakdown.gossip_excluded_not_frozen,  breakdown.gossip_excluded_no_gca, breakdown.gossip_counted,
-                            breakdown.gossip_stake,
+                            breakdown.landed_seen,                breakdown.landed_excluded_root,   breakdown.landed_excluded_no_gca,    breakdown.landed_counted,
+                            breakdown.landed_stake,               breakdown.gossip_seen,            breakdown.gossip_excluded_not_newer, breakdown.gossip_excluded_dup,
+                            breakdown.gossip_excluded_not_frozen, breakdown.gossip_excluded_no_gca, breakdown.gossip_counted,            breakdown.gossip_stake,
                         },
                     );
                 }

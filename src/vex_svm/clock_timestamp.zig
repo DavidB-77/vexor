@@ -203,11 +203,16 @@ test "stake-weighted median ignores low-staked outliers" {
 
     const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
-    var pk0 = [_]u8{0} ** 32; pk0[0] = 0;
-    var pk1 = [_]u8{0} ** 32; pk1[0] = 1;
-    var pk2 = [_]u8{0} ** 32; pk2[0] = 2;
-    var pk3 = [_]u8{0} ** 32; pk3[0] = 3;
-    var pk4 = [_]u8{0} ** 32; pk4[0] = 4;
+    var pk0 = [_]u8{0} ** 32;
+    pk0[0] = 0;
+    var pk1 = [_]u8{0} ** 32;
+    pk1[0] = 1;
+    var pk2 = [_]u8{0} ** 32;
+    pk2[0] = 2;
+    var pk3 = [_]u8{0} ** 32;
+    pk3[0] = 3;
+    var pk4 = [_]u8{0} ** 32;
+    pk4[0] = 4;
 
     const stakes = [_]StakeEntry{
         .{ .vote_pubkey = pk0, .stake = 1 * LAMPORTS_PER_SOL },
@@ -262,7 +267,8 @@ test "slow clock is clamped at anchor + slow_bound" {
     const ns_per_slot: u64 = 400_000_000;
     // poh_offset = 10_000 * 400ms = 4000s; slow 150% = 6000s cap from anchor.
 
-    var pk = [_]u8{0} ** 32; pk[0] = 1;
+    var pk = [_]u8{0} ** 32;
+    pk[0] = 1;
     const samples = [_]VoteTimestampSample{
         // Massively slow — voter claims 20_000s past anchor, which is way
         // beyond the 4000+6000 = 10_000s slow ceiling.
@@ -295,7 +301,8 @@ test "fast clock is clamped at anchor + poh_offset - fast_bound" {
     const ns_per_slot: u64 = 400_000_000;
     // poh_offset = 4000s; fast 25% = 1000s floor below poh.
 
-    var pk = [_]u8{0} ** 32; pk[0] = 1;
+    var pk = [_]u8{0} ** 32;
+    pk[0] = 1;
     const samples = [_]VoteTimestampSample{
         // Voter claims only anchor_ts+100s — way earlier than poh expects.
         .{ .vote_pubkey = pk, .slot = slot, .unix_ts = anchor_ts + 100 },
@@ -331,9 +338,12 @@ test "sig_clock: per-voter forward projection then stake-weighted median (delive
     const slot: u64 = 1000;
     const ns_per_slot: u64 = 400_000_000; // 0.4 s/slot — the canonical constant.
 
-    var pkA = [_]u8{0} ** 32; pkA[0] = 0xA;
-    var pkB = [_]u8{0} ** 32; pkB[0] = 0xB;
-    var pkC = [_]u8{0} ** 32; pkC[0] = 0xC;
+    var pkA = [_]u8{0} ** 32;
+    pkA[0] = 0xA;
+    var pkB = [_]u8{0} ** 32;
+    pkB[0] = 0xB;
+    var pkC = [_]u8{0} ** 32;
+    pkC[0] = 0xC;
 
     // Stakes: B is the majority block. A+C alone (200) cannot cross half (250).
     const stakes = [_]StakeEntry{

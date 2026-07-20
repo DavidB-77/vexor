@@ -87,4 +87,3 @@ test "lockout expiration" {
     try std.testing.expect(lockout.isExpired(109)); // expired strictly after
     try std.testing.expect(lockout.isExpired(200));
 }
-

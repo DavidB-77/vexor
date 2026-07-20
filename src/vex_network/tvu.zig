@@ -647,11 +647,11 @@ pub const TvuService = struct {
         max_repair_slots: usize = 5000,
 
         /// Repair request interval (ms) — lowered from 100 for faster catch-up
-        repair_interval_ms: u64 = 50,  // Base interval; actual sleep is adaptive
+        repair_interval_ms: u64 = 50, // Base interval; actual sleep is adaptive
 
         /// Enable AF_XDP acceleration (requires root/CAP_NET_RAW)
         /// Uses SKB mode + copy mode to avoid ixgbe driver lockups
-        enable_af_xdp: bool = false,  // FIXED: Must be explicitly enabled via --enable-af-xdp
+        enable_af_xdp: bool = false, // FIXED: Must be explicitly enabled via --enable-af-xdp
 
         /// Enable io_uring acceleration (Linux 5.1+)
         enable_io_uring: bool = true,
@@ -2197,7 +2197,7 @@ pub const TvuService = struct {
         // DIAGNOSTIC: Log parsed shred details periodically
         if (@mod(count, 50000) == 0) {
             std.log.debug("[SHRED-DIAG] Parsed: slot={d} idx={d} is_data={} is_last={} ver={d} fec={d} len={d}\n", .{
-                shred.slot(), shred.index(), shred.isData(), shred.isLastInSlot(),
+                shred.slot(),    shred.index(),       shred.isData(),    shred.isLastInSlot(),
                 shred.version(), shred.fecSetIndex(), pkt.payload().len,
             });
         }
@@ -2531,7 +2531,7 @@ pub const TvuService = struct {
             _ = self.stats.shreds_invalid.fetchAdd(1, .monotonic);
             if (@mod(count, 50000) == 0) {
                 std.log.debug("[SHRED-DIAG] Parse FAILED: {s} (count={d}, len={d}) type=0x{x:0>2}\n", .{
-                    @errorName(err), count, pkt.payload().len,
+                    @errorName(err),                                      count, pkt.payload().len,
                     if (pkt.payload().len > 64) pkt.payload()[64] else 0,
                 });
             }
@@ -2541,7 +2541,7 @@ pub const TvuService = struct {
         // Periodic diagnostic
         if (@mod(count, 50000) == 0) {
             std.log.debug("[SHRED-DIAG] Parsed: slot={d} idx={d} is_data={} is_last={} ver={d} fec={d} len={d}\n", .{
-                shred.slot(), shred.index(), shred.isData(), shred.isLastInSlot(),
+                shred.slot(),    shred.index(),       shred.isData(),    shred.isLastInSlot(),
                 shred.version(), shred.fecSetIndex(), pkt.payload().len,
             });
         }
@@ -3633,7 +3633,7 @@ pub const TvuService = struct {
             const total_sent = self.stats.repairs_sent.load(.monotonic);
             if (@mod(total_sent, 500) == 0) {
                 std.log.debug("[REPAIR] Targeted {d} shreds for slot {d} across {d} peers ({s})\n", .{
-                    missing_indices.len, slot, peers_to_use,
+                    missing_indices.len,                                                                                   slot, peers_to_use,
                     if (fanout_all) @as([]const u8, "small-set per-shred fanout") else @as([]const u8, "1:1 round-robin"),
                 });
             }
@@ -4024,7 +4024,7 @@ pub const TvuService = struct {
     ///
     /// Collects up to MAX_REPAIR_PEERS and randomly samples from available peers
     /// to distribute repair load across the network.
-    const MAX_REPAIR_PEERS: usize = 2000;  // @prov:tvu.repair-peers-cap — was 500, 2000 is a safe increase
+    const MAX_REPAIR_PEERS: usize = 2000; // @prov:tvu.repair-peers-cap — was 500, 2000 is a safe increase
 
     // Per-site threadlocal repair peer-selection scratch (perf, 2026-07-08): each
     // caller below had a ~112KB stack local (`[MAX_REPAIR_PEERS]RepairPeer`) that
@@ -4660,7 +4660,7 @@ pub const TvuService = struct {
             // Process incoming packets
             const result = self.processPackets() catch |err| {
                 if (loop_count <= 10 or loop_count % 1000 == 0) {
-                    std.log.debug("[TVU-ERROR] processPackets failed at loop {d}: {any}\n", .{loop_count, err});
+                    std.log.debug("[TVU-ERROR] processPackets failed at loop {d}: {any}\n", .{ loop_count, err });
                 }
                 continue;
             };
@@ -4720,9 +4720,8 @@ pub const TvuService = struct {
                 const st = self.shred_assembler.inProgressStats(ref);
                 if (st.count > 50) {
                     std.log.warn("[INPROG-STAT] incomplete={d} min_slot={d} max_slot={d} max_seen(tip)={d} count_above_tip={d} span={d} zc_ver_rej={d}", .{
-                        st.count, st.min_slot, st.max_slot, ref, st.count_above,
-                        if (st.max_slot >= st.min_slot) st.max_slot - st.min_slot else 0,
-                        self.stats.zc_version_rejects.load(.monotonic),
+                        st.count,                                                         st.min_slot,                                    st.max_slot, ref, st.count_above,
+                        if (st.max_slot >= st.min_slot) st.max_slot - st.min_slot else 0, self.stats.zc_version_rejects.load(.monotonic),
                     });
                 }
             }
@@ -4788,132 +4787,132 @@ pub const TvuService = struct {
                     ins_orphan_us = @intCast(@divTrunc(std.time.nanoTimestamp() - t_orph0, 1000));
                 }
 
-            // ── AF_XDP occupancy 1 Hz summary ───────────────────────────────
-            if (afxdp_instrument) {
-                ins_loops += 1;
-                if (iter_ms * 1000 > ins_iter_max_us) ins_iter_max_us = iter_ms * 1000;
-                const recv_us = result.recv_ns / 1000;
-                const zcrecv_us = result.zc_recv_only_ns / 1000;
-                const repdrain_us = result.repair_drain_ns / 1000;
-                if (zcrecv_us > ins_zcrecv_max_us) ins_zcrecv_max_us = zcrecv_us;
-                if (recv_us > ins_recv_max_us) ins_recv_max_us = recv_us;
-                if (repdrain_us > ins_repdrain_max_us) ins_repdrain_max_us = repdrain_us;
-                if (ins_checkrep_us > ins_checkrep_max_us) ins_checkrep_max_us = ins_checkrep_us;
-                if (ins_orphan_us > ins_orphan_max_us) ins_orphan_max_us = ins_orphan_us;
-                ins_checkrep_sum_us += ins_checkrep_us;
-                if (now_ns > ins_last_report_ns + std.time.ns_per_s) {
-                    var diag: @import("af_xdp/socket.zig").XdpSocket.XdpDiag = .{};
-                    // PR0 (2026-07-03, repair catch-up-lag telemetry): kernel-authoritative
-                    // XDP_STATISTICS. rx_fill_ring_empty_descs is the ONLY definitive proof of
-                    // fill-ring starvation (kernel had a redirected packet but no UMEM frame to
-                    // put it in) vs a discovery-bound catch-up lag. These counters were DEFINED
-                    // (socket.zig XdpStatistics) but NEVER read — during the 419410933 post-mortem
-                    // fill-vs-discovery had to be INFERRED from fill_free/rx_avail. Emitting them
-                    // here (~1 getsockopt/sec, read-only, cumulative-since-socket-open) makes the
-                    // next incident instantly + authoritatively classifiable. Zero behavior change:
-                    // only runs inside the existing VEX_ENABLE_AFXDP instrument block.
-                    var kstats = std.mem.zeroes(@import("af_xdp/socket.zig").XdpStatistics);
-                    if (self.shred_io) |io| {
-                        if (io.getXdpSocket()) |xdp| {
-                            diag = xdp.diag();
-                            kstats = xdp.getStats() catch kstats;
-                        }
-                    }
-                    const in_prog = self.shred_assembler.getInProgressSlotCount();
-                    const tlf = if (self.verify_tile_instance) |vt| vt.queue.trylock_fail.load(.monotonic) else 0;
-                    const stg_depth = self.staging_head -% self.staging_tail;
-                    // Option B (2026-06-14) discriminator: zc_overrun = frames dropped
-                    // because ALL verify rings were full (genuine verify-parallelism
-                    // overrun). ring_depth_max = deepest single-ring backlog right now.
-                    // If zc_overrun stays ≈0 yet AF_XDP still wedges (bridge slots
-                    // missing, root stuck) → the wedge is the repair path (NEXT-2), NOT
-                    // the verify handoff. High ring_depth_max during catch-up → a worker
-                    // is descheduled (core-map collision) OR a verify-count limit.
-                    var zc_ovr: u64 = 0;
-                    var ring_depth_max: u32 = 0;
-                    // POSITIVE throughput signal (advisor): cumulative frames pushed/
-                    // popped across all rings. zc_overrun≈0 + ring_depth_max≈0 is
-                    // AMBIGUOUS — it is equally the signature of "rings perfectly
-                    // drained" AND "rings never carried any traffic" (silent kernel-UDP
-                    // fallback, or the kernel socket carrying shreds). ring_pushed
-                    // CLIMBING at ~turbine rate is the only proof Option B actually ran.
-                    var ring_pushed: u64 = 0;
-                    var ring_popped: u64 = 0;
-                    if (self.verify_tile_instance) |vt| {
-                        zc_ovr = vt.zc_overrun.load(.monotonic);
-                        if (vt.zc_rings) |rings| {
-                            for (rings) |r| {
-                                const d = r.len();
-                                if (d > ring_depth_max) ring_depth_max = d;
-                                ring_pushed += r.pushed.load(.monotonic);
-                                ring_popped += r.popped.load(.monotonic);
+                // ── AF_XDP occupancy 1 Hz summary ───────────────────────────────
+                if (afxdp_instrument) {
+                    ins_loops += 1;
+                    if (iter_ms * 1000 > ins_iter_max_us) ins_iter_max_us = iter_ms * 1000;
+                    const recv_us = result.recv_ns / 1000;
+                    const zcrecv_us = result.zc_recv_only_ns / 1000;
+                    const repdrain_us = result.repair_drain_ns / 1000;
+                    if (zcrecv_us > ins_zcrecv_max_us) ins_zcrecv_max_us = zcrecv_us;
+                    if (recv_us > ins_recv_max_us) ins_recv_max_us = recv_us;
+                    if (repdrain_us > ins_repdrain_max_us) ins_repdrain_max_us = repdrain_us;
+                    if (ins_checkrep_us > ins_checkrep_max_us) ins_checkrep_max_us = ins_checkrep_us;
+                    if (ins_orphan_us > ins_orphan_max_us) ins_orphan_max_us = ins_orphan_us;
+                    ins_checkrep_sum_us += ins_checkrep_us;
+                    if (now_ns > ins_last_report_ns + std.time.ns_per_s) {
+                        var diag: @import("af_xdp/socket.zig").XdpSocket.XdpDiag = .{};
+                        // PR0 (2026-07-03, repair catch-up-lag telemetry): kernel-authoritative
+                        // XDP_STATISTICS. rx_fill_ring_empty_descs is the ONLY definitive proof of
+                        // fill-ring starvation (kernel had a redirected packet but no UMEM frame to
+                        // put it in) vs a discovery-bound catch-up lag. These counters were DEFINED
+                        // (socket.zig XdpStatistics) but NEVER read — during the 419410933 post-mortem
+                        // fill-vs-discovery had to be INFERRED from fill_free/rx_avail. Emitting them
+                        // here (~1 getsockopt/sec, read-only, cumulative-since-socket-open) makes the
+                        // next incident instantly + authoritatively classifiable. Zero behavior change:
+                        // only runs inside the existing VEX_ENABLE_AFXDP instrument block.
+                        var kstats = std.mem.zeroes(@import("af_xdp/socket.zig").XdpStatistics);
+                        if (self.shred_io) |io| {
+                            if (io.getXdpSocket()) |xdp| {
+                                diag = xdp.diag();
+                                kstats = xdp.getStats() catch kstats;
                             }
                         }
-                    }
-                    std.log.warn("[AFXDP-PHASE] loops/s={d} iter_max={d}ms | recv_max={d}us zcrecv_max={d}us repdrain_max={d}us checkrep_max={d}ms(sum={d}ms) orphan_max={d}ms | held={d} free_depth={d} fill_free={d} rx_avail={d} spill={d} inprog_slots={d} | trylock_fail={d} stg_depth={d} stg_max={d} stg_overrun={d} | zc_pushed={d} zc_popped={d} zc_overrun={d} ring_depth_max={d} | krx_drop={d} krx_ringfull={d} kfill_empty={d}", .{
-                        ins_loops,
-                        ins_iter_max_us / 1000,
-                        ins_recv_max_us,
-                        ins_zcrecv_max_us,
-                        ins_repdrain_max_us,
-                        ins_checkrep_max_us / 1000,
-                        ins_checkrep_sum_us / 1000,
-                        ins_orphan_max_us / 1000,
-                        diag.frames_held,
-                        diag.free_depth,
-                        diag.fill_free,
-                        diag.rx_avail,
-                        diag.spill_events,
-                        in_prog,
-                        tlf,
-                        stg_depth,
-                        self.staging_depth_max,
-                        self.staging_overrun,
-                        ring_pushed,
-                        ring_popped,
-                        zc_ovr,
-                        ring_depth_max,
-                        kstats.rx_dropped,
-                        kstats.rx_ring_full,
-                        kstats.rx_fill_ring_empty_descs,
-                    });
-                    // FIX 2026-07-07 (carrier 420258409 follow-up): free_depth==0 means the
-                    // UMEM recycle reservoir is exhausted — the exact precondition under which
-                    // the NIC can recycle a frame the verify worker is still processing
-                    // ([FRAME-OVERWRITE]/[FRAME-DROP] in shred.zig). This is a DISTINCT,
-                    // easy-to-grep low-water alarm (pure diagnostic, no behavior change) rather
-                    // than requiring an operator to eyeball the dense line above.
-                    //
-                    // RATE-LIMIT (2026-07-07, same-day follow-up): this block already only
-                    // runs once/sec (the outer 1Hz gate above), but a SUSTAINED spiral (the
-                    // free_depth=0 stretch that produced 259 [FRAME-DROP] in 20min) still means
-                    // one line per second indefinitely — thousands of lines over a multi-hour
-                    // outage. Emit first occurrence + every 1000th + a one-shot "recovered" line
-                    // instead (same shape as the [ZC-VERSION-REJECT]/[RX-SHED] counters above).
-                    if (diag.free_depth == 0) {
-                        self.pool_low_streak += 1;
-                        if (self.pool_low_streak == 1 or self.pool_low_streak % 1000 == 0) {
-                            std.log.warn("[AFXDP-POOL-LOW] #{d} free_depth=0 (UMEM recycle reservoir exhausted) fill_free={d} frames_held={d} rx_avail={d} — frame-overwrite/drop race is now possible (backpressure gate should now be shedding, see [RX-SHED])", .{
-                                self.pool_low_streak, diag.fill_free, diag.frames_held, diag.rx_avail,
-                            });
+                        const in_prog = self.shred_assembler.getInProgressSlotCount();
+                        const tlf = if (self.verify_tile_instance) |vt| vt.queue.trylock_fail.load(.monotonic) else 0;
+                        const stg_depth = self.staging_head -% self.staging_tail;
+                        // Option B (2026-06-14) discriminator: zc_overrun = frames dropped
+                        // because ALL verify rings were full (genuine verify-parallelism
+                        // overrun). ring_depth_max = deepest single-ring backlog right now.
+                        // If zc_overrun stays ≈0 yet AF_XDP still wedges (bridge slots
+                        // missing, root stuck) → the wedge is the repair path (NEXT-2), NOT
+                        // the verify handoff. High ring_depth_max during catch-up → a worker
+                        // is descheduled (core-map collision) OR a verify-count limit.
+                        var zc_ovr: u64 = 0;
+                        var ring_depth_max: u32 = 0;
+                        // POSITIVE throughput signal (advisor): cumulative frames pushed/
+                        // popped across all rings. zc_overrun≈0 + ring_depth_max≈0 is
+                        // AMBIGUOUS — it is equally the signature of "rings perfectly
+                        // drained" AND "rings never carried any traffic" (silent kernel-UDP
+                        // fallback, or the kernel socket carrying shreds). ring_pushed
+                        // CLIMBING at ~turbine rate is the only proof Option B actually ran.
+                        var ring_pushed: u64 = 0;
+                        var ring_popped: u64 = 0;
+                        if (self.verify_tile_instance) |vt| {
+                            zc_ovr = vt.zc_overrun.load(.monotonic);
+                            if (vt.zc_rings) |rings| {
+                                for (rings) |r| {
+                                    const d = r.len();
+                                    if (d > ring_depth_max) ring_depth_max = d;
+                                    ring_pushed += r.pushed.load(.monotonic);
+                                    ring_popped += r.popped.load(.monotonic);
+                                }
+                            }
                         }
-                    } else if (self.pool_low_streak > 0) {
-                        std.log.warn("[AFXDP-POOL-LOW-RECOVERED] free_depth={d} after {d} consecutive 1Hz samples at 0", .{
-                            diag.free_depth, self.pool_low_streak,
+                        std.log.warn("[AFXDP-PHASE] loops/s={d} iter_max={d}ms | recv_max={d}us zcrecv_max={d}us repdrain_max={d}us checkrep_max={d}ms(sum={d}ms) orphan_max={d}ms | held={d} free_depth={d} fill_free={d} rx_avail={d} spill={d} inprog_slots={d} | trylock_fail={d} stg_depth={d} stg_max={d} stg_overrun={d} | zc_pushed={d} zc_popped={d} zc_overrun={d} ring_depth_max={d} | krx_drop={d} krx_ringfull={d} kfill_empty={d}", .{
+                            ins_loops,
+                            ins_iter_max_us / 1000,
+                            ins_recv_max_us,
+                            ins_zcrecv_max_us,
+                            ins_repdrain_max_us,
+                            ins_checkrep_max_us / 1000,
+                            ins_checkrep_sum_us / 1000,
+                            ins_orphan_max_us / 1000,
+                            diag.frames_held,
+                            diag.free_depth,
+                            diag.fill_free,
+                            diag.rx_avail,
+                            diag.spill_events,
+                            in_prog,
+                            tlf,
+                            stg_depth,
+                            self.staging_depth_max,
+                            self.staging_overrun,
+                            ring_pushed,
+                            ring_popped,
+                            zc_ovr,
+                            ring_depth_max,
+                            kstats.rx_dropped,
+                            kstats.rx_ring_full,
+                            kstats.rx_fill_ring_empty_descs,
                         });
-                        self.pool_low_streak = 0;
+                        // FIX 2026-07-07 (carrier 420258409 follow-up): free_depth==0 means the
+                        // UMEM recycle reservoir is exhausted — the exact precondition under which
+                        // the NIC can recycle a frame the verify worker is still processing
+                        // ([FRAME-OVERWRITE]/[FRAME-DROP] in shred.zig). This is a DISTINCT,
+                        // easy-to-grep low-water alarm (pure diagnostic, no behavior change) rather
+                        // than requiring an operator to eyeball the dense line above.
+                        //
+                        // RATE-LIMIT (2026-07-07, same-day follow-up): this block already only
+                        // runs once/sec (the outer 1Hz gate above), but a SUSTAINED spiral (the
+                        // free_depth=0 stretch that produced 259 [FRAME-DROP] in 20min) still means
+                        // one line per second indefinitely — thousands of lines over a multi-hour
+                        // outage. Emit first occurrence + every 1000th + a one-shot "recovered" line
+                        // instead (same shape as the [ZC-VERSION-REJECT]/[RX-SHED] counters above).
+                        if (diag.free_depth == 0) {
+                            self.pool_low_streak += 1;
+                            if (self.pool_low_streak == 1 or self.pool_low_streak % 1000 == 0) {
+                                std.log.warn("[AFXDP-POOL-LOW] #{d} free_depth=0 (UMEM recycle reservoir exhausted) fill_free={d} frames_held={d} rx_avail={d} — frame-overwrite/drop race is now possible (backpressure gate should now be shedding, see [RX-SHED])", .{
+                                    self.pool_low_streak, diag.fill_free, diag.frames_held, diag.rx_avail,
+                                });
+                            }
+                        } else if (self.pool_low_streak > 0) {
+                            std.log.warn("[AFXDP-POOL-LOW-RECOVERED] free_depth={d} after {d} consecutive 1Hz samples at 0", .{
+                                diag.free_depth, self.pool_low_streak,
+                            });
+                            self.pool_low_streak = 0;
+                        }
+                        ins_loops = 0;
+                        ins_iter_max_us = 0;
+                        ins_recv_max_us = 0;
+                        ins_zcrecv_max_us = 0;
+                        ins_repdrain_max_us = 0;
+                        ins_checkrep_max_us = 0;
+                        ins_orphan_max_us = 0;
+                        ins_checkrep_sum_us = 0;
+                        ins_last_report_ns = now_ns;
                     }
-                    ins_loops = 0;
-                    ins_iter_max_us = 0;
-                    ins_recv_max_us = 0;
-                    ins_zcrecv_max_us = 0;
-                    ins_repdrain_max_us = 0;
-                    ins_checkrep_max_us = 0;
-                    ins_orphan_max_us = 0;
-                    ins_checkrep_sum_us = 0;
-                    ins_last_report_ns = now_ns;
                 }
-            }
             }
 
             // PROACTIVE REPAIR — lightweight discovery of NEW slots.
@@ -5018,10 +5017,15 @@ pub const TvuService = struct {
                     \\
                 , .{
                     uptime_s,
-                    total_shreds, total_invalid,
-                    completed_slots, in_progress, pending,
-                    max_seen, completed_slots,
-                    total_repairs_sent, total_repairs_rcvd,
+                    total_shreds,
+                    total_invalid,
+                    completed_slots,
+                    in_progress,
+                    pending,
+                    max_seen,
+                    completed_slots,
+                    total_repairs_sent,
+                    total_repairs_rcvd,
                     loop_count,
                 });
                 self.last_diag_ns = now_ns;
@@ -5139,7 +5143,7 @@ pub const TvuService = struct {
         }
 
         // NOTE: Distance-based eviction (REPAIR-PRUNE) has been REMOVED.
-        // It was the root cause of slot assassination during catch-up: slots 
+        // It was the root cause of slot assassination during catch-up: slots
         // >150 behind network_head were deleted before repair could complete them.
         // The time-based sweeper (5-minute timeout for repair slots) handles
         // cleanup of truly dead slots without killing active repair work.
@@ -5616,7 +5620,9 @@ pub const TvuService = struct {
                                         // fresh-snapshot restart.
                                         std.posix.exit(70);
                                     } else {
-                                        const FsDbg = struct { var warned: bool = false; };
+                                        const FsDbg = struct {
+                                            var warned: bool = false;
+                                        };
                                         if (!FsDbg.warned) {
                                             FsDbg.warned = true;
                                             std.log.warn("[REPAIR-STUCK-FAILSTOP] slot={d} would FAIL-STOP (phantom wedge >5min) but VEX_REPAIR_STUCK_FAILSTOP=0 disables it; staying up (operator opted out)", .{slot});
@@ -5792,7 +5798,9 @@ pub const TvuService = struct {
         // by the new filter. Throttled to once per 200 invocations to avoid
         // log spam during steady-state where some pre-root churn is normal.
         if (pre_root_skipped > 0) {
-            const Pr5rDbg = struct { var calls: u64 = 0; };
+            const Pr5rDbg = struct {
+                var calls: u64 = 0;
+            };
             Pr5rDbg.calls += 1;
             if (Pr5rDbg.calls % 50 == 1) {
                 std.log.warn("[PR-5r] pre_root_skipped={d} (root={d}, total_slots={d}, repaired={d}, requests={d})", .{

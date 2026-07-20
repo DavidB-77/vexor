@@ -447,7 +447,7 @@ pub const ValidatorBootstrap = struct {
 
         if (manifest_bank_hash != null) {
             std.log.debug("[BOOTSTRAP] Root bank hash from manifest: {x:0>2}{x:0>2}{x:0>2}{x:0>2}.. block_height={d} capitalization={d}\n", .{
-                snapshot_hash.data[0], snapshot_hash.data[1], snapshot_hash.data[2], snapshot_hash.data[3],
+                snapshot_hash.data[0], snapshot_hash.data[1],   snapshot_hash.data[2], snapshot_hash.data[3],
                 manifest_block_height, manifest_capitalization,
             });
         } else {
@@ -1140,8 +1140,14 @@ fn seedTopVotesFromSnapshot(db: *AccountsDb) void {
     var skipped_no_ts: usize = 0;
     for (db.vote_account_stakes) |entry| {
         const pk = core.Pubkey{ .data = entry.vote_pubkey };
-        const acct = db._getRooted(&pk) orelse { skipped_no_data += 1; continue; };
-        if (acct.data.len < 16) { skipped_no_data += 1; continue; }
+        const acct = db._getRooted(&pk) orelse {
+            skipped_no_data += 1;
+            continue;
+        };
+        if (acct.data.len < 16) {
+            skipped_no_data += 1;
+            continue;
+        }
         const vs = vote_serde.deserializeVoteState(acct.data) orelse {
             skipped_no_data += 1;
             continue;

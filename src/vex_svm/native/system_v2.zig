@@ -27,7 +27,6 @@
 /// paths return error.Unimplemented and are marked // TODO stubs.
 ///
 /// Naming: camelCase, no fd_ prefix (Vexor convention).
-
 const std = @import("std");
 const types = @import("../types.zig");
 const nonce = @import("nonce.zig");
@@ -98,8 +97,8 @@ pub const InstrError = error{
 // ─────────────────────────────────────────────────────────────────────────────
 pub const SystemAccountKind = enum(u8) {
     Unknown = 0,
-    System  = 1,
-    Nonce   = 2,
+    System = 1,
+    Nonce = 2,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -107,19 +106,19 @@ pub const SystemAccountKind = enum(u8) {
 // fd_system_program.c:721-793
 // ─────────────────────────────────────────────────────────────────────────────
 pub const Discriminant = enum(u32) {
-    CreateAccount          = 0,
-    Assign                 = 1,
-    Transfer               = 2,
-    CreateAccountWithSeed  = 3,
-    AdvanceNonceAccount    = 4,
-    WithdrawNonceAccount   = 5,
+    CreateAccount = 0,
+    Assign = 1,
+    Transfer = 2,
+    CreateAccountWithSeed = 3,
+    AdvanceNonceAccount = 4,
+    WithdrawNonceAccount = 5,
     InitializeNonceAccount = 6,
-    AuthorizeNonceAccount  = 7,
-    Allocate               = 8,
-    AllocateWithSeed       = 9,
-    AssignWithSeed         = 10,
-    TransferWithSeed       = 11,
-    UpgradeNonceAccount    = 12,
+    AuthorizeNonceAccount = 7,
+    Allocate = 8,
+    AllocateWithSeed = 9,
+    AssignWithSeed = 10,
+    TransferWithSeed = 11,
+    UpgradeNonceAccount = 12,
     CreateAccountAllowPrefund = 13,
     _,
 };
@@ -301,7 +300,7 @@ fn transferVerified(
     to_idx: usize,
 ) InstrError!void {
     const from = try ctx.getAccount(from_idx);
-    const to   = try ctx.getAccount(to_idx);
+    const to = try ctx.getAccount(to_idx);
 
     // fd_system_program.c:85-88 — from must carry no data
     if (from.data.len != 0) return InstrError.InvalidArgument;
@@ -895,9 +894,9 @@ pub fn execute(ctx: *const InstrCtx, instr_data: []const u8) InstrError!void {
         .CreateAccount => {
             // payload: lamports(u64) + space(u64) + owner(32)
             if (payload.len < 8 + 8 + 32) return InstrError.InvalidInstructionData;
-            const lamports = std.mem.readInt(u64, payload[0..8],  .little);
-            const space    = std.mem.readInt(u64, payload[8..16], .little);
-            const owner    = payload[16..48];
+            const lamports = std.mem.readInt(u64, payload[0..8], .little);
+            const space = std.mem.readInt(u64, payload[8..16], .little);
+            const owner = payload[16..48];
             try execCreateAccount(ctx, lamports, space, owner[0..32]);
         },
         .Assign => {
@@ -917,15 +916,15 @@ pub fn execute(ctx: *const InstrCtx, instr_data: []const u8) InstrError!void {
             const base: *const [32]u8 = payload[0..32];
             const seed_len = std.mem.readInt(u64, payload[32..40], .little);
             if (payload.len < 40 + seed_len + 8 + 8 + 32) return InstrError.InvalidInstructionData;
-            const seed    = payload[40 .. 40 + seed_len];
-            const rest    = payload[40 + seed_len ..];
-            const lamports = std.mem.readInt(u64, rest[0..8],  .little);
-            const space    = std.mem.readInt(u64, rest[8..16], .little);
-            const owner    = rest[16..48];
+            const seed = payload[40 .. 40 + seed_len];
+            const rest = payload[40 + seed_len ..];
+            const lamports = std.mem.readInt(u64, rest[0..8], .little);
+            const space = std.mem.readInt(u64, rest[8..16], .little);
+            const owner = rest[16..48];
             try execCreateAccountWithSeed(ctx, base, seed, lamports, space, owner[0..32]);
         },
-        .AdvanceNonceAccount    => try execAdvanceNonce(ctx),
-        .WithdrawNonceAccount   => {
+        .AdvanceNonceAccount => try execAdvanceNonce(ctx),
+        .WithdrawNonceAccount => {
             if (payload.len < 8) return InstrError.InvalidInstructionData;
             const lamports = std.mem.readInt(u64, payload[0..8], .little);
             try execWithdrawNonce(ctx, lamports);
@@ -934,7 +933,7 @@ pub fn execute(ctx: *const InstrCtx, instr_data: []const u8) InstrError!void {
             if (payload.len < 32) return InstrError.InvalidInstructionData;
             try execInitializeNonce(ctx, payload[0..32]);
         },
-        .AuthorizeNonceAccount  => {
+        .AuthorizeNonceAccount => {
             if (payload.len < 32) return InstrError.InvalidInstructionData;
             try execAuthorizeNonce(ctx, payload[0..32]);
         },
@@ -948,8 +947,8 @@ pub fn execute(ctx: *const InstrCtx, instr_data: []const u8) InstrError!void {
             const base: *const [32]u8 = payload[0..32];
             const seed_len = std.mem.readInt(u64, payload[32..40], .little);
             if (payload.len < 40 + seed_len + 8 + 32) return InstrError.InvalidInstructionData;
-            const seed  = payload[40 .. 40 + seed_len];
-            const rest  = payload[40 + seed_len ..];
+            const seed = payload[40 .. 40 + seed_len];
+            const rest = payload[40 + seed_len ..];
             const space = std.mem.readInt(u64, rest[0..8], .little);
             const owner = rest[8..40];
             try execAllocateWithSeed(ctx, base, seed, space, owner[0..32]);
@@ -959,7 +958,7 @@ pub fn execute(ctx: *const InstrCtx, instr_data: []const u8) InstrError!void {
             const base: *const [32]u8 = payload[0..32];
             const seed_len = std.mem.readInt(u64, payload[32..40], .little);
             if (payload.len < 40 + seed_len + 32) return InstrError.InvalidInstructionData;
-            const seed  = payload[40 .. 40 + seed_len];
+            const seed = payload[40 .. 40 + seed_len];
             const owner = payload[40 + seed_len ..][0..32];
             try execAssignWithSeed(ctx, base, seed, owner);
         },
@@ -969,7 +968,7 @@ pub fn execute(ctx: *const InstrCtx, instr_data: []const u8) InstrError!void {
             const lamports = std.mem.readInt(u64, payload[0..8], .little);
             const seed_len = std.mem.readInt(u64, payload[8..16], .little);
             if (payload.len < 16 + seed_len + 32) return InstrError.InvalidInstructionData;
-            const seed       = payload[16 .. 16 + seed_len];
+            const seed = payload[16 .. 16 + seed_len];
             const from_owner = payload[16 + seed_len ..][0..32];
             try execTransferWithSeed(ctx, seed, from_owner, lamports);
         },
@@ -978,9 +977,9 @@ pub fn execute(ctx: *const InstrCtx, instr_data: []const u8) InstrError!void {
             // SIMD-0312 (active testnet ep 954, slot 406,604,256).
             // payload: lamports(u64) + space(u64) + owner(32) — same wire as CreateAccount
             if (payload.len < 8 + 8 + 32) return InstrError.InvalidInstructionData;
-            const lamports = std.mem.readInt(u64, payload[0..8],  .little);
-            const space    = std.mem.readInt(u64, payload[8..16], .little);
-            const owner    = payload[16..48];
+            const lamports = std.mem.readInt(u64, payload[0..8], .little);
+            const space = std.mem.readInt(u64, payload[8..16], .little);
+            const owner = payload[16..48];
             try execCreateAccountAllowPrefund(ctx, lamports, space, owner[0..32]);
         },
         else => return InstrError.InvalidInstructionData,

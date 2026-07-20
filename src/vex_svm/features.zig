@@ -3404,7 +3404,6 @@ test "KNOWN_FEATURES table is non-empty and names are unique" {
     }
 }
 
-
 test "apply_feature_activations: pending account byte-rewrite matches Agave feature::to_account (disc 0->1 + slot LE)" {
     // @prov:features.feature-account-layout — feature.activated_at = Some(self.slot()) then
     // to_account → bincode Feature{activated_at: Option<u64>} = 1-byte

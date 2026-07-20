@@ -138,7 +138,6 @@ pub const MICRO_LAMPORTS_PER_LAMPORT: u64 = 1_000_000;
 ///   2 = SetComputeUnitLimit(u32)
 ///   3 = SetComputeUnitPrice(u64) — micro-lamports per CU
 ///   4 = SetLoadedAccountsDataSizeLimit(u32) — irrelevant to fee calc
-
 /// Iterate instructions of a parsed tx; extract explicit compute_unit_limit +
 /// compute_unit_price (both Optional). Caller resolves defaults.
 ///

@@ -733,7 +733,7 @@ pub const ShredAssembler = struct {
                 // Classify for logging
                 const is_live = (head_slot > 0) and
                     ((slot_key >= head_slot and slot_key - head_slot <= LIVE_SLOT_WINDOW) or
-                    (head_slot > slot_key and head_slot - slot_key <= LIVE_SLOT_WINDOW));
+                        (head_slot > slot_key and head_slot - slot_key <= LIVE_SLOT_WINDOW));
 
                 if (self.frame_manager) |fm| {
                     assembly.deinitWithFrameManager(fm);
@@ -1013,7 +1013,11 @@ pub const ShredAssembler = struct {
         const num_data: u32 = self.fec_resolver.getNumData(slot, fec_idx) orelse 0;
 
         const maybe_v = self.chain_tracker.observeAndRecord(
-            slot, fec_idx, num_data, this_root, chained_root,
+            slot,
+            fec_idx,
+            num_data,
+            this_root,
+            chained_root,
         ) catch |err| {
             std.log.warn("[SIMD-0340] tracker.observe alloc fail slot={d} err={s}", .{ slot, @errorName(err) });
             return;
@@ -1589,7 +1593,7 @@ pub const ShredAssembler = struct {
                                 const prev_flags = prev[85];
                                 const prev_ds = std.mem.readInt(u16, prev[86..88], .little);
                                 std.log.debug("[ZERO-SHRED] slot={d} LAST_GOOD idx={d} data_size={d} flags=0x{x:0>2} batch_complete={} block_complete={}\n", .{
-                                    slot_val, diag_i - 1, prev_ds, prev_flags,
+                                    slot_val,                 diag_i - 1,               prev_ds, prev_flags,
                                     (prev_flags & 0x40) != 0, (prev_flags & 0x80) != 0,
                                 });
                             }
@@ -1601,8 +1605,8 @@ pub const ShredAssembler = struct {
             // Summary
             if (diag_zero_payload_count > 0) {
                 std.log.debug("[ZERO-SHRED] slot={d} nonzero={d} zero={d} first_zero_at={d} last={d} batch_completes={d}", .{
-                    slot_val, nonzero_payload_count, diag_zero_payload_count,
-                    first_zero_idx orelse 9999, last, batch_complete_count,
+                    slot_val,                   nonzero_payload_count, diag_zero_payload_count,
+                    first_zero_idx orelse 9999, last,                  batch_complete_count,
                 });
                 // Print batch_complete indices
                 if (batch_complete_count > 0) {

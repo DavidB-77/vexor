@@ -81,7 +81,6 @@ pub const shadow_safety = @import("shadow_safety.zig");
 // ── Stage-D follow-up: panic-safety harness for shadow execution ────────────
 pub const shadow_panic_safety = @import("shadow_panic_safety.zig");
 
-
 // Tests are loaded by their own dedicated build steps so that each step can
 // declare exactly the module deps it needs (e.g. `test-bpf-fixture` brings in
 // `core` + `vex_store` + `vex_crypto`, while `test-vex-bpf2-runtime` is a

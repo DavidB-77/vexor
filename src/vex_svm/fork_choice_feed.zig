@@ -139,9 +139,9 @@ pub fn EpochStakeLookup(comptime EpochStakesSlice: type) type {
 /// Result counters for the bootstrap seed. Surfaced via the warn-level
 /// log line so the soak-watcher can confirm the seed fired.
 pub const SeedStats = struct {
-    candidates: usize,   // voters with non-zero stake in current_epoch
-    emitted: usize,      // PubkeyVote entries produced
-    no_account: usize,   // db.getAccount returned null for the vote pubkey
+    candidates: usize, // voters with non-zero stake in current_epoch
+    emitted: usize, // PubkeyVote entries produced
+    no_account: usize, // db.getAccount returned null for the vote pubkey
     no_last_vote: usize, // getLastVotedSlot returned null (no votes yet)
     no_bank_hash: usize, // bank_hash_ctx.lookup returned null (vote outside horizon)
 };
@@ -238,10 +238,10 @@ pub fn buildSeedBatch(
 /// Per-bank vote-account scan stats — mirrors Agave `compute_bank_stats` book-keeping.
 pub const VoteAccountBatchStats = struct {
     vote_accounts: usize, // top_votes entries scanned (≈ all known voters)
-    emitted: usize,       // PubkeyVote entries produced
-    duplicates: usize,    // always 0 (top_votes is keyed by unique pubkey); kept for log-line compat
-    no_last_vote: usize,  // TopVote.latestVotedSlot() returned null (empty tower)
-    no_bank_hash: usize,  // bank_hash_ctx.lookup returned null (vote outside frozen-bank horizon)
+    emitted: usize, // PubkeyVote entries produced
+    duplicates: usize, // always 0 (top_votes is keyed by unique pubkey); kept for log-line compat
+    no_last_vote: usize, // TopVote.latestVotedSlot() returned null (empty tower)
+    no_bank_hash: usize, // bank_hash_ctx.lookup returned null (vote outside frozen-bank horizon)
     // DIAG (2026-06-03, A-vs-B disambiguation): of all candidates (those with a
     // non-null latestVotedSlot), how many have a FRESH voted_slot — within
     // RECENT_WINDOW of the highest voted_slot seen this scan — and of those,
@@ -253,7 +253,7 @@ pub const VoteAccountBatchStats = struct {
     //     fresh votes (candidate B: bank retention at read time).
     recent: usize = 0,
     recent_resolved: usize = 0,
-    max_voted: u64 = 0,   // highest voted_slot among candidates (the scan frontier)
+    max_voted: u64 = 0, // highest voted_slot among candidates (the scan frontier)
 };
 
 /// Freshness window for `recent`/`recent_resolved`: a candidate counts as "recent"
@@ -382,12 +382,12 @@ pub fn buildVoteAccountBatch(
 /// Stats for the fork-aware fresh scan (mirrors VoteAccountBatchStats' shape
 /// for [SWITCH-VOTE-FRESH] log-line compat).
 pub const FreshBatchStats = struct {
-    candidates: usize,   // staked (stake>0) voters in the epoch_stakes table
-    emitted: usize,      // PubkeyVote entries produced
-    no_account: usize,   // getAccountInSlot returned null (no vote account on this fork's ancestry)
+    candidates: usize, // staked (stake>0) voters in the epoch_stakes table
+    emitted: usize, // PubkeyVote entries produced
+    no_account: usize, // getAccountInSlot returned null (no vote account on this fork's ancestry)
     no_last_vote: usize, // getLastVotedSlot returned null (empty tower)
     no_bank_hash: usize, // bank_hash_ctx.lookup returned null (voted slot outside our frozen-bank horizon)
-    parse_fail: usize,   // account data too large for the scratch buffer (defensive; should not fire)
+    parse_fail: usize, // account data too large for the scratch buffer (defensive; should not fire)
 };
 
 /// Scratch buffer sized for the largest known vote-state encoding (V4 frame =

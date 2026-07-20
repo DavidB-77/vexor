@@ -2292,4 +2292,3 @@ test "produceSlotBytes: cost-model block limit STOPS packing at the right tx; to
     // the next slot's mempool; this loopback producer drains the whole batch, so the mempool is empty.
     try testing.expectEqual(@as(usize, 0), banking.queueDepth());
 }
-

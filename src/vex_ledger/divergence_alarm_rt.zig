@@ -499,13 +499,12 @@ pub const DivergeAlarm = struct {
                 \\}}
                 \\
             , .{
-                slot,                    v.class.asStr(),
-                slot,                    our_hex,
-                cluster_hex,
-                matchStr(v.parent),      matchStr(v.poh),
-                matchStr(v.sigs),        matchStr(v.lthash),
-                v.needs_account_diff,    v.reanchor_parent,
-                self.config.autoreplay,
+                slot,               v.class.asStr(),
+                slot,               our_hex,
+                cluster_hex,        matchStr(v.parent),
+                matchStr(v.poh),    matchStr(v.sigs),
+                matchStr(v.lthash), v.needs_account_diff,
+                v.reanchor_parent,  self.config.autoreplay,
             });
             defer self.allocator.free(json);
             try writeFileInDir(dir, "verdict.json", json);
@@ -529,10 +528,10 @@ pub const DivergeAlarm = struct {
                 \\
             , .{
                 slot,               v.class.asStr(),
-                our_hex,
-                matchStr(v.parent), matchStr(v.poh), matchStr(v.sigs), matchStr(v.lthash),
-                v.needs_account_diff, v.reanchor_parent,
-                slot,
+                our_hex,            matchStr(v.parent),
+                matchStr(v.poh),    matchStr(v.sigs),
+                matchStr(v.lthash), v.needs_account_diff,
+                v.reanchor_parent,  slot,
             });
             defer self.allocator.free(md);
             try writeFileInDir(dir, "SUMMARY.md", md);
@@ -561,11 +560,8 @@ pub const DivergeAlarm = struct {
         var slot_buf: [24]u8 = undefined;
         const slot_str = std.fmt.bufPrint(&slot_buf, "{d}", .{slot}) catch return;
         const argv = [_][]const u8{
-            "nice",          "-n", "19", "ionice", "-c3", "taskset", "-c", "28-31",
-            self.config.localize_script,
-            "--slot",        slot_str,
-            "--oracle",
-            "--out",         bundle,
+            "nice",                      "-n",     "19",     "ionice",   "-c3",   "taskset", "-c", "28-31",
+            self.config.localize_script, "--slot", slot_str, "--oracle", "--out", bundle,
         };
         var child = std.process.Child.init(&argv, self.allocator);
         child.stdin_behavior = .Ignore;
@@ -643,7 +639,8 @@ pub const CurlOracle = struct {
         const self: *CurlOracle = @ptrCast(@alignCast(ctx.?));
         // transactionDetails="none": we only need .blockhash (the PoH input). commitment
         // "finalized" enforces the rooted-both-sides guard #1 (unfinalized/dropped forks 404).
-        const body = std.fmt.allocPrint(self.allocator,
+        const body = std.fmt.allocPrint(
+            self.allocator,
             "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBlock\",\"params\":[{d}," ++
                 "{{\"commitment\":\"finalized\",\"transactionDetails\":\"none\"," ++
                 "\"rewards\":false,\"maxSupportedTransactionVersion\":0}}]}}",
@@ -652,9 +649,8 @@ pub const CurlOracle = struct {
         defer self.allocator.free(body);
 
         const argv = [_][]const u8{
-            "curl", "-s", "--max-time", "10", "-X", "POST",
-            "-H",   "Content-Type: application/json",
-            "-d",   body, cfg.oracle_url,
+            "curl", "-s",                             "--max-time", "10", "-X",           "POST",
+            "-H",   "Content-Type: application/json", "-d",         body, cfg.oracle_url,
         };
         var child = std.process.Child.init(&argv, self.allocator);
         child.stdin_behavior = .Ignore;

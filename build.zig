@@ -722,9 +722,9 @@ pub fn build(b: *std.Build) void {
     // builtins imports cpi/syscalls). Aggregate step test-vex-bpf2-builtins.
     {
         const M9_NAMES = [_][]const u8{
-            "system",               "vote",             "stake",
-            "config",               "compute_budget",   "address_lookup_table",
-            "zk_elgamal_proof",     "feature_gate",     "mod",
+            "system",           "vote",           "stake",
+            "config",           "compute_budget", "address_lookup_table",
+            "zk_elgamal_proof", "feature_gate",   "mod",
             "harness",
         };
         const builtins_agg = b.step("test-vex-bpf2-builtins", "Run ALL vex_bpf2 M9 builtin unit tests");
@@ -3336,10 +3336,6 @@ pub fn build(b: *std.Build) void {
     test_conformance_step.dependOn(&run_test_conformance.step);
     test_migrated_step.dependOn(&run_test_conformance.step);
 
-
-
-
-
     // ── VOTEFORGE Stage 1: voteforge/vote_codec.zig byte-exactness KATs ───────
     // The rewrite's codec layer (fixed-offset V3/V4 serde, derived from Agave
     // 4.2.0-beta.0, zero heap). KATs round-trip the CARRIER-419996256 real V4
@@ -3503,7 +3499,6 @@ pub fn build(b: *std.Build) void {
     test_account_io_step.dependOn(&run_test_vote_program_selftest.step);
     test_migrated_step.dependOn(&run_test_vote_program.step);
     test_migrated_step.dependOn(&run_test_vote_program_selftest.step);
-
 
     // ════════════════════════════════════════════════════════════════════════
     // MODULE 72 (§J/§K vex_network HUB + §E3 replay_stage FORCE-COMPILE):

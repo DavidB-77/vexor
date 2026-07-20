@@ -2629,7 +2629,6 @@ pub fn executeVoteInstruction(
         return;
     }
 
-
     // Vote account is always the first account in the instruction
     const vote_acct_idx = ix.account_indices[0];
     if (vote_acct_idx >= ptx.num_accounts) {
@@ -2761,7 +2760,6 @@ pub fn executeVoteInstruction(
 /// have no `self`. null (e.g. early bootstrap or KAT harnesses) → voteforge's
 /// conservative default (all new gates off) applies.
 pub var g_vote_live_features: ?*const features_mod.FeatureSet = null;
-
 
 /// The production vote seam: voteforge's own front door (`vp.dispatch`)
 /// executes the vote instruction for real against the LIVE bank accounts,
@@ -3008,7 +3006,6 @@ pub fn executeVoteViaVoteforge(
         }
     };
 
-
     exec_result catch |e| {
         mutate_fail.* += 1;
         if (e == error.OutOfMemory) return;
@@ -3056,7 +3053,6 @@ pub fn executeVoteViaVoteforge(
         }
     }
 }
-
 
 /// Convert vote_program Lockout[] to vote_state_serde Lockout[] (same layout, different types)
 pub fn convertVoteLockouts(

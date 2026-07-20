@@ -223,7 +223,7 @@ pub fn generateXdpProgram(
     // Check if redirect failed (r0 < 0) and fallback to kernel
     code_buf[idx] = jlt_imm(r0, 0, LBL_PASS);
     idx += 1; // if r0 < 0, jump to LBL_PASS (fallback to kernel)
-    code_buf[idx] = exit_insn;  // Otherwise return r0 (successful XDP_REDIRECT)
+    code_buf[idx] = exit_insn; // Otherwise return r0 (successful XDP_REDIRECT)
     idx += 1;
 
     const code_cnt = idx;
@@ -290,4 +290,3 @@ test "generate basic xdp program" {
     try std.testing.expect(count > 0);
     try std.testing.expect(count < 100);
 }
-

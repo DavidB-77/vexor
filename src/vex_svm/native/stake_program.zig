@@ -657,32 +657,39 @@ fn handleWithdraw(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: 
         1 => blk: { // Initialized
             if (stake_acct.data.len < stake_state.STAKE_STATE_SZ) return;
             const current_withdrawer = stake_state.readPubkey(
-                stake_acct.data, stake_state.Offsets.withdrawer,
+                stake_acct.data,
+                stake_state.Offsets.withdrawer,
             ) orelse return;
             if (!std.mem.eql(u8, &authority_key, &current_withdrawer)) return;
             const rsv = stake_state.readU64(
-                stake_acct.data, stake_state.Offsets.rent_exempt_reserve,
+                stake_acct.data,
+                stake_state.Offsets.rent_exempt_reserve,
             ) orelse return;
             break :blk [2]u64{ rsv, 0 }; // is_staked=false
         },
         2 => blk: { // Stake
             if (stake_acct.data.len < stake_state.STAKE_STATE_SZ) return;
             const current_withdrawer = stake_state.readPubkey(
-                stake_acct.data, stake_state.Offsets.withdrawer,
+                stake_acct.data,
+                stake_state.Offsets.withdrawer,
             ) orelse return;
             if (!std.mem.eql(u8, &authority_key, &current_withdrawer)) return;
 
             const rent_exempt = stake_state.readU64(
-                stake_acct.data, stake_state.Offsets.rent_exempt_reserve,
+                stake_acct.data,
+                stake_state.Offsets.rent_exempt_reserve,
             ) orelse return;
             const delegation_stake = stake_state.readU64(
-                stake_acct.data, stake_state.Offsets.delegation_stake,
+                stake_acct.data,
+                stake_state.Offsets.delegation_stake,
             ) orelse return;
             const activation_epoch = stake_state.readU64(
-                stake_acct.data, stake_state.Offsets.activation_epoch,
+                stake_acct.data,
+                stake_state.Offsets.activation_epoch,
             ) orelse return;
             const deactivation_epoch = stake_state.readU64(
-                stake_acct.data, stake_state.Offsets.deactivation_epoch,
+                stake_acct.data,
+                stake_state.Offsets.deactivation_epoch,
             ) orelse return;
             // carrier #16: the per-account serialized warmup_cooldown_rate field
             // is NOT used by the canonical curve (rate is epoch-scheduled).
@@ -719,10 +726,12 @@ fn handleWithdraw(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: 
     // ── 4. Lockup check (skip for Uninitialized — no lockup field) ─────────
     if (disc != 0) {
         const lockup_epoch = stake_state.readU64(
-            stake_acct.data, stake_state.Offsets.lockup_epoch,
+            stake_acct.data,
+            stake_state.Offsets.lockup_epoch,
         ) orelse return;
         const lockup_ts = stake_state.readI64(
-            stake_acct.data, stake_state.Offsets.lockup_unix_timestamp,
+            stake_acct.data,
+            stake_state.Offsets.lockup_unix_timestamp,
         ) orelse return;
 
         // Read unix_timestamp from Clock sysvar (bytes 32..40).
@@ -741,7 +750,7 @@ fn handleWithdraw(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: 
         }
 
         const lockup_in_force = (lockup_epoch > 0 and current_epoch < lockup_epoch) or
-                                 (lockup_ts > 0 and clock_unix_ts < lockup_ts);
+            (lockup_ts > 0 and clock_unix_ts < lockup_ts);
 
         if (lockup_in_force) {
             // Custodian at index 5 must be present, be a signer, and match
@@ -752,7 +761,8 @@ fn handleWithdraw(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: 
             if (!isSigner(ptx, custodian_idx)) return;
             const custodian_key = ptx.account_keys[custodian_idx];
             const lockup_custodian = stake_state.readPubkey(
-                stake_acct.data, stake_state.Offsets.lockup_custodian,
+                stake_acct.data,
+                stake_state.Offsets.lockup_custodian,
             ) orelse return;
             if (!std.mem.eql(u8, &custodian_key, &lockup_custodian)) return;
         }
@@ -955,7 +965,7 @@ fn isLockupActive(data: []const u8, bank: anytype, db: anytype) bool {
 
     // Lockup is active if epoch constraint not yet passed OR timestamp constraint not yet passed.
     return (lockup_epoch > 0 and current_epoch < lockup_epoch) or
-           (lockup_ts > 0 and clock_unix_ts < lockup_ts);
+        (lockup_ts > 0 and clock_unix_ts < lockup_ts);
 }
 
 // ---------------------------------------------------------------------------
@@ -2026,7 +2036,10 @@ fn handleSetLockupChecked(ix: anytype, ptx: anytype, bank: anytype, db: anytype,
 // ---------------------------------------------------------------------------
 
 fn handleGetMinimumDelegation(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std.mem.Allocator) !void {
-    _ = ix; _ = ptx; _ = db; _ = alloc;
+    _ = ix;
+    _ = ptx;
+    _ = db;
+    _ = alloc;
     const min_delegation: u64 = 1_000_000_000; // 1 SOL
     std.log.debug("[STAKE] GetMinimumDelegation slot={d}: {d} lamports\n", .{ bank.slot, min_delegation });
     // TODO: When return_data is wired, set bank.return_data = LE bytes of min_delegation
@@ -2104,9 +2117,15 @@ fn handleDeactivateDelinquent(ix: anytype, ptx: anytype, bank: anytype, db: anyt
     var ref_ok = true;
     var ri: usize = ref_vs.ec_count;
     for (0..MINIMUM_DELINQUENT_EPOCHS) |_| {
-        if (ri == 0) { ref_ok = false; break; }
+        if (ri == 0) {
+            ref_ok = false;
+            break;
+        }
         ri -= 1;
-        if (ref_vs.epoch_credits[ri].epoch != check_epoch) { ref_ok = false; break; }
+        if (ref_vs.epoch_credits[ri].epoch != check_epoch) {
+            ref_ok = false;
+            break;
+        }
         check_epoch -|= 1;
     }
     if (!ref_ok) return;
@@ -2134,7 +2153,10 @@ fn handleDeactivateDelinquent(ix: anytype, ptx: anytype, bank: anytype, db: anyt
 // ---------------------------------------------------------------------------
 
 fn handleRedelegate(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std.mem.Allocator) !void {
-    _ = ix; _ = ptx; _ = db; _ = alloc;
+    _ = ix;
+    _ = ptx;
+    _ = db;
+    _ = alloc;
     // PR-5x (2026-05-19): Redelegate is deprecated; cluster (Agave/Firedancer/Sig)
     // returns InvalidInstructionData. @prov:stake.redelegate-deprecated —
     // pre-PR-5x Vexor silently succeeded — tx_results disagreement (Vexor
@@ -2150,7 +2172,10 @@ fn handleRedelegate(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc
 // ---------------------------------------------------------------------------
 
 fn handleMoveStake(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std.mem.Allocator) !void {
-    _ = ix; _ = ptx; _ = db; _ = alloc;
+    _ = ix;
+    _ = ptx;
+    _ = db;
+    _ = alloc;
     std.log.debug("[STAKE] MoveStake slot={d} — requires feature flag (not yet active)\n", .{bank.slot});
 }
 
@@ -2159,7 +2184,10 @@ fn handleMoveStake(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc:
 // ---------------------------------------------------------------------------
 
 fn handleMoveLamports(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std.mem.Allocator) !void {
-    _ = ix; _ = ptx; _ = db; _ = alloc;
+    _ = ix;
+    _ = ptx;
+    _ = db;
+    _ = alloc;
     std.log.debug("[STAKE] MoveLamports slot={d} — requires feature flag (not yet active)\n", .{bank.slot});
 }
 

@@ -18,24 +18,24 @@ const sbpf = @import("vm_sbpf.zig");
 /// A single contiguous mapping from [vm_addr, vm_addr+len) → host memory.
 /// fd_vm_private.h:fd_vm_input_region_t / sig/src/vm/memory.zig:Region
 pub const Region = struct {
-    vm_addr:  u64,          // inclusive start in VM address space
-    len:      u64,          // byte length
-    host_ptr: [*]u8,        // writable pointer; set is_mutable=false to enforce RO
+    vm_addr: u64, // inclusive start in VM address space
+    len: u64, // byte length
+    host_ptr: [*]u8, // writable pointer; set is_mutable=false to enforce RO
     is_mutable: bool,
 
     /// Construct from a mutable slice (rw).
     pub fn fromSlice(vm_addr: u64, buf: []u8) Region {
-        return .{ .vm_addr = vm_addr, .len = buf.len,
-                  .host_ptr = buf.ptr, .is_mutable = true };
+        return .{ .vm_addr = vm_addr, .len = buf.len, .host_ptr = buf.ptr, .is_mutable = true };
     }
 
     /// Construct from a read-only slice (RO enforced at translate time).
     pub fn fromConst(vm_addr: u64, buf: []const u8) Region {
-        return .{ .vm_addr = vm_addr, .len = buf.len,
-                  .host_ptr = @constCast(buf.ptr), .is_mutable = false };
+        return .{ .vm_addr = vm_addr, .len = buf.len, .host_ptr = @constCast(buf.ptr), .is_mutable = false };
     }
 
-    pub inline fn vmEnd(self: Region) u64 { return self.vm_addr +% self.len; }
+    pub inline fn vmEnd(self: Region) u64 {
+        return self.vm_addr +% self.len;
+    }
 
     /// True if vm_addr falls within this region.
     pub inline fn contains(self: Region, vm_addr: u64) bool {
@@ -45,8 +45,8 @@ pub const Region = struct {
 
 // ── Memory state (access type) ────────────────────────────────────────────────
 pub const MemoryState = enum {
-    constant,   // read-only
-    mutable,    // read-write
+    constant, // read-only
+    mutable, // read-write
 
     pub fn Slice(comptime self: MemoryState) type {
         return if (self == .constant) []const u8 else []u8;
@@ -63,7 +63,7 @@ pub const AccessError = error{
 // cf. sig/src/vm/memory.zig:MemoryMap (same union trick, different naming)
 
 pub const MemoryMap = union(enum) {
-    aligned:   AlignedMemoryMap,
+    aligned: AlignedMemoryMap,
     unaligned: UnalignedMemoryMap,
 
     pub fn initAligned(regions: []const Region) error{OutOfMemory}!MemoryMap {
@@ -79,7 +79,7 @@ pub const MemoryMap = union(enum) {
 
     pub fn deinit(self: *MemoryMap, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .aligned   => {},
+            .aligned => {},
             .unaligned => |*u| u.deinit(allocator),
         }
     }
@@ -93,7 +93,7 @@ pub const MemoryMap = union(enum) {
         len: u64,
     ) AccessError!access.Slice() {
         return switch (self) {
-            .aligned   => |a| a.vmap(access, vm_addr, len),
+            .aligned => |a| a.vmap(access, vm_addr, len),
             .unaligned => |u| u.vmap(access, vm_addr, len),
         };
     }
@@ -223,7 +223,7 @@ pub const VmSlice = extern struct {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test "aligned map: basic load/store" {
-    var buf = [_]u8{0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0};
+    var buf = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF, 0, 0, 0, 0 };
     const regions = [_]Region{
         Region.fromSlice(sbpf.INPUT_START, &buf),
     };

@@ -56,13 +56,13 @@ const core = @import("core");
 const base58 = core.base58;
 
 pub const AccountState = struct {
-    pubkey:      core.Pubkey,
-    owner:       core.Pubkey,
-    lamports:    u64,
-    data:        []u8,
-    executable:  bool,
-    rent_epoch:  u64,
-    is_signer:   bool,
+    pubkey: core.Pubkey,
+    owner: core.Pubkey,
+    lamports: u64,
+    data: []u8,
+    executable: bool,
+    rent_epoch: u64,
+    is_signer: bool,
     is_writable: bool,
 };
 
@@ -70,21 +70,21 @@ pub const AccountState = struct {
 /// (real ELF, fed through ElfLoader) or `synthesised_rodata` is non-empty
 /// (hand-built program text, used by the no-op seed fixture).
 pub const BpfFixture = struct {
-    name:                  []u8,
-    skip_reason:           ?[]u8 = null,
+    name: []u8,
+    skip_reason: ?[]u8 = null,
     /// V1-specific skip reason. Honored by V1's bpf_fixture_runner; ignored
     /// by V2's fixture_runner. Use for fixtures whose ELF format V1 cannot
     /// load (e.g. strict SBPFv3) but V2 can.
-    v1_skip_reason:        ?[]u8 = null,
-    program_id:            core.Pubkey,
-    program_elf:           []u8, // may be empty
-    synthesised_rodata:    []u8, // may be empty; mutually exclusive with elf
-    entry_pc:              u64,
-    ix_data:               []u8,
-    accounts_pre:          []AccountState,
-    accounts_post:         []AccountState,
-    return_code_expected:  u64,
-    compute_budget:        u64,
+    v1_skip_reason: ?[]u8 = null,
+    program_id: core.Pubkey,
+    program_elf: []u8, // may be empty
+    synthesised_rodata: []u8, // may be empty; mutually exclusive with elf
+    entry_pc: u64,
+    ix_data: []u8,
+    accounts_pre: []AccountState,
+    accounts_post: []AccountState,
+    return_code_expected: u64,
+    compute_budget: u64,
 
     pub fn deinit(self: *BpfFixture, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -144,7 +144,7 @@ pub fn loadFromSlice(
         else => return FixtureError.InvalidJson,
     };
 
-    const name        = try dupString(allocator, obj, "name");
+    const name = try dupString(allocator, obj, "name");
     const skip_reason = try dupOptString(allocator, obj, "skip_reason");
     const v1_skip_reason = try dupOptString(allocator, obj, "v1_skip_reason");
     errdefer allocator.free(name);
@@ -168,7 +168,7 @@ pub fn loadFromSlice(
     const ix_data = try decodeHex(allocator, ix_hex);
     errdefer allocator.free(ix_data);
 
-    const pre  = try decodeAccountList(allocator, obj, "accounts_pre");
+    const pre = try decodeAccountList(allocator, obj, "accounts_pre");
     errdefer freeAccounts(allocator, pre);
     const post = try decodeAccountList(allocator, obj, "accounts_post");
     errdefer freeAccounts(allocator, post);
@@ -178,18 +178,18 @@ pub fn loadFromSlice(
     const cu = if (obj.get("compute_budget")) |v| v.integer else 1_400_000;
 
     return .{
-        .name                 = name,
-        .skip_reason          = skip_reason,
-        .v1_skip_reason       = v1_skip_reason,
-        .program_id           = program_id,
-        .program_elf          = program_elf,
-        .synthesised_rodata   = synth_rodata,
-        .entry_pc             = @intCast(entry_pc),
-        .ix_data              = ix_data,
-        .accounts_pre         = pre,
-        .accounts_post        = post,
+        .name = name,
+        .skip_reason = skip_reason,
+        .v1_skip_reason = v1_skip_reason,
+        .program_id = program_id,
+        .program_elf = program_elf,
+        .synthesised_rodata = synth_rodata,
+        .entry_pc = @intCast(entry_pc),
+        .ix_data = ix_data,
+        .accounts_pre = pre,
+        .accounts_post = post,
         .return_code_expected = @intCast(ret),
-        .compute_budget       = @intCast(cu),
+        .compute_budget = @intCast(cu),
     };
 }
 
@@ -281,13 +281,13 @@ fn decodeAccountList(
         const data_hex = strField(ao, "data_hex") orelse "";
         const data = try decodeHex(allocator, data_hex);
         out[i] = .{
-            .pubkey      = try parsePubkeyField(ao, "pubkey"),
-            .owner       = try parsePubkeyField(ao, "owner"),
-            .lamports    = @intCast((ao.get("lamports") orelse return FixtureError.MissingField).integer),
-            .data        = data,
-            .executable  = (ao.get("executable")  orelse return FixtureError.MissingField).bool,
-            .rent_epoch  = @intCast((ao.get("rent_epoch") orelse return FixtureError.MissingField).integer),
-            .is_signer   = (ao.get("is_signer")   orelse return FixtureError.MissingField).bool,
+            .pubkey = try parsePubkeyField(ao, "pubkey"),
+            .owner = try parsePubkeyField(ao, "owner"),
+            .lamports = @intCast((ao.get("lamports") orelse return FixtureError.MissingField).integer),
+            .data = data,
+            .executable = (ao.get("executable") orelse return FixtureError.MissingField).bool,
+            .rent_epoch = @intCast((ao.get("rent_epoch") orelse return FixtureError.MissingField).integer),
+            .is_signer = (ao.get("is_signer") orelse return FixtureError.MissingField).bool,
             .is_writable = (ao.get("is_writable") orelse return FixtureError.MissingField).bool,
         };
         n_decoded = i + 1;

@@ -676,22 +676,22 @@ pub fn resolveCollector(c: *const CollectorAccount, vote_key: *const [32]u8) ?[3
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub const VoteInstruction = union(enum) {
-    InitializeAccount: InitializeAccountData,   // 0
-    Authorize: AuthorizeData,                   // 1
-    Vote: VoteData,                             // 2
-    Withdraw: WithdrawData,                     // 3
-    UpdateValidatorIdentity,                    // 4
-    UpdateCommission: UpdateCommissionData,     // 5
-    VoteSwitch: VoteSwitchData,                 // 6
-    AuthorizeChecked: AuthorizeCheckedData,     // 7
-    UpdateVoteState: VoteStateUpdateData,       // 8
+    InitializeAccount: InitializeAccountData, // 0
+    Authorize: AuthorizeData, // 1
+    Vote: VoteData, // 2
+    Withdraw: WithdrawData, // 3
+    UpdateValidatorIdentity, // 4
+    UpdateCommission: UpdateCommissionData, // 5
+    VoteSwitch: VoteSwitchData, // 6
+    AuthorizeChecked: AuthorizeCheckedData, // 7
+    UpdateVoteState: VoteStateUpdateData, // 8
     UpdateVoteStateSwitch: VoteStateUpdateSwitchData, // 9
-    AuthorizeWithSeed: AuthorizeWithSeedData,   // 10
+    AuthorizeWithSeed: AuthorizeWithSeedData, // 10
     AuthorizeCheckedWithSeed: AuthorizeCheckedWithSeedData, // 11
-    CompactUpdateVoteState: CompactVoteStateUpdateData,     // 12
+    CompactUpdateVoteState: CompactVoteStateUpdateData, // 12
     CompactUpdateVoteStateSwitch: CompactVoteStateUpdateSwitchData, // 13
-    TowerSync: TowerSyncData,                   // 14
-    TowerSyncSwitch: TowerSyncSwitchData,       // 15
+    TowerSync: TowerSyncData, // 14
+    TowerSyncSwitch: TowerSyncSwitchData, // 15
     // SIMD-0464 (5-feature gated, dormant on testnet): InitializeAccountV2, disc 16.
     InitializeAccountV2: InitializeAccountV2Data, // 16
     // ⚠ FOOTGUN: disc 16 = InitializeAccountV2 (SIMD-0464), disc 17 =
@@ -710,21 +710,21 @@ pub const VoteInstruction = union(enum) {
         const disc = std.mem.readInt(u32, data[0..4], .little);
         const payload = data[4..];
         return switch (disc) {
-            0  => .{ .InitializeAccount = try InitializeAccountData.deserialize(payload) },
-            1  => .{ .Authorize = try AuthorizeData.deserialize(payload) },
-            2  => .{ .Vote = try VoteData.deserialize(payload) },
-            3  => .{ .Withdraw = try WithdrawData.deserialize(payload) },
-            4  => .UpdateValidatorIdentity,
-            5  => .{ .UpdateCommission = try UpdateCommissionData.deserialize(payload) },
-            6  => .{ .VoteSwitch = try VoteSwitchData.deserialize(payload) },
+            0 => .{ .InitializeAccount = try InitializeAccountData.deserialize(payload) },
+            1 => .{ .Authorize = try AuthorizeData.deserialize(payload) },
+            2 => .{ .Vote = try VoteData.deserialize(payload) },
+            3 => .{ .Withdraw = try WithdrawData.deserialize(payload) },
+            4 => .UpdateValidatorIdentity,
+            5 => .{ .UpdateCommission = try UpdateCommissionData.deserialize(payload) },
+            6 => .{ .VoteSwitch = try VoteSwitchData.deserialize(payload) },
             // AuthorizeChecked (disc 7) data = [VoteAuthorize:u32] = 4 bytes ONLY;
             // the new authority is ACCOUNT[3], NOT in data. Do NOT route to
             // AuthorizeData.deserialize (>= 36 bytes) — that ALWAYS fails for a
             // 4-byte payload → silent drop (the 413005757 271KPMd carrier).
             // Ref: Agave vote_processor.rs:315-333; FD fd_vote_program.c:2205-2244.
-            7  => .{ .AuthorizeChecked = try AuthorizeCheckedData.deserialize(payload) },
-            8  => .{ .UpdateVoteState = try VoteStateUpdateData.deserialize(payload) },
-            9  => .{ .UpdateVoteStateSwitch = try VoteStateUpdateSwitchData.deserialize(payload) },
+            7 => .{ .AuthorizeChecked = try AuthorizeCheckedData.deserialize(payload) },
+            8 => .{ .UpdateVoteState = try VoteStateUpdateData.deserialize(payload) },
+            9 => .{ .UpdateVoteStateSwitch = try VoteStateUpdateSwitchData.deserialize(payload) },
             10 => .{ .AuthorizeWithSeed = try AuthorizeWithSeedData.deserialize(payload) },
             11 => .{ .AuthorizeCheckedWithSeed = try AuthorizeCheckedWithSeedData.deserialize(payload) },
             12 => .{ .CompactUpdateVoteState = try CompactVoteStateUpdateData.deserialize(payload) },

@@ -771,10 +771,8 @@ pub const GossipService = struct {
 
         // Log PONG reply (CRITICAL for debugging ping cache verification)
         std.log.debug("[Gossip] Received PING from {}.{}.{}.{}:{}, sent signed PONG ({d} bytes, sig={s})\n", .{
-            pkt.src_addr.addr[0], pkt.src_addr.addr[1], pkt.src_addr.addr[2], pkt.src_addr.addr[3],
-            pkt.src_addr.port(),
-            len,
-            if (signature != null) "YES" else "NO",
+            pkt.src_addr.addr[0], pkt.src_addr.addr[1], pkt.src_addr.addr[2],                   pkt.src_addr.addr[3],
+            pkt.src_addr.port(),  len,                  if (signature != null) "YES" else "NO",
         });
     }
 
@@ -870,7 +868,7 @@ pub const GossipService = struct {
         }
 
         if (contact_infos_found > 0) {
-                    self.table.stats.values_received +|= contact_infos_found;
+            self.table.stats.values_received +|= contact_infos_found;
         }
     }
 
@@ -1282,7 +1280,7 @@ pub const GossipService = struct {
             }
         }
 
-                self.table.stats.values_received +|= contact_infos_found;
+        self.table.stats.values_received +|= contact_infos_found;
     }
 
     /// Parse a CrdsValue and extract ContactInfo if it's a ContactInfo type
@@ -1707,7 +1705,7 @@ pub const GossipService = struct {
                     if (pkt.len >= 4) {
                         const msg_type_raw = std.mem.readInt(u32, pkt.data[0..4], .little);
                         std.log.debug("[Gossip] RX packet: type={d} len={d} from={d}.{d}.{d}.{d}:{d}\n", .{
-                            msg_type_raw, pkt.len,
+                            msg_type_raw,         pkt.len,
                             pkt.src_addr.addr[0], pkt.src_addr.addr[1],
                             pkt.src_addr.addr[2], pkt.src_addr.addr[3],
                             pkt.src_addr.port(),
@@ -1764,10 +1762,10 @@ pub const GossipService = struct {
                     \\════════════════════════
                     \\
                 , .{
-                    sock_fd, bound,
-                    self.entrypoints.items.len, self.table.contactCount(),
-                    stats.pings_sent, stats.pongs_received,
-                    stats.pull_requests_sent, stats.pull_responses_received,
+                    sock_fd,                      bound,
+                    self.entrypoints.items.len,   self.table.contactCount(),
+                    stats.pings_sent,             stats.pongs_received,
+                    stats.pull_requests_sent,     stats.pull_responses_received,
                     stats.push_messages_received, stats.packets_received,
                     stats.unknown_messages,
                 });
@@ -2029,8 +2027,10 @@ pub const GossipService = struct {
                         std.log.debug("[Gossip] DIAG: signable_len={d}, self_verify={}, pubkey={x:0>2}{x:0>2}..{x:0>2}{x:0>2}\n", .{
                             signable_len,
                             self_verify,
-                            kp.public.data[0], kp.public.data[1],
-                            kp.public.data[30], kp.public.data[31],
+                            kp.public.data[0],
+                            kp.public.data[1],
+                            kp.public.data[30],
+                            kp.public.data[31],
                         });
                         // Show first 8 bytes of signable data (should be CrdsData enum tag)
                         std.log.debug("[Gossip] DIAG: signable[0..8]={x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2} {x:0>2}\n", .{
@@ -2059,7 +2059,11 @@ pub const GossipService = struct {
             if (S.pull_log_count <= 10) {
                 std.log.debug("[Gossip] TX PullRequest (modern/tag11): {d} bytes -> {d}.{d}.{d}.{d}:{d} (sig={s})\n", .{
                     len,
-                    target.addr[0], target.addr[1], target.addr[2], target.addr[3], target.port(),
+                    target.addr[0],
+                    target.addr[1],
+                    target.addr[2],
+                    target.addr[3],
+                    target.port(),
                     if (signature != null) "YES" else "NO",
                 });
             }
@@ -2074,7 +2078,7 @@ pub const GossipService = struct {
                     line_pos = off_str.len;
                     var i: usize = 0;
                     while (i < 16 and offset + i < len) : (i += 1) {
-                        const hex = std.fmt.bufPrint(line_buf[line_pos..line_pos+3], "{x:0>2} ", .{pkt.data[offset + i]}) catch break;
+                        const hex = std.fmt.bufPrint(line_buf[line_pos .. line_pos + 3], "{x:0>2} ", .{pkt.data[offset + i]}) catch break;
                         line_pos += hex.len;
                     }
                     std.log.debug("{s}\n", .{line_buf[0..line_pos]});

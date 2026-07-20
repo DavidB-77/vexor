@@ -339,9 +339,8 @@ pub const SnapshotManager = struct {
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{
-                "/usr/bin/curl", "-sL", "--max-time", "15",
-                "-H", "Content-Type: application/json",
-                "-d", json_body,
+                "/usr/bin/curl", "-sL",                            "--max-time", "15",
+                "-H",            "Content-Type: application/json", "-d",         json_body,
                 url,
             },
             .max_output_bytes = 512 * 1024,
@@ -359,10 +358,9 @@ pub const SnapshotManager = struct {
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{
-                "/usr/bin/curl", "-sL", "--max-time", "10",
-                "-o", "/dev/null",
-                "-w", "%{http_code}|%{size_download}|%{content_type}",
-                "-I", url,
+                "/usr/bin/curl", "-sL",       "--max-time", "10",
+                "-o",            "/dev/null", "-w",         "%{http_code}|%{size_download}|%{content_type}",
+                "-I",            url,
             },
             .max_output_bytes = 2048,
         }) catch return error.CurlFailed;
@@ -438,209 +436,206 @@ pub const SnapshotManager = struct {
         }
     }
 
-// ── Snapshot pair: full + optional incremental ────────────────────────────────
+    // ── Snapshot pair: full + optional incremental ────────────────────────────────
 
-/// A matched pair of full and incremental snapshots from the same peer.
-/// The incremental's base_slot must equal the full's slot.
-pub const SnapshotPair = struct {
-    full: SnapshotInfo,
-    incremental: ?SnapshotInfo,
-};
+    /// A matched pair of full and incremental snapshots from the same peer.
+    /// The incremental's base_slot must equal the full's slot.
+    pub const SnapshotPair = struct {
+        full: SnapshotInfo,
+        incremental: ?SnapshotInfo,
+    };
 
-// ── Canonical URL discovery ───────────────────────────────────────────────────
+    // ── Canonical URL discovery ───────────────────────────────────────────────────
 
-/// Discover the canonical URL of a snapshot endpoint by following HTTP redirects.
-/// Many validators serve /snapshot.tar.zst → redirect → /snapshot-SLOT-HASH.tar.zst
-/// Returns the final URL (after redirects) or null on failure.
-/// Caller owns the returned slice.
-fn discoverCanonicalUrl(self: *Self, endpoint_url: []const u8) !?[]u8 {
-    // curl -sL: follow redirects, output: "STATUS_CODE|FINAL_URL"
-    // We check the HTTP status code to detect 404 vs 200 vs redirect.
-    const result = std.process.Child.run(.{
-        .allocator = self.allocator,
-        .argv = &.{
-            "/usr/bin/curl", "-sL", "--max-time", "10",
-            "-o", "/dev/null",
-            "-w", "%{http_code}|%{url_effective}",
-            endpoint_url,
-        },
-        .max_output_bytes = 2048,
-    }) catch return null;
-    defer self.allocator.free(result.stderr);
+    /// Discover the canonical URL of a snapshot endpoint by following HTTP redirects.
+    /// Many validators serve /snapshot.tar.zst → redirect → /snapshot-SLOT-HASH.tar.zst
+    /// Returns the final URL (after redirects) or null on failure.
+    /// Caller owns the returned slice.
+    fn discoverCanonicalUrl(self: *Self, endpoint_url: []const u8) !?[]u8 {
+        // curl -sL: follow redirects, output: "STATUS_CODE|FINAL_URL"
+        // We check the HTTP status code to detect 404 vs 200 vs redirect.
+        const result = std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{
+                "/usr/bin/curl", "-sL",       "--max-time", "10",
+                "-o",            "/dev/null", "-w",         "%{http_code}|%{url_effective}",
+                endpoint_url,
+            },
+            .max_output_bytes = 2048,
+        }) catch return null;
+        defer self.allocator.free(result.stderr);
 
-    const raw = std.mem.trim(u8, result.stdout, " \r\n");
-    defer self.allocator.free(result.stdout);
+        const raw = std.mem.trim(u8, result.stdout, " \r\n");
+        defer self.allocator.free(result.stdout);
 
-    // Parse "STATUS|URL"
-    const pipe = std.mem.indexOf(u8, raw, "|") orelse return null;
-    const status_str = raw[0..pipe];
-    const url = raw[pipe + 1..];
+        // Parse "STATUS|URL"
+        const pipe = std.mem.indexOf(u8, raw, "|") orelse return null;
+        const status_str = raw[0..pipe];
+        const url = raw[pipe + 1 ..];
 
-    const status = std.fmt.parseInt(u32, status_str, 10) catch return null;
-    if (status < 200 or status >= 400) {
-        // 404, 403, 503, etc — server doesn't have this file
+        const status = std.fmt.parseInt(u32, status_str, 10) catch return null;
+        if (status < 200 or status >= 400) {
+            // 404, 403, 503, etc — server doesn't have this file
+            return null;
+        }
+        if (url.len == 0 or !std.mem.startsWith(u8, url, "http")) return null;
+
+        return self.allocator.dupe(u8, url) catch null;
+    }
+
+    /// Extract the node base URL from a full snapshot download URL.
+    /// "http://IP:PORT/snapshot-SLOT-HASH.tar.zst" → "http://IP:PORT"
+    fn extractNodeBase(url: []const u8) ?[]const u8 {
+        // Skip protocol
+        var pos: usize = 0;
+        if (std.mem.startsWith(u8, url, "http://")) pos = 7 else if (std.mem.startsWith(u8, url, "https://")) pos = 8 else return null;
+        // Find first slash after host:port
+        const slash = std.mem.indexOfScalarPos(u8, url, pos, '/') orelse return url;
+        return url[0..slash];
+    }
+
+    /// Try to discover and download the incremental snapshot from a node,
+    /// given we already have the full snapshot at full_slot from that node_base.
+    /// Returns SnapshotInfo for the incremental, or null if not available.
+    /// Caller must free info.download_url if non-null.
+    /// Query a validator node's getHighestSnapshotSlot RPC to get the incremental
+    /// slot number. Returns null if the incremental slot doesn't match full_slot
+    /// as the base, or if the RPC call fails.
+    fn queryIncrementalSlotFromNode(self: *Self, node_url: []const u8, full_slot: u64) ?u64 {
+        const body_str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHighestSnapshotSlot\"}";
+        const resp = self.curlPost(node_url, body_str) catch return null;
+        defer self.allocator.free(resp);
+
+        // Parse: {"result":{"full":397941437,"incremental":398009908}}
+        const full_key = "\"full\":";
+        const full_idx = std.mem.indexOf(u8, resp, full_key) orelse return null;
+        var pos = full_idx + full_key.len;
+        while (pos < resp.len and resp[pos] == ' ') pos += 1;
+        var end = pos;
+        while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
+        const resp_full = std.fmt.parseInt(u64, resp[pos..end], 10) catch return null;
+
+        if (resp_full != full_slot) return null; // This node has a different full snapshot base
+
+        const inc_key = "\"incremental\":";
+        const inc_idx = std.mem.indexOf(u8, resp, inc_key) orelse return null;
+        pos = inc_idx + inc_key.len;
+        while (pos < resp.len and resp[pos] == ' ') pos += 1;
+        end = pos;
+        while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
+        return std.fmt.parseInt(u64, resp[pos..end], 10) catch null;
+    }
+
+    fn tryNodeIncrementalSnapshot(
+        self: *Self,
+        node_base: []const u8,
+        full_slot: u64,
+    ) !?SnapshotInfo {
+
+        // Try both .tar.zst and .tar.bz2 — same approach that works for full snapshots.
+        // Some validators redirect to canonical name only on .tar.bz2, not .tar.zst.
+        const inc_candidates = [_][]const u8{
+            "incremental-snapshot.tar.zst",
+            "incremental-snapshot.tar.bz2",
+        };
+
+        for (inc_candidates) |inc_suffix| {
+            const redirect_url = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ node_base, inc_suffix });
+            defer self.allocator.free(redirect_url);
+
+            std.log.debug("[Snapshot] Probing incremental at {s}\n", .{redirect_url});
+
+            // Follow redirect to get canonical filename with slot+hash
+            const canonical = (try self.discoverCanonicalUrl(redirect_url)) orelse {
+                std.log.debug("[Snapshot] No redirect for {s}\n", .{redirect_url});
+                continue; // Try next candidate (.tar.bz2)
+            };
+            defer self.allocator.free(canonical);
+
+            // Extract just the filename from the canonical URL
+            const filename = if (std.mem.lastIndexOf(u8, canonical, "/")) |idx|
+                canonical[idx + 1 ..]
+            else
+                canonical;
+
+            std.log.debug("[Snapshot] Incremental canonical: {s}\n", .{filename});
+
+            // Try to parse slot+hash from canonical filename
+            if (SnapshotInfo.fromFilename(filename)) |parsed| {
+                // Full canonical URL with slot+hash — verify base matches and return
+                if (parsed.base_slot) |base| {
+                    if (base != full_slot) {
+                        std.log.warn("[Snapshot] Incremental base {d} != full slot {d} — skipping", .{
+                            base, full_slot,
+                        });
+                        return null;
+                    }
+                } else {
+                    return null;
+                }
+
+                var info = parsed;
+                info.download_url = try self.allocator.dupe(u8, canonical);
+                std.log.info("[Snapshot] Incremental found via canonical URL: slot {d} (base {d})", .{
+                    info.slot, full_slot,
+                });
+                return info;
+            }
+
+            // Generic URL (no slot/hash in filename) — try querying this node's RPC to get the
+            // incremental slot number, then accept the generic URL as the download source.
+            // Many validators serve at /incremental-snapshot.tar.zst directly without redirect.
+            const rpc_url = try std.fmt.allocPrint(self.allocator, "{s}", .{node_base});
+            defer self.allocator.free(rpc_url);
+
+            const inc_slot = self.queryIncrementalSlotFromNode(rpc_url, full_slot) orelse {
+                std.log.debug("[Snapshot] Cannot determine incremental slot from {s}\n", .{node_base});
+                continue; // Try next candidate
+            };
+
+            const download_url = try self.allocator.dupe(u8, canonical);
+            errdefer self.allocator.free(download_url);
+
+            std.log.info("[Snapshot] Incremental found via generic URL: slot {d} (base {d}) from {s}", .{
+                inc_slot, full_slot, node_base,
+            });
+
+            return SnapshotInfo{
+                .slot = inc_slot,
+                .hash = std.mem.zeroes([32]u8),
+                .base_slot = full_slot,
+                .lamports = 0,
+                .capitalization = 0,
+                .accounts_count = 0,
+                .size_bytes = 0,
+                .is_incremental = true,
+                .download_url = download_url,
+                .filename = null,
+                .hash_str = std.mem.zeroes([64]u8),
+                .hash_str_len = 0,
+            };
+        } // end for inc_candidates
         return null;
     }
-    if (url.len == 0 or !std.mem.startsWith(u8, url, "http")) return null;
 
-    return self.allocator.dupe(u8, url) catch null;
-}
-
-/// Extract the node base URL from a full snapshot download URL.
-/// "http://IP:PORT/snapshot-SLOT-HASH.tar.zst" → "http://IP:PORT"
-fn extractNodeBase(url: []const u8) ?[]const u8 {
-    // Skip protocol
-    var pos: usize = 0;
-    if (std.mem.startsWith(u8, url, "http://")) pos = 7
-    else if (std.mem.startsWith(u8, url, "https://")) pos = 8
-    else return null;
-    // Find first slash after host:port
-    const slash = std.mem.indexOfScalarPos(u8, url, pos, '/') orelse return url;
-    return url[0..slash];
-}
-
-/// Try to discover and download the incremental snapshot from a node,
-/// given we already have the full snapshot at full_slot from that node_base.
-/// Returns SnapshotInfo for the incremental, or null if not available.
-/// Caller must free info.download_url if non-null.
-/// Query a validator node's getHighestSnapshotSlot RPC to get the incremental
-/// slot number. Returns null if the incremental slot doesn't match full_slot
-/// as the base, or if the RPC call fails.
-fn queryIncrementalSlotFromNode(self: *Self, node_url: []const u8, full_slot: u64) ?u64 {
-    const body_str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHighestSnapshotSlot\"}";
-    const resp = self.curlPost(node_url, body_str) catch return null;
-    defer self.allocator.free(resp);
-
-    // Parse: {"result":{"full":397941437,"incremental":398009908}}
-    const full_key = "\"full\":";
-    const full_idx = std.mem.indexOf(u8, resp, full_key) orelse return null;
-    var pos = full_idx + full_key.len;
-    while (pos < resp.len and resp[pos] == ' ') pos += 1;
-    var end = pos;
-    while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
-    const resp_full = std.fmt.parseInt(u64, resp[pos..end], 10) catch return null;
-
-    if (resp_full != full_slot) return null; // This node has a different full snapshot base
-
-    const inc_key = "\"incremental\":";
-    const inc_idx = std.mem.indexOf(u8, resp, inc_key) orelse return null;
-    pos = inc_idx + inc_key.len;
-    while (pos < resp.len and resp[pos] == ' ') pos += 1;
-    end = pos;
-    while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
-    return std.fmt.parseInt(u64, resp[pos..end], 10) catch null;
-}
-
-fn tryNodeIncrementalSnapshot(
-    self: *Self,
-    node_base: []const u8,
-    full_slot: u64,
-) !?SnapshotInfo {
-
-    // Try both .tar.zst and .tar.bz2 — same approach that works for full snapshots.
-    // Some validators redirect to canonical name only on .tar.bz2, not .tar.zst.
-    const inc_candidates = [_][]const u8{
-        "incremental-snapshot.tar.zst",
-        "incremental-snapshot.tar.bz2",
-    };
-
-    for (inc_candidates) |inc_suffix| {
-    const redirect_url = try std.fmt.allocPrint(
-        self.allocator, "{s}/{s}", .{ node_base, inc_suffix }
-    );
-    defer self.allocator.free(redirect_url);
-
-    std.log.debug("[Snapshot] Probing incremental at {s}\n", .{redirect_url});
-
-    // Follow redirect to get canonical filename with slot+hash
-    const canonical = (try self.discoverCanonicalUrl(redirect_url)) orelse {
-        std.log.debug("[Snapshot] No redirect for {s}\n", .{redirect_url});
-        continue; // Try next candidate (.tar.bz2)
-    };
-    defer self.allocator.free(canonical);
-
-    // Extract just the filename from the canonical URL
-    const filename = if (std.mem.lastIndexOf(u8, canonical, "/")) |idx|
-        canonical[idx + 1 ..]
-    else
-        canonical;
-
-    std.log.debug("[Snapshot] Incremental canonical: {s}\n", .{filename});
-
-    // Try to parse slot+hash from canonical filename
-    if (SnapshotInfo.fromFilename(filename)) |parsed| {
-        // Full canonical URL with slot+hash — verify base matches and return
-        if (parsed.base_slot) |base| {
-            if (base != full_slot) {
-                std.log.warn("[Snapshot] Incremental base {d} != full slot {d} — skipping", .{
-                    base, full_slot,
-                });
-                return null;
-            }
-        } else { return null; }
-
-        var info = parsed;
-        info.download_url = try self.allocator.dupe(u8, canonical);
-        std.log.info("[Snapshot] Incremental found via canonical URL: slot {d} (base {d})", .{
-            info.slot, full_slot,
-        });
-        return info;
-    }
-
-    // Generic URL (no slot/hash in filename) — try querying this node's RPC to get the
-    // incremental slot number, then accept the generic URL as the download source.
-    // Many validators serve at /incremental-snapshot.tar.zst directly without redirect.
-    const rpc_url = try std.fmt.allocPrint(self.allocator, "{s}", .{node_base});
-    defer self.allocator.free(rpc_url);
-
-    const inc_slot = self.queryIncrementalSlotFromNode(rpc_url, full_slot) orelse {
-        std.log.debug("[Snapshot] Cannot determine incremental slot from {s}\n", .{node_base});
-        continue; // Try next candidate
-    };
-
-    const download_url = try self.allocator.dupe(u8, canonical);
-    errdefer self.allocator.free(download_url);
-
-    std.log.info("[Snapshot] Incremental found via generic URL: slot {d} (base {d}) from {s}", .{
-        inc_slot, full_slot, node_base,
-    });
-
-    return SnapshotInfo{
-        .slot = inc_slot,
-        .hash = std.mem.zeroes([32]u8),
-        .base_slot = full_slot,
-        .lamports = 0,
-        .capitalization = 0,
-        .accounts_count = 0,
-        .size_bytes = 0,
-        .is_incremental = true,
-        .download_url = download_url,
-        .filename = null,
-        .hash_str = std.mem.zeroes([64]u8),
-        .hash_str_len = 0,
-    };
-    } // end for inc_candidates
-    return null;
-}
-
-/// Find the best available (full + incremental) snapshot pair.
-/// Checks each cluster node for BOTH full AND incremental in a single pass
-/// so the pair always comes from the same source with the same base slot.
-pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
-    if (try self.envSnapshotOverride()) |info| {
-        return SnapshotPair{ .full = info, .incremental = null };
-    }
-
-    for (self.rpc_endpoints.items) |endpoint| {
-        std.log.debug("[Snapshot] Querying: {s}\n", .{endpoint});
-        if (try self.discoverSnapshotPairFromCluster(endpoint, 0)) |pair| {
-            return pair;
+    /// Find the best available (full + incremental) snapshot pair.
+    /// Checks each cluster node for BOTH full AND incremental in a single pass
+    /// so the pair always comes from the same source with the same base slot.
+    pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
+        if (try self.envSnapshotOverride()) |info| {
+            return SnapshotPair{ .full = info, .incremental = null };
         }
-    }
 
-    std.log.debug("[Snapshot] No snapshot found from any endpoint\n", .{});
-    return null;
-}
+        for (self.rpc_endpoints.items) |endpoint| {
+            std.log.debug("[Snapshot] Querying: {s}\n", .{endpoint});
+            if (try self.discoverSnapshotPairFromCluster(endpoint, 0)) |pair| {
+                return pair;
+            }
+        }
+
+        std.log.debug("[Snapshot] No snapshot found from any endpoint\n", .{});
+        return null;
+    }
 
     pub fn findBestSnapshot(self: *Self) !?SnapshotInfo {
         std.log.debug("[Snapshot] findBestSnapshot called, {d} endpoints\n", .{self.rpc_endpoints.items.len});
@@ -853,7 +848,7 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
             // Try to get full snapshot from this node
             const full = (try self.tryNodeSnapshot(node_url, target_slot)) orelse continue;
 
-            std.log.debug("[Snapshot] ✅ Found full from {s}: slot {d}\n", .{rpc_addr, full.slot});
+            std.log.debug("[Snapshot] ✅ Found full from {s}: slot {d}\n", .{ rpc_addr, full.slot });
 
             // Immediately try incremental from the SAME node (same base slot guaranteed)
             const node_base = extractNodeBase(full.download_url orelse {
@@ -861,7 +856,7 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
             }) orelse return SnapshotPair{ .full = full, .incremental = null };
 
             if (try self.tryNodeIncrementalSnapshot(node_base, full.slot)) |inc| {
-                std.log.debug("[Snapshot] ✅✅ PAIR FOUND: full {d} + incremental {d} from {s}\n", .{full.slot, inc.slot, rpc_addr});
+                std.log.debug("[Snapshot] ✅✅ PAIR FOUND: full {d} + incremental {d} from {s}\n", .{ full.slot, inc.slot, rpc_addr });
                 return SnapshotPair{ .full = full, .incremental = inc };
             }
 
@@ -948,9 +943,7 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
         const candidates = [_][]const u8{ "snapshot.tar.zst", "snapshot.tar.bz2" };
 
         for (candidates) |suffix| {
-            const probe_url = std.fmt.allocPrint(
-                self.allocator, "{s}/{s}", .{ node_url, suffix }
-            ) catch continue;
+            const probe_url = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ node_url, suffix }) catch continue;
             defer self.allocator.free(probe_url);
 
             std.log.debug("[Snapshot] Probing full snapshot: {s}\n", .{probe_url});
@@ -983,7 +976,7 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
                 };
                 var info = info_parsed;
                 info.download_url = download_url;
-                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (canonical)\n", .{node_url, info.slot});
+                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (canonical)\n", .{ node_url, info.slot });
                 return info;
             }
             std.log.debug("[Snapshot] fromFilename returned null for: {s}\n", .{filename});
@@ -1007,12 +1000,15 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
 
             if (slot) |s| {
                 const download_url = self.allocator.dupe(u8, canonical) catch continue;
-                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (direct serve)\n", .{node_url, s});
+                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (direct serve)\n", .{ node_url, s });
                 return SnapshotInfo{
                     .slot = s,
                     .hash = std.mem.zeroes([32]u8),
                     .base_slot = null,
-                    .lamports = 0, .capitalization = 0, .accounts_count = 0, .size_bytes = 0,
+                    .lamports = 0,
+                    .capitalization = 0,
+                    .accounts_count = 0,
+                    .size_bytes = 0,
                     .is_incremental = false,
                     .download_url = download_url,
                     .filename = null,
@@ -1046,7 +1042,7 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
         const url = info.download_url orelse return error.NoDownloadUrl;
 
         // Derive local filename from the download URL
-        const url_filename = if (std.mem.lastIndexOf(u8, url, "/")) |idx| url[idx + 1..] else url;
+        const url_filename = if (std.mem.lastIndexOf(u8, url, "/")) |idx| url[idx + 1 ..] else url;
         const filename = if (SnapshotInfo.fromFilename(url_filename) != null)
             try self.allocator.dupe(u8, url_filename)
         else
@@ -1082,7 +1078,6 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
             });
         }
     }
-
 
     // httpDownload replaced by curlDownload helper above
 
@@ -1177,7 +1172,6 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
     }
 
     /// Load snapshot into accounts database
-
     /// Parsed bank metadata from snapshot binary.
     pub fn loadSnapshot(self: *Self, snapshot_dir: []const u8, accounts_db: anytype) !LoadResult {
         std.log.debug("[DEBUG] loadSnapshot: entering function, dir={s}\n", .{snapshot_dir});
@@ -2241,10 +2235,10 @@ pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
                 argv_len = 3;
             }
             const tar_tail = [_][]const u8{
-                "ionice", "-c",                     "3",
-                "nice",   "-n",                     "19",
-                "tar",    "--use-compress-program", "zstd -T1",
-                "-cf",    tmp_path,                 "-C",
+                "ionice",           "-c",                     "3",
+                "nice",             "-n",                     "19",
+                "tar",              "--use-compress-program", "zstd -T1",
+                "-cf",              tmp_path,                 "-C",
                 self.snapshots_dir, dir_name,
             };
             for (tar_tail) |a| {

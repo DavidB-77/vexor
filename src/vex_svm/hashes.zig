@@ -13,7 +13,6 @@
 ///
 /// Naming: camelCase, no fd_ prefix (Vexor convention).
 /// SIMD: LtHash uses @Vector(32, u16) — 512-bit AVX-512 on znver4 (1024 u16 = 32 vectors).
-
 const std = @import("std");
 const vex_crypto = @import("vex_crypto");
 
@@ -59,10 +58,10 @@ pub fn accountLtHash(
     var lamports_le: [8]u8 = undefined;
     std.mem.writeInt(u64, &lamports_le, lamports, .little); // fd_hashes.c:38
     b3.update(&lamports_le);
-    b3.update(data);                                         // fd_hashes.c:39
-    b3.update(&[_]u8{executable_flag});                      // fd_hashes.c:40
-    b3.update(owner[0..32]);                                 // fd_hashes.c:41
-    b3.update(pubkey[0..32]);                                // fd_hashes.c:42
+    b3.update(data); // fd_hashes.c:39
+    b3.update(&[_]u8{executable_flag}); // fd_hashes.c:40
+    b3.update(owner[0..32]); // fd_hashes.c:41
+    b3.update(pubkey[0..32]); // fd_hashes.c:42
 
     // fd_hashes.c:43: fd_blake3_fini_2048 — produce exactly 2048 bytes via XOF
     // std.crypto.hash.Blake3 supports finalizeSeek() for extended output (XOF mode).
@@ -107,17 +106,17 @@ pub fn hashBank(
 ) Hash {
     // Step 1 — fd_hashes.c:59-64
     var sha = std.crypto.hash.sha2.Sha256.init(.{});
-    sha.update(&prev_bank_hash.data);                        // fd_hashes.c:61: prev_bank_hash (32 bytes)
+    sha.update(&prev_bank_hash.data); // fd_hashes.c:61: prev_bank_hash (32 bytes)
     var sig_le: [8]u8 = undefined;
     std.mem.writeInt(u64, &sig_le, signature_count, .little);
-    sha.update(&sig_le);                                     // fd_hashes.c:62: signature_count (8 bytes LE)
-    sha.update(&last_blockhash.data);                        // fd_hashes.c:63: last_blockhash (32 bytes)
+    sha.update(&sig_le); // fd_hashes.c:62: signature_count (8 bytes LE)
+    sha.update(&last_blockhash.data); // fd_hashes.c:63: last_blockhash (32 bytes)
     var step1: [32]u8 = undefined;
-    sha.final(&step1);                                       // fd_hashes.c:64
+    sha.final(&step1); // fd_hashes.c:64
 
     // Step 2 — fd_hashes.c:66-69
     var sha2 = std.crypto.hash.sha2.Sha256.init(.{});
-    sha2.update(&step1);                                     // fd_hashes.c:67: step1 (32 bytes)
+    sha2.update(&step1); // fd_hashes.c:67: step1 (32 bytes)
 
     // Write lthash as raw 2048 LE bytes — fd_hashes.c:68: lthash->bytes (2048 bytes)
     // Use @Vector(32, u16) for SIMD serialization on znver4 AVX-512
@@ -128,7 +127,7 @@ pub fn hashBank(
     }
     sha2.update(&lthash_bytes);
     var result: [32]u8 = undefined;
-    sha2.final(&result);                                     // fd_hashes.c:69
+    sha2.final(&result); // fd_hashes.c:69
 
     return Hash.init(result);
 }
@@ -159,8 +158,8 @@ pub fn hashBank(
 ///
 /// Returns the new LtHash (lthash_post) for optional capture/logging use.
 pub fn updateLtHash(
-    bank_lthash: *LtHash,           // fd_hashes.c:77: fd_lthash_value_t * lthash_post (out, also updates bank)
-    lthash_prev: *const LtHash,     // fd_hashes.c:78: fd_lthash_value_t const * lthash_prev
+    bank_lthash: *LtHash, // fd_hashes.c:77: fd_lthash_value_t * lthash_post (out, also updates bank)
+    lthash_prev: *const LtHash, // fd_hashes.c:78: fd_lthash_value_t const * lthash_prev
     pubkey: *const [32]u8,
     owner: *const [32]u8,
     lamports: u64,
@@ -199,7 +198,7 @@ pub fn applyHardForks(
     hash: *Hash,
     slot: u64,
     parent_slot: u64,
-    hard_forks: []const u64,       // fd_hashes.c:121: hard fork slot numbers
+    hard_forks: []const u64, // fd_hashes.c:121: hard fork slot numbers
     hard_fork_counts: []const u64, // fd_hashes.c:122: activation counts per hard fork
 ) void {
     std.debug.assert(hard_forks.len == hard_fork_counts.len);
@@ -217,12 +216,12 @@ pub fn applyHardForks(
 
     // fd_hashes.c:130-136: fold sum into hash
     var sum_le: [8]u8 = undefined;
-    std.mem.writeInt(u64, &sum_le, sum, .little);            // fd_hashes.c:131: FD_STORE(ulong, sum_le, sum)
+    std.mem.writeInt(u64, &sum_le, sum, .little); // fd_hashes.c:131: FD_STORE(ulong, sum_le, sum)
 
     var sha = std.crypto.hash.sha2.Sha256.init(.{});
-    sha.update(&hash.data);                                  // fd_hashes.c:133
-    sha.update(&sum_le);                                     // fd_hashes.c:134: sizeof(ulong)=8
-    sha.final(&hash.data);                                   // fd_hashes.c:135: in-place update
+    sha.update(&hash.data); // fd_hashes.c:133
+    sha.update(&sum_le); // fd_hashes.c:134: sizeof(ulong)=8
+    sha.final(&hash.data); // fd_hashes.c:135: in-place update
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,15 +237,18 @@ test "accountLtHash: non-zero lamports → non-zero lthash" {
     const lt = accountLtHash(&([_]u8{1} ** 32), &([_]u8{0} ** 32), 1_000_000, false, &[_]u8{});
     var any_nonzero = false;
     for (lt.elements) |e| {
-        if (e != 0) { any_nonzero = true; break; }
+        if (e != 0) {
+            any_nonzero = true;
+            break;
+        }
     }
     try std.testing.expect(any_nonzero);
 }
 
 test "accountLtHash: deterministic" {
     const pubkey = [_]u8{0xAB} ** 32;
-    const owner  = [_]u8{0xCD} ** 32;
-    const data   = [_]u8{ 1, 2, 3 };
+    const owner = [_]u8{0xCD} ** 32;
+    const data = [_]u8{ 1, 2, 3 };
     const lt1 = accountLtHash(&pubkey, &owner, 100, true, &data);
     const lt2 = accountLtHash(&pubkey, &owner, 100, true, &data);
     try std.testing.expectEqualSlices(u16, &lt1.elements, &lt2.elements);
@@ -254,10 +256,10 @@ test "accountLtHash: deterministic" {
 
 test "hashBank: deterministic two-step SHA256" {
     const prev = Hash.default();
-    const poh  = Hash.init([_]u8{0xAB} ** 32);
-    const lt   = LtHash.init();
-    const h1   = hashBank(&lt, &prev, &poh, 500);
-    const h2   = hashBank(&lt, &prev, &poh, 500);
+    const poh = Hash.init([_]u8{0xAB} ** 32);
+    const lt = LtHash.init();
+    const h1 = hashBank(&lt, &prev, &poh, 500);
+    const h2 = hashBank(&lt, &prev, &poh, 500);
     try std.testing.expectEqualSlices(u8, &h1.data, &h2.data);
     // Must differ from all-zero inputs
     const h_zero = hashBank(&lt, &prev, &Hash.default(), 0);
@@ -269,7 +271,7 @@ test "updateLtHash: add then remove = identity" {
     var acc = LtHash.init();
     const prev = LtHash.init();
     const pubkey = [_]u8{0x01} ** 32;
-    const owner  = [_]u8{0x02} ** 32;
+    const owner = [_]u8{0x02} ** 32;
 
     // Apply update (lamports=1000)
     _ = updateLtHash(&acc, &prev, &pubkey, &owner, 1000, false, &[_]u8{});

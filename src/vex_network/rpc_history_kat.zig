@@ -69,9 +69,9 @@ test "RPC tier gate: MINIMAL serves the canonical 12, rejects Full/BankData/Acco
 
     // The 12 Minimal-trait methods (Agave rc.1 rpc.rs `pub trait Minimal`) MUST route in minimal mode.
     const minimal = [_][]const u8{
-        "getBalance",             "getBlockHeight", "getEpochInfo",      "getGenesisHash",
-        "getHealth",              "getHighestSnapshotSlot", "getIdentity", "getLeaderSchedule",
-        "getSlot",                "getTransactionCount", "getVersion",    "getVoteAccounts",
+        "getBalance", "getBlockHeight",         "getEpochInfo", "getGenesisHash",
+        "getHealth",  "getHighestSnapshotSlot", "getIdentity",  "getLeaderSchedule",
+        "getSlot",    "getTransactionCount",    "getVersion",   "getVoteAccounts",
     };
     for (minimal) |m| {
         rb.reset();
@@ -83,9 +83,9 @@ test "RPC tier gate: MINIMAL serves the canonical 12, rejects Full/BankData/Acco
     // Representative Full / BankData / AccountsData / AccountsScan methods MUST be rejected in minimal
     // mode (found == false → caller emits canonical -32601, exactly as Agave leaves them unregistered).
     const gated = [_][]const u8{
-        "getProgramAccounts",   "getAccountInfo",    "getMultipleAccounts",   "getBlock",
-        "getBlocks",            "getTransaction",    "sendTransaction",       "simulateTransaction",
-        "getLatestBlockhash",   "getSignaturesForAddress", "getTokenAccountsByOwner", "getSlotLeader",
+        "getProgramAccounts", "getAccountInfo",          "getMultipleAccounts",     "getBlock",
+        "getBlocks",          "getTransaction",          "sendTransaction",         "simulateTransaction",
+        "getLatestBlockhash", "getSignaturesForAddress", "getTokenAccountsByOwner", "getSlotLeader",
     };
     for (gated) |m| {
         rb.reset();

@@ -238,7 +238,7 @@ test "vex_topo: no two tiles collide; verify range is contiguous and disjoint" {
     // Build the full per-thread core list the way each site emits it.
     var seen = [_]bool{false} ** 64;
     const singles = [_]u32{
-        LIVE.recv, LIVE.repair, LIVE.replay, LIVE.sysvar,
+        LIVE.recv,   LIVE.repair, LIVE.replay,  LIVE.sysvar,
         LIVE.txsend, LIVE.gossip, LIVE.produce, LIVE.quic,
     };
     for (singles) |c| {

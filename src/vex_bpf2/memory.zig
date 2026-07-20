@@ -71,10 +71,10 @@ pub const MM_REGION_SIZE: u64 = @as(u64, 1) << VIRTUAL_ADDRESS_BITS;
 // canonical (elf.zig:216-218 defines the constants correctly). Treat the names
 // below as historical; never reference MM_BYTECODE_START/MM_RODATA_START for v3.
 pub const MM_BYTECODE_START: u64 = 0x000000000;
-pub const MM_RODATA_START:   u64 = 0x100000000;
-pub const MM_STACK_START:    u64 = 0x200000000;
-pub const MM_HEAP_START:     u64 = 0x300000000;
-pub const MM_INPUT_START:    u64 = 0x400000000;
+pub const MM_RODATA_START: u64 = 0x100000000;
+pub const MM_STACK_START: u64 = 0x200000000;
+pub const MM_HEAP_START: u64 = 0x300000000;
+pub const MM_INPUT_START: u64 = 0x400000000;
 
 // vex-079: BPF_ALIGN_OF_U128 — input serializer alignment stride.
 // Agave/Firedancer/sig agree on 8 (NOT 16). This constant is referenced by
@@ -695,9 +695,7 @@ pub const AlignedMemoryMap = struct {
         // (catches stores to RO-account data which MODE 1 silently allowed)
         // and is the load-bearing wire onto cluster's MODE 2/3 path.
         const is_input_region = (vm_addr >= MM_INPUT_START) and (vm_addr < MM_INPUT_START + MM_REGION_SIZE);
-        const use_region_resolver = (self.config.virtual_address_space_adjustments or self.config.direct_mapping)
-            and is_input_region
-            and self.input_mem_regions.len > 0;
+        const use_region_resolver = (self.config.virtual_address_space_adjustments or self.config.direct_mapping) and is_input_region and self.input_mem_regions.len > 0;
         if (use_region_resolver) {
             const offset = vm_addr - MM_INPUT_START;
             const is_write = acc.isWrite();

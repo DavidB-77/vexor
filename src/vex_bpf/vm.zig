@@ -15,42 +15,60 @@ const std = @import("std");
 
 // ── Virtual address region bases (matches Agave MM_* constants) ─────────────── @prov:vm.module-map
 pub const VM_BYTECODE_START: u64 = 0x000000000; // v3 only: separate text region
-pub const VM_RODATA_START:   u64 = 0x100000000; // rodata (+ text until v3)
-pub const VM_STACK_START:    u64 = 0x200000000;
-pub const VM_HEAP_START:     u64 = 0x300000000;
-pub const VM_INPUT_START:    u64 = 0x400000000;
+pub const VM_RODATA_START: u64 = 0x100000000; // rodata (+ text until v3)
+pub const VM_STACK_START: u64 = 0x200000000;
+pub const VM_HEAP_START: u64 = 0x300000000;
+pub const VM_INPUT_START: u64 = 0x400000000;
 
 pub const VIRTUAL_ADDRESS_BITS: u6 = 32;
 
 // ── Stack / heap constants ────────────────────────────────────────────────────
-pub const STACK_FRAME_SIZE:  usize = 4096;
-pub const MAX_CALL_DEPTH:    usize = 64;
-pub const STACK_SIZE:        usize = STACK_FRAME_SIZE * MAX_CALL_DEPTH;
-pub const HEAP_SIZE:         usize = 256 * 1024;
-pub const MAX_INSNS:         u64   = 1_400_000;
+pub const STACK_FRAME_SIZE: usize = 4096;
+pub const MAX_CALL_DEPTH: usize = 64;
+pub const STACK_SIZE: usize = STACK_FRAME_SIZE * MAX_CALL_DEPTH;
+pub const HEAP_SIZE: usize = 256 * 1024;
+pub const MAX_INSNS: u64 = 1_400_000;
 
 // ── sBPF version ────────────────────────────────────────────────────────────── @prov:vm.module-map
 pub const SbpfVersion = enum(u32) {
-    v0,        // legacy
-    v1,        // SIMD-0166: dynamic stack frames
-    v2,        // SIMD-0173/0174: encoding + arithmetic
-    v3,        // SIMD-0178/0179/0189: static syscalls, strict headers
+    v0, // legacy
+    v1, // SIMD-0166: dynamic stack frames
+    v2, // SIMD-0173/0174: encoding + arithmetic
+    v3, // SIMD-0178/0179/0189: static syscalls, strict headers
     _,
 
-    pub fn enableDynamicStackFrames(v: SbpfVersion) bool { return @intFromEnum(v) >= 1; }
+    pub fn enableDynamicStackFrames(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 1;
+    }
     /// Canonical `manual_stack_frame_bump`: ONLY v1/v2 manage the frame pointer
     /// manually — r10 starts at the TOP of the stack (MM_STACK_START + stack_len)
     /// and the program bumps it DOWN. v0/v3 use a fixed first-frame offset.
     /// @prov:vm.module-map — distinct from enableDynamicStackFrames (v>=1)
     /// which wrongly includes v3.
-    pub fn manualStackFrameBump(v: SbpfVersion) bool { return v == .v1 or v == .v2; }
-    pub fn enablePqr(v: SbpfVersion)                bool { return @intFromEnum(v) >= 2; }
-    pub fn callRegUsesSrcReg(v: SbpfVersion)         bool { return @intFromEnum(v) >= 2; }
-    pub fn disableLddw(v: SbpfVersion)               bool { return @intFromEnum(v) >= 2; }
-    pub fn enableStaticSyscalls(v: SbpfVersion)      bool { return @intFromEnum(v) >= 3; }
-    pub fn swapSubImmOperands(v: SbpfVersion)        bool { return @intFromEnum(v) >= 2; }
-    pub fn explicitSignExtend(v: SbpfVersion)        bool { return @intFromEnum(v) >= 2; }
-    pub fn enableLowerBytecodeVaddr(v: SbpfVersion)  bool { return @intFromEnum(v) >= 3; }
+    pub fn manualStackFrameBump(v: SbpfVersion) bool {
+        return v == .v1 or v == .v2;
+    }
+    pub fn enablePqr(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 2;
+    }
+    pub fn callRegUsesSrcReg(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 2;
+    }
+    pub fn disableLddw(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 2;
+    }
+    pub fn enableStaticSyscalls(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 3;
+    }
+    pub fn swapSubImmOperands(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 2;
+    }
+    pub fn explicitSignExtend(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 2;
+    }
+    pub fn enableLowerBytecodeVaddr(v: SbpfVersion) bool {
+        return @intFromEnum(v) >= 3;
+    }
 
     /// Compute target PC for call_imm: relative in v3, absolute in v0/v1/v2.
     /// @prov:vm.module-map
@@ -68,10 +86,10 @@ pub const SbpfVersion = enum(u32) {
 // ── Instruction layout (8 bytes packed, little-endian on wire) ──────────────── @prov:vm.module-map
 pub const Instruction = packed struct(u64) {
     opcode: u8,
-    dst:    u4,
-    src:    u4,
+    dst: u4,
+    src: u4,
     offset: i16,
-    imm:    u32,
+    imm: u32,
 
     /// Decode a raw 8-byte LE value into an Instruction.
     pub fn decode(raw: u64) Instruction {
@@ -79,25 +97,27 @@ pub const Instruction = packed struct(u64) {
     }
 };
 
-comptime { std.debug.assert(@sizeOf(Instruction) == 8); }
+comptime {
+    std.debug.assert(@sizeOf(Instruction) == 8);
+}
 
 // ── Opcode bit-field constants ──────────────────────────────────────────────── @prov:vm.module-map
-pub const CLS_LD:    u8 = 0x00; // load immediate
-pub const CLS_LDX:   u8 = 0x01; // load from register
-pub const CLS_ST:    u8 = 0x02; // store immediate
-pub const CLS_STX:   u8 = 0x03; // store from register
+pub const CLS_LD: u8 = 0x00; // load immediate
+pub const CLS_LDX: u8 = 0x01; // load from register
+pub const CLS_ST: u8 = 0x02; // store immediate
+pub const CLS_STX: u8 = 0x03; // store from register
 pub const CLS_ALU32: u8 = 0x04; // 32-bit ALU
-pub const CLS_JMP:   u8 = 0x05; // 64-bit jump / control flow
-pub const CLS_PQR:   u8 = 0x06; // product-quotient-remainder (v2)
+pub const CLS_JMP: u8 = 0x05; // 64-bit jump / control flow
+pub const CLS_PQR: u8 = 0x06; // product-quotient-remainder (v2)
 pub const CLS_ALU64: u8 = 0x07; // 64-bit ALU
 
 pub const SRC_IMM: u8 = 0x00;
 pub const SRC_REG: u8 = 0x08;
 
 // size modifiers
-pub const SZ_W:  u8 = 0x00; // 4 bytes
-pub const SZ_H:  u8 = 0x08; // 2 bytes
-pub const SZ_B:  u8 = 0x10; // 1 byte
+pub const SZ_W: u8 = 0x00; // 4 bytes
+pub const SZ_H: u8 = 0x08; // 2 bytes
+pub const SZ_B: u8 = 0x10; // 1 byte
 pub const SZ_DW: u8 = 0x18; // 8 bytes
 
 // memory addressing mode. @prov:vm.module-map
@@ -115,45 +135,45 @@ pub const SZ_4B: u8 = 0x80;
 pub const SZ_8B: u8 = 0x90;
 
 // ALU operation codes
-pub const ALU_ADD:  u8 = 0x00;
-pub const ALU_SUB:  u8 = 0x10;
-pub const ALU_MUL:  u8 = 0x20;
-pub const ALU_DIV:  u8 = 0x30;
-pub const ALU_OR:   u8 = 0x40;
-pub const ALU_AND:  u8 = 0x50;
-pub const ALU_LSH:  u8 = 0x60;
-pub const ALU_RSH:  u8 = 0x70;
-pub const ALU_NEG:  u8 = 0x80;
-pub const ALU_MOD:  u8 = 0x90;
-pub const ALU_XOR:  u8 = 0xa0;
-pub const ALU_MOV:  u8 = 0xb0;
+pub const ALU_ADD: u8 = 0x00;
+pub const ALU_SUB: u8 = 0x10;
+pub const ALU_MUL: u8 = 0x20;
+pub const ALU_DIV: u8 = 0x30;
+pub const ALU_OR: u8 = 0x40;
+pub const ALU_AND: u8 = 0x50;
+pub const ALU_LSH: u8 = 0x60;
+pub const ALU_RSH: u8 = 0x70;
+pub const ALU_NEG: u8 = 0x80;
+pub const ALU_MOD: u8 = 0x90;
+pub const ALU_XOR: u8 = 0xa0;
+pub const ALU_MOV: u8 = 0xb0;
 pub const ALU_ARSH: u8 = 0xc0;
-pub const ALU_END:  u8 = 0xd0;
-pub const ALU_HOR:  u8 = 0xf0; // high-or (v1+): dst |= imm << 32
+pub const ALU_END: u8 = 0xd0;
+pub const ALU_HOR: u8 = 0xf0; // high-or (v1+): dst |= imm << 32
 
 // PQR operation codes (v2). @prov:vm.module-map
 pub const PQR_UHMUL: u8 = 0x20;
-pub const PQR_UDIV:  u8 = 0x40;
-pub const PQR_UREM:  u8 = 0x60;
-pub const PQR_LMUL:  u8 = 0x80;
+pub const PQR_UDIV: u8 = 0x40;
+pub const PQR_UREM: u8 = 0x60;
+pub const PQR_LMUL: u8 = 0x80;
 pub const PQR_SHMUL: u8 = 0xa0;
-pub const PQR_SDIV:  u8 = 0xc0;
-pub const PQR_SREM:  u8 = 0xe0;
+pub const PQR_SDIV: u8 = 0xc0;
+pub const PQR_SREM: u8 = 0xe0;
 pub const PQR_64BIT: u8 = 0x08; // set in opcode when 64-bit PQR
 
 // JMP operation codes
-pub const JMP_JA:   u8 = 0x00;
-pub const JMP_JEQ:  u8 = 0x10;
-pub const JMP_JGT:  u8 = 0x20;
-pub const JMP_JGE:  u8 = 0x30;
+pub const JMP_JA: u8 = 0x00;
+pub const JMP_JEQ: u8 = 0x10;
+pub const JMP_JGT: u8 = 0x20;
+pub const JMP_JGE: u8 = 0x30;
 pub const JMP_JSET: u8 = 0x40;
-pub const JMP_JNE:  u8 = 0x50;
+pub const JMP_JNE: u8 = 0x50;
 pub const JMP_JSGT: u8 = 0x60;
 pub const JMP_JSGE: u8 = 0x70;
 pub const JMP_CALL: u8 = 0x80;
 pub const JMP_EXIT: u8 = 0x90; // also: v3 syscall when src=0
-pub const JMP_JLT:  u8 = 0xa0;
-pub const JMP_JLE:  u8 = 0xb0;
+pub const JMP_JLT: u8 = 0xa0;
+pub const JMP_JLE: u8 = 0xb0;
 pub const JMP_JSLT: u8 = 0xc0;
 pub const JMP_JSLE: u8 = 0xd0;
 
@@ -179,7 +199,11 @@ pub const VmError = error{
 // r1..r5 = arguments, r0 = return value
 pub const SyscallFn = *const fn (
     ctx: *VmState,
-    r1: u64, r2: u64, r3: u64, r4: u64, r5: u64,
+    r1: u64,
+    r2: u64,
+    r3: u64,
+    r4: u64,
+    r5: u64,
 ) VmError!u64;
 
 // ── Memory region ───────────────────────────────────────────────────────────── @prov:vm.module-map
@@ -187,15 +211,15 @@ pub const SyscallFn = *const fn (
 // A single contiguous virtual-address window backed by a host slice.
 // Supports both const (read-only) and mutable regions.
 pub const MemRegion = struct {
-    vm_start:  u64,
-    vm_end:    u64,   // exclusive
-    host_ptr:  [*]u8,
-    writable:  bool,
+    vm_start: u64,
+    vm_end: u64, // exclusive
+    host_ptr: [*]u8,
+    writable: bool,
 
     pub fn fromSlice(vm_start: u64, buf: []u8, writable: bool) MemRegion {
         return .{
             .vm_start = vm_start,
-            .vm_end   = vm_start + buf.len,
+            .vm_end = vm_start + buf.len,
             .host_ptr = buf.ptr,
             .writable = writable,
         };
@@ -204,7 +228,7 @@ pub const MemRegion = struct {
     pub fn fromConst(vm_start: u64, buf: []const u8) MemRegion {
         return .{
             .vm_start = vm_start,
-            .vm_end   = vm_start + buf.len,
+            .vm_end = vm_start + buf.len,
             .host_ptr = @constCast(buf.ptr),
             .writable = false,
         };
@@ -232,23 +256,23 @@ pub const MemRegion = struct {
 // Unaligned mapping (arbitrary region order) is supported via a sorted linear
 // scan; we default to aligned since Solana programs always use standard layout.
 pub const MemoryMap = struct {
-    regions: [5]MemRegion,   // index 0 = bytecode(v3), 1 = rodata, 2 = stack, 3 = heap, 4 = input
-    n_regions: u3,           // number of valid regions (typically 4 or 5)
+    regions: [5]MemRegion, // index 0 = bytecode(v3), 1 = rodata, 2 = stack, 3 = heap, 4 = input
+    n_regions: u3, // number of valid regions (typically 4 or 5)
     version: SbpfVersion,
 
     pub fn init(
-        rodata:       []const u8,
+        rodata: []const u8,
         rodata_vaddr: u64,
-        stack:        []u8,
-        heap:         []u8,
-        input:        []u8,
-        version:      SbpfVersion,
+        stack: []u8,
+        heap: []u8,
+        input: []u8,
+        version: SbpfVersion,
     ) MemoryMap {
         // @prov:vm.module-map
         var mm: MemoryMap = .{
-            .regions   = undefined,
+            .regions = undefined,
             .n_regions = 0,
-            .version   = version,
+            .version = version,
         };
         if (version.enableLowerBytecodeVaddr()) {
             // v3: bytecode region at 0x000000000 (read-only, handled separately)
@@ -266,7 +290,7 @@ pub const MemoryMap = struct {
         // vex_bpf2 commit 21298a3 elf.zig:Executable.rodataVaddr().
         mm.regions[1] = MemRegion.fromConst(rodata_vaddr, rodata);
         mm.regions[2] = MemRegion.fromSlice(VM_STACK_START, stack, true);
-        mm.regions[3] = MemRegion.fromSlice(VM_HEAP_START,  heap,  true);
+        mm.regions[3] = MemRegion.fromSlice(VM_HEAP_START, heap, true);
         mm.regions[4] = MemRegion.fromSlice(VM_INPUT_START, input, true);
         return mm;
     }
@@ -311,9 +335,9 @@ const CallFrame = struct {
 // ── VmState ─────────────────────────────────────────────────────────────────── @prov:vm.module-map
 pub const VmState = struct {
     // Registers r0-r10 (r10 = frame pointer, read-only in most instructions)
-    regs:     [11]u64,
+    regs: [11]u64,
     // Program counter (instruction index into text slice).
-    pc:       u64,
+    pc: u64,
     // Total instructions executed so far.
     insn_ctr: u64,
     // Compute meter — decremented each instruction when metering enabled.
@@ -324,14 +348,14 @@ pub const VmState = struct {
 
     // Call stack
     call_frames: std.ArrayListUnmanaged(CallFrame),
-    call_depth:  u32,
+    call_depth: u32,
 
     // Heap bump allocator cursor (VM virtual address).
     heap_cursor: u64,
 
     // Owned allocations
     stack_buf: []u8,
-    heap_buf:  []u8,
+    heap_buf: []u8,
 
     // Syscall dispatch table: murmur3_32(name) → fn
     syscalls: std.AutoHashMapUnmanaged(u32, SyscallFn),
@@ -354,20 +378,24 @@ pub const VmState = struct {
     allocator: std.mem.Allocator,
 
     // CPI trampoline (optional — set by higher-level executor).
-    cpi_ctx:     ?*anyopaque,
+    cpi_ctx: ?*anyopaque,
     cpi_handler: ?*const fn (
         cpi_ctx: *anyopaque,
-        vm:      *VmState,
-        r1: u64, r2: u64, r3: u64, r4: u64, r5: u64,
+        vm: *VmState,
+        r1: u64,
+        r2: u64,
+        r3: u64,
+        r4: u64,
+        r5: u64,
     ) VmError!u64,
 
     pub fn init(
-        allocator:    std.mem.Allocator,
-        rodata:       []const u8,
+        allocator: std.mem.Allocator,
+        rodata: []const u8,
         rodata_vaddr: u64,
-        input:        []u8,
-        version:      SbpfVersion,
-        entry_pc:     u64,
+        input: []u8,
+        version: SbpfVersion,
+        entry_pc: u64,
     ) !VmState {
         const stack_buf = try allocator.alloc(u8, STACK_SIZE);
         errdefer allocator.free(stack_buf);
@@ -378,23 +406,23 @@ pub const VmState = struct {
         @memset(heap_buf, 0);
 
         var state = VmState{
-            .regs         = [_]u64{0} ** 11,
-            .pc           = entry_pc,
-            .insn_ctr     = 0,
+            .regs = [_]u64{0} ** 11,
+            .pc = entry_pc,
+            .insn_ctr = 0,
             .compute_meter = MAX_INSNS,
-            .memory_map   = MemoryMap.init(rodata, rodata_vaddr, stack_buf, heap_buf, input, version),
-            .call_frames  = .{},
-            .call_depth   = 0,
-            .heap_cursor  = VM_HEAP_START,
-            .stack_buf    = stack_buf,
-            .heap_buf     = heap_buf,
-            .syscalls     = .{},
+            .memory_map = MemoryMap.init(rodata, rodata_vaddr, stack_buf, heap_buf, input, version),
+            .call_frames = .{},
+            .call_depth = 0,
+            .heap_cursor = VM_HEAP_START,
+            .stack_buf = stack_buf,
+            .heap_buf = heap_buf,
+            .syscalls = .{},
             .function_registry = null,
-            .version      = version,
-            .result       = .running,
-            .allocator    = allocator,
-            .cpi_ctx      = null,
-            .cpi_handler  = null,
+            .version = version,
+            .result = .running,
+            .allocator = allocator,
+            .cpi_ctx = null,
+            .cpi_handler = null,
         };
 
         // Solana calling convention:
@@ -408,7 +436,7 @@ pub const VmState = struct {
         //   `sub r10` underflowed below the stack region → AccessViolation on the first
         //   fp-relative stack store (carrier 2026-06-18: PayEntry v1, testnet slot 416083630,
         //   op=0x7b STXDW dst=r10 off=144, r10=0x1fffffec0 below stack base, bank_hash dc05dca0).
-        state.regs[1]  = VM_INPUT_START;
+        state.regs[1] = VM_INPUT_START;
         state.regs[10] = VM_STACK_START +
             (if (version.manualStackFrameBump()) @as(u64, STACK_SIZE) else STACK_FRAME_SIZE);
         return state;
@@ -453,7 +481,7 @@ pub fn murmur3_32(key: []const u8) u32 {
 // ── Helper: sign-extend u32 → u64 (as if it were i32 → i64) ───────────────── @prov:vm.module-map
 inline fn signExtend(v: u32) u64 {
     const signed: i32 = @bitCast(v);
-    const wide: i64   = signed;
+    const wide: i64 = signed;
     return @bitCast(wide);
 }
 
@@ -482,11 +510,11 @@ pub fn step(vm: *VmState, text: []align(1) const Instruction) VmError!void {
     const pc = vm.pc;
     if (pc >= text.len) return VmError.InvalidInstruction;
     const inst = text[pc];
-    const opc  = inst.opcode;
-    const cls  = opc & 0x07;
+    const opc = inst.opcode;
+    const cls = opc & 0x07;
 
-    const dst: u4  = inst.dst;
-    const src: u4  = inst.src;
+    const dst: u4 = inst.dst;
+    const src: u4 = inst.src;
     const off: i16 = inst.offset;
     const imm: u32 = inst.imm;
 
@@ -505,25 +533,25 @@ pub fn step(vm: *VmState, text: []align(1) const Instruction) VmError!void {
             const dv: u64 = vm.regs[dst];
 
             vm.regs[dst] = switch (op) {
-                ALU_ADD  => dv +% rv,
-                ALU_SUB  => if (!is_reg and vm.version.swapSubImmOperands())
-                                rv -% dv   // SIMD-0174: imm - dst
-                            else
-                                dv -% rv,
-                ALU_MUL  => dv *% rv,
-                ALU_DIV  => try divTrunc(u64, dv, rv),
-                ALU_OR   => dv | rv,
-                ALU_AND  => dv & rv,
-                ALU_LSH  => dv << @as(u6, @truncate(rv & 63)),
-                ALU_RSH  => dv >> @as(u6, @truncate(rv & 63)),
-                ALU_NEG  => @bitCast(-@as(i64, @bitCast(dv))),
-                ALU_MOD  => try remOp(u64, dv, rv),
-                ALU_XOR  => dv ^ rv,
-                ALU_MOV  => rv,
+                ALU_ADD => dv +% rv,
+                ALU_SUB => if (!is_reg and vm.version.swapSubImmOperands())
+                    rv -% dv // SIMD-0174: imm - dst
+                else
+                    dv -% rv,
+                ALU_MUL => dv *% rv,
+                ALU_DIV => try divTrunc(u64, dv, rv),
+                ALU_OR => dv | rv,
+                ALU_AND => dv & rv,
+                ALU_LSH => dv << @as(u6, @truncate(rv & 63)),
+                ALU_RSH => dv >> @as(u6, @truncate(rv & 63)),
+                ALU_NEG => @bitCast(-@as(i64, @bitCast(dv))),
+                ALU_MOD => try remOp(u64, dv, rv),
+                ALU_XOR => dv ^ rv,
+                ALU_MOV => rv,
                 ALU_ARSH => @bitCast(@as(i64, @bitCast(dv)) >> @as(u6, @truncate(rv & 63))),
-                ALU_END  => handleEndian(dv, imm, is_reg),
-                ALU_HOR  => dv | (@as(u64, imm) << 32),
-                else     => return VmError.InvalidInstruction,
+                ALU_END => handleEndian(dv, imm, is_reg),
+                ALU_HOR => dv | (@as(u64, imm) << 32),
+                else => return VmError.InvalidInstruction,
             };
             vm.pc = pc + 1;
         },
@@ -535,28 +563,28 @@ pub fn step(vm: *VmState, text: []align(1) const Instruction) VmError!void {
             const dv32: u32 = @truncate(vm.regs[dst]);
 
             const result32: u32 = switch (op) {
-                ALU_ADD  => dv32 +% rv32,
-                ALU_SUB  => if (!is_reg and vm.version.swapSubImmOperands())
-                                rv32 -% dv32
-                            else
-                                dv32 -% rv32,
-                ALU_MUL  => dv32 *% rv32,
-                ALU_DIV  => try divTrunc(u32, dv32, rv32),
-                ALU_OR   => dv32 | rv32,
-                ALU_AND  => dv32 & rv32,
-                ALU_LSH  => dv32 << @as(u5, @truncate(rv32 & 31)),
-                ALU_RSH  => dv32 >> @as(u5, @truncate(rv32 & 31)),
-                ALU_NEG  => @bitCast(-@as(i32, @bitCast(dv32))),
-                ALU_MOD  => try remOp(u32, dv32, rv32),
-                ALU_XOR  => dv32 ^ rv32,
-                ALU_MOV  => if (is_reg and vm.version.explicitSignExtend())
-                                // SIMD-0174 mov32_reg: sign-extend from i32.
-                                @truncate(signExtend(rv32))
-                            else
-                                rv32,
+                ALU_ADD => dv32 +% rv32,
+                ALU_SUB => if (!is_reg and vm.version.swapSubImmOperands())
+                    rv32 -% dv32
+                else
+                    dv32 -% rv32,
+                ALU_MUL => dv32 *% rv32,
+                ALU_DIV => try divTrunc(u32, dv32, rv32),
+                ALU_OR => dv32 | rv32,
+                ALU_AND => dv32 & rv32,
+                ALU_LSH => dv32 << @as(u5, @truncate(rv32 & 31)),
+                ALU_RSH => dv32 >> @as(u5, @truncate(rv32 & 31)),
+                ALU_NEG => @bitCast(-@as(i32, @bitCast(dv32))),
+                ALU_MOD => try remOp(u32, dv32, rv32),
+                ALU_XOR => dv32 ^ rv32,
+                ALU_MOV => if (is_reg and vm.version.explicitSignExtend())
+                    // SIMD-0174 mov32_reg: sign-extend from i32.
+                    @truncate(signExtend(rv32))
+                else
+                    rv32,
                 ALU_ARSH => @bitCast(@as(i32, @bitCast(dv32)) >> @as(u5, @truncate(rv32 & 31))),
                 // ALU_END for alu32/be — BE byte-swap with imm width
-                ALU_END  => @truncate(handleEndian(vm.regs[dst], imm, is_reg)),
+                ALU_END => @truncate(handleEndian(vm.regs[dst], imm, is_reg)),
                 // v2 renamed memory ops reuse ALU32 class — handled by ALU_MUL/DIV/NEG/MOD
                 // cases above (same numeric values). V2 dispatch is in stepV2MemOp
                 // called from the outer switch when class matches.
@@ -567,7 +595,7 @@ pub fn step(vm: *VmState, text: []align(1) const Instruction) VmError!void {
             // add32/sub32 zero-extend (plain u32→u64); mul32 sign-extends.
             vm.regs[dst] = switch (op) {
                 ALU_MUL => signExtend(result32),
-                else    => result32,
+                else => result32,
             };
             vm.pc = pc + 1;
         },
@@ -587,9 +615,9 @@ pub fn step(vm: *VmState, text: []align(1) const Instruction) VmError!void {
         CLS_LDX => {
             const addr: u64 = @bitCast(@as(i64, @bitCast(vm.regs[src])) +% @as(i64, off));
             vm.regs[dst] = switch (opc & 0xf8) {
-                MEM | SZ_B  => try vm.memory_map.load(u8,  addr),
-                MEM | SZ_H  => try vm.memory_map.load(u16, addr),
-                MEM | SZ_W  => try vm.memory_map.load(u32, addr),
+                MEM | SZ_B => try vm.memory_map.load(u8, addr),
+                MEM | SZ_H => try vm.memory_map.load(u16, addr),
+                MEM | SZ_W => try vm.memory_map.load(u32, addr),
                 MEM | SZ_DW => try vm.memory_map.load(u64, addr),
                 else => return VmError.InvalidInstruction,
             };
@@ -600,9 +628,9 @@ pub fn step(vm: *VmState, text: []align(1) const Instruction) VmError!void {
         CLS_ST => {
             const addr: u64 = @bitCast(@as(i64, @bitCast(vm.regs[dst])) +% @as(i64, off));
             switch (opc & 0xf8) {
-                MEM | SZ_B  => try vm.memory_map.store(u8,  addr, @truncate(imm_se)),
-                MEM | SZ_H  => try vm.memory_map.store(u16, addr, @truncate(imm_se)),
-                MEM | SZ_W  => try vm.memory_map.store(u32, addr, @truncate(imm_se)),
+                MEM | SZ_B => try vm.memory_map.store(u8, addr, @truncate(imm_se)),
+                MEM | SZ_H => try vm.memory_map.store(u16, addr, @truncate(imm_se)),
+                MEM | SZ_W => try vm.memory_map.store(u32, addr, @truncate(imm_se)),
                 MEM | SZ_DW => try vm.memory_map.store(u64, addr, imm_se),
                 else => return VmError.InvalidInstruction,
             }
@@ -614,9 +642,9 @@ pub fn step(vm: *VmState, text: []align(1) const Instruction) VmError!void {
             const addr: u64 = @bitCast(@as(i64, @bitCast(vm.regs[dst])) +% @as(i64, off));
             const sv = vm.regs[src];
             switch (opc & 0xf8) {
-                MEM | SZ_B  => try vm.memory_map.store(u8,  addr, @truncate(sv)),
-                MEM | SZ_H  => try vm.memory_map.store(u16, addr, @truncate(sv)),
-                MEM | SZ_W  => try vm.memory_map.store(u32, addr, @truncate(sv)),
+                MEM | SZ_B => try vm.memory_map.store(u8, addr, @truncate(sv)),
+                MEM | SZ_H => try vm.memory_map.store(u16, addr, @truncate(sv)),
+                MEM | SZ_W => try vm.memory_map.store(u32, addr, @truncate(sv)),
                 MEM | SZ_DW => try vm.memory_map.store(u64, addr, sv),
                 else => return VmError.InvalidInstruction,
             }
@@ -657,19 +685,19 @@ inline fn handleEndian(val: u64, width: u32, big_endian: bool) u64 {
 // ── v2 memory ops (renamed instruction classes) ─────────────────────────────── @prov:vm.module-map
 fn stepV2MemOp(vm: *VmState, inst: Instruction, text: []align(1) const Instruction, pc: u64) VmError!void {
     _ = text;
-    const opc  = inst.opcode;
-    const cls  = opc & 0x07;
-    const sz   = opc & 0xf8; // includes class bits + size field
-    const dst  = inst.dst;
-    const src  = inst.src;
-    const off  = inst.offset;
-    const imm  = inst.imm;
+    const opc = inst.opcode;
+    const cls = opc & 0x07;
+    const sz = opc & 0xf8; // includes class bits + size field
+    const dst = inst.dst;
+    const src = inst.src;
+    const off = inst.offset;
+    const imm = inst.imm;
 
     // v2 load (class ALU32, src=reg)
     if (cls == CLS_ALU32 and (opc & SRC_REG) != 0) {
         const addr: u64 = @bitCast(@as(i64, @bitCast(vm.regs[src])) +% @as(i64, off));
         vm.regs[dst] = switch (sz) {
-            (CLS_ALU32 | SRC_REG | SZ_1B) => try vm.memory_map.load(u8,  addr),
+            (CLS_ALU32 | SRC_REG | SZ_1B) => try vm.memory_map.load(u8, addr),
             (CLS_ALU32 | SRC_REG | SZ_2B) => try vm.memory_map.load(u16, addr),
             (CLS_ALU32 | SRC_REG | SZ_4B) => try vm.memory_map.load(u32, addr),
             (CLS_ALU32 | SRC_REG | SZ_8B) => try vm.memory_map.load(u64, addr),
@@ -684,7 +712,7 @@ fn stepV2MemOp(vm: *VmState, inst: Instruction, text: []align(1) const Instructi
         const addr: u64 = @bitCast(@as(i64, @bitCast(vm.regs[dst])) +% @as(i64, off));
         const val = signExtend(imm);
         switch (sz) {
-            (CLS_ALU64 | SRC_IMM | SZ_1B) => try vm.memory_map.store(u8,  addr, @truncate(val)),
+            (CLS_ALU64 | SRC_IMM | SZ_1B) => try vm.memory_map.store(u8, addr, @truncate(val)),
             (CLS_ALU64 | SRC_IMM | SZ_2B) => try vm.memory_map.store(u16, addr, @truncate(val)),
             (CLS_ALU64 | SRC_IMM | SZ_4B) => try vm.memory_map.store(u32, addr, @truncate(val)),
             (CLS_ALU64 | SRC_IMM | SZ_8B) => try vm.memory_map.store(u64, addr, val),
@@ -699,7 +727,7 @@ fn stepV2MemOp(vm: *VmState, inst: Instruction, text: []align(1) const Instructi
         const addr: u64 = @bitCast(@as(i64, @bitCast(vm.regs[dst])) +% @as(i64, off));
         const sv = vm.regs[src];
         switch (sz) {
-            (CLS_ALU64 | SRC_REG | SZ_1B) => try vm.memory_map.store(u8,  addr, @truncate(sv)),
+            (CLS_ALU64 | SRC_REG | SZ_1B) => try vm.memory_map.store(u8, addr, @truncate(sv)),
             (CLS_ALU64 | SRC_REG | SZ_2B) => try vm.memory_map.store(u16, addr, @truncate(sv)),
             (CLS_ALU64 | SRC_REG | SZ_4B) => try vm.memory_map.store(u32, addr, @truncate(sv)),
             (CLS_ALU64 | SRC_REG | SZ_8B) => try vm.memory_map.store(u64, addr, sv),
@@ -714,10 +742,10 @@ fn stepV2MemOp(vm: *VmState, inst: Instruction, text: []align(1) const Instructi
 
 // ── PQR instructions (sBPF v2) ─────────────────────────────────────────────── @prov:vm.module-map
 fn stepPqr(vm: *VmState, inst: Instruction, pc: u64) VmError!void {
-    const opc    = inst.opcode;
-    const is64   = (opc & PQR_64BIT) != 0;
+    const opc = inst.opcode;
+    const is64 = (opc & PQR_64BIT) != 0;
     const is_reg = (opc & SRC_REG) != 0;
-    const op     = opc & 0xe0; // top 3 bits of upper nibble
+    const op = opc & 0xe0; // top 3 bits of upper nibble
 
     const dst = inst.dst;
     const src = inst.src;
@@ -815,8 +843,8 @@ fn resolveLocalCallTarget(vm: *VmState, pc: u64, imm: u32, text_len: usize) ?u64
 
 // ── JMP / control flow ──────────────────────────────────────────────────────── @prov:vm.module-map
 fn stepJmp(vm: *VmState, inst: Instruction, text: []align(1) const Instruction, pc: u64) VmError!void {
-    const opc    = inst.opcode;
-    const op     = opc & 0xf0;
+    const opc = inst.opcode;
+    const op = opc & 0xf0;
     const is_reg = (opc & SRC_REG) != 0;
 
     const dst = inst.dst;
@@ -866,7 +894,7 @@ fn stepJmp(vm: *VmState, inst: Instruction, text: []align(1) const Instruction, 
                 if (vm.version.enableStaticSyscalls()) {
                     const t_inst = text[next_pc];
                     const is_marker = (t_inst.opcode == (CLS_ALU64 | SRC_IMM | ALU_ADD)) and
-                                      (t_inst.dst == 10);
+                        (t_inst.dst == 10);
                     if (!is_marker) return VmError.InvalidInstruction;
                 }
                 vm.pc = next_pc;
@@ -939,18 +967,18 @@ fn stepJmp(vm: *VmState, inst: Instruction, text: []align(1) const Instruction, 
             const rv_s: i64 = if (is_reg) @bitCast(rv) else @as(i32, @bitCast(imm));
 
             const taken: bool = switch (op) {
-                JMP_JEQ  => dv == rv,
-                JMP_JNE  => dv != rv,
-                JMP_JGT  => dv >  rv,
-                JMP_JGE  => dv >= rv,
-                JMP_JLT  => dv <  rv,
-                JMP_JLE  => dv <= rv,
+                JMP_JEQ => dv == rv,
+                JMP_JNE => dv != rv,
+                JMP_JGT => dv > rv,
+                JMP_JGE => dv >= rv,
+                JMP_JLT => dv < rv,
+                JMP_JLE => dv <= rv,
                 JMP_JSET => (dv & rv) != 0,
-                JMP_JSGT => dv_s >  rv_s,
+                JMP_JSGT => dv_s > rv_s,
                 JMP_JSGE => dv_s >= rv_s,
-                JMP_JSLT => dv_s <  rv_s,
+                JMP_JSLT => dv_s < rv_s,
                 JMP_JSLE => dv_s <= rv_s,
-                else     => return VmError.InvalidInstruction,
+                else => return VmError.InvalidInstruction,
             };
             vm.pc = if (taken)
                 @intCast(@as(i64, @intCast(pc + 1)) + off)
@@ -965,8 +993,8 @@ fn pushCallFrame(vm: *VmState, pc: u64) VmError!void {
     if (vm.call_depth >= MAX_CALL_DEPTH) return VmError.CallDepthExceeded;
     try vm.call_frames.append(vm.allocator, .{
         .saved_regs = vm.regs[6..10][0..4].*,
-        .fp         = vm.regs[10],
-        .return_pc  = pc + 1,
+        .fp = vm.regs[10],
+        .return_pc = pc + 1,
     });
     vm.call_depth += 1;
 
@@ -1027,9 +1055,9 @@ pub fn run(vm: *VmState, text: []const Instruction) struct { ok: bool, r0: u64, 
 
     const consumed = initial_meter - vm.compute_meter + vm.insn_ctr;
     return switch (vm.result) {
-        .ok     => |r0| .{ .ok = true,  .r0 = r0, .insns = consumed },
+        .ok => |r0| .{ .ok = true, .r0 = r0, .insns = consumed },
         .running => .{ .ok = true, .r0 = vm.regs[0], .insns = consumed },
-        .err    => .{ .ok = false, .r0 = 0,  .insns = consumed },
+        .err => .{ .ok = false, .r0 = 0, .insns = consumed },
     };
 }
 
@@ -1096,10 +1124,10 @@ test "vm: jeq branch taken" {
     // mov64 r0, 99
     // exit
     const text = [_]Instruction{
-        .{ .opcode = 0xb7, .dst = 0, .src = 0, .offset = 0,  .imm = 1  },  // mov64 r0, 1
-        .{ .opcode = 0x15, .dst = 0, .src = 0, .offset = 1,  .imm = 1  },  // jeq r0, 1, +1
-        .{ .opcode = 0xb7, .dst = 0, .src = 0, .offset = 0,  .imm = 99 },  // mov64 r0, 99
-        .{ .opcode = 0x95, .dst = 0, .src = 0, .offset = 0,  .imm = 0  },  // exit
+        .{ .opcode = 0xb7, .dst = 0, .src = 0, .offset = 0, .imm = 1 }, // mov64 r0, 1
+        .{ .opcode = 0x15, .dst = 0, .src = 0, .offset = 1, .imm = 1 }, // jeq r0, 1, +1
+        .{ .opcode = 0xb7, .dst = 0, .src = 0, .offset = 0, .imm = 99 }, // mov64 r0, 99
+        .{ .opcode = 0x95, .dst = 0, .src = 0, .offset = 0, .imm = 0 }, // exit
     };
     var inp: [4]u8 = .{0} ** 4;
     var vm = try VmState.init(std.testing.allocator, &[_]u8{}, VM_RODATA_START, &inp, .v0, 0);

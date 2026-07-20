@@ -20,7 +20,6 @@ const SlotOverlay = appendvec.SlotOverlay;
 const AppendVec = appendvec.AppendVec;
 const AccountStorage = account_storage.AccountStorage;
 
-
 /// RULE#0 / canonical-storage-collapse (2026-06-07): count rooted-write losses that
 /// were previously SILENT. A dropped rooted promotion leaves the rooted index with a
 /// stale value → stale old-state read → wrong accounts_lt_hash → bank_hash divergence →
@@ -389,7 +388,6 @@ pub const TopVote = struct {
         }
         return if (best == 0) null else best;
     }
-
 };
 
 test "top_vote: upsert appends then replaces same write_slot in place" {
@@ -1566,7 +1564,9 @@ pub const AccountsDb = struct {
         }
 
         if (to_evict.items.len > 0) {
-            const RootDbg = struct { var count: u64 = 0; };
+            const RootDbg = struct {
+                var count: u64 = 0;
+            };
             RootDbg.count += 1;
             if (RootDbg.count <= 3 or RootDbg.count % 100 == 0) {
                 std.log.debug("[ACCOUNTS] Root advanced to {d}: evicted {d} stale entries, cache size={d}\n", .{
@@ -2104,9 +2104,9 @@ pub const AccountsDb = struct {
             }
             if (unreachable_slot != null and recorder.promoteDiagTick()) {
                 std.log.warn("[PROMOTE-DIAG][STALE-READ] pk={x}{x}{x}{x} read_slot={d} rooted_slot={d} gap={d} window_floor={d} sig_overlay_has_at_slot={d} (entry RETAINED but UNREACHABLE → falling to stale _getRooted = H1 confirmed)", .{
-                    pubkey.data[0], pubkey.data[1], pubkey.data[2], pubkey.data[3],
-                    slot,                  self.rooted_slot, slot - self.rooted_slot,
-                    lk_min,                unreachable_slot.?,
+                    pubkey.data[0],     pubkey.data[1],   pubkey.data[2],          pubkey.data[3],
+                    slot,               self.rooted_slot, slot - self.rooted_slot, lk_min,
+                    unreachable_slot.?,
                 });
             }
         }
@@ -2151,10 +2151,18 @@ pub const AccountsDb = struct {
             if (lam_bad) "LAM " else "",
             if (data_bad) "DATA " else "",
             if (dlen_bad) "DLEN " else "",
-            self.rooted_slot, got.lamports, got_sha8, got_dlen,
-            e.slot, e.lamports, e.data_sha8, e.dlen,
+            self.rooted_slot,
+            got.lamports,
+            got_sha8,
+            got_dlen,
+            e.slot,
+            e.lamports,
+            e.data_sha8,
+            e.dlen,
             @as(i64, @intCast(got.lamports)) - @as(i64, @intCast(e.lamports)),
-            csm, ov_n, idx_present,
+            csm,
+            ov_n,
+            idx_present,
         });
     }
 
@@ -3008,7 +3016,9 @@ pub const AccountsDb = struct {
         }
 
         if (flushed > 0) {
-            const FlushDbg = struct { var count: u64 = 0; };
+            const FlushDbg = struct {
+                var count: u64 = 0;
+            };
             FlushDbg.count += 1;
             if (FlushDbg.count <= 3 or FlushDbg.count % 10 == 0) {
                 std.log.debug("[ACCOUNTS] Flushed {d} entries to disk, cache={d}\n", .{
@@ -3842,7 +3852,6 @@ pub const AccountsDb = struct {
         }
         return d;
     }
-
 };
 
 fn pubkeyLessThan(_: void, a: core.Pubkey, b: core.Pubkey) bool {
@@ -4104,7 +4113,6 @@ pub const AccountIndex = struct {
         return &self.bins[idx];
     }
 };
-
 
 /// LRU cache for recently accessed accounts
 ///

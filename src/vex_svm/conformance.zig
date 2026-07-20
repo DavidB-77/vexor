@@ -68,17 +68,17 @@ pub const ConformanceResult = struct {
             const detail = self.error_detail orelse "hash mismatch";
             writer.print(
                 "FAIL  {s}: {s}\n      expected={x:0>2}{x:0>2}{x:0>2}{x:0>2}..{x:0>2}{x:0>2}{x:0>2}{x:0>2}\n" ++
-                "      actual  ={x:0>2}{x:0>2}{x:0>2}{x:0>2}..{x:0>2}{x:0>2}{x:0>2}{x:0>2}\n",
+                    "      actual  ={x:0>2}{x:0>2}{x:0>2}{x:0>2}..{x:0>2}{x:0>2}{x:0>2}{x:0>2}\n",
                 .{
-                    self.test_name, detail,
-                    self.expected_hash[0], self.expected_hash[1],
-                    self.expected_hash[2], self.expected_hash[3],
+                    self.test_name,         detail,
+                    self.expected_hash[0],  self.expected_hash[1],
+                    self.expected_hash[2],  self.expected_hash[3],
                     self.expected_hash[28], self.expected_hash[29],
                     self.expected_hash[30], self.expected_hash[31],
-                    self.actual_hash[0], self.actual_hash[1],
-                    self.actual_hash[2], self.actual_hash[3],
-                    self.actual_hash[28], self.actual_hash[29],
-                    self.actual_hash[30], self.actual_hash[31],
+                    self.actual_hash[0],    self.actual_hash[1],
+                    self.actual_hash[2],    self.actual_hash[3],
+                    self.actual_hash[28],   self.actual_hash[29],
+                    self.actual_hash[30],   self.actual_hash[31],
                 },
             ) catch {};
         }
@@ -224,15 +224,15 @@ pub const AccountLtHashVector = struct {
 /// Returns the number of tests that FAILED.
 pub fn runBuiltinVectors(
     allocator: std.mem.Allocator,
-    results: *std.ArrayList(ConformanceResult),  // Zig 0.15.2: unmanaged, pass allocator to append
+    results: *std.ArrayList(ConformanceResult), // Zig 0.15.2: unmanaged, pass allocator to append
 ) !u32 {
     var failures: u32 = 0;
 
     // ── Vector 1: genesis-like all-zero bank hash ──────────────────────────
     {
-        const parent_hash    = [_]u8{0} ** 32;
-        const blockhash      = [_]u8{0} ** 32;
-        const lthash_bytes   = [_]u8{0} ** 2048;
+        const parent_hash = [_]u8{0} ** 32;
+        const blockhash = [_]u8{0} ** 32;
+        const lthash_bytes = [_]u8{0} ** 2048;
         const sig_count: u64 = 0;
 
         const actual = verifyBankHash(parent_hash, sig_count, blockhash, &lthash_bytes);
@@ -244,19 +244,19 @@ pub fn runBuiltinVectors(
         const name = "bank_hash: genesis all-zero determinism";
         if (det_pass) {
             try results.append(allocator, .{
-                .test_name    = name,
-                .passed       = true,
+                .test_name = name,
+                .passed = true,
                 .expected_hash = actual,
-                .actual_hash  = actual2,
+                .actual_hash = actual2,
                 .error_detail = null,
             });
         } else {
             failures += 1;
             try results.append(allocator, .{
-                .test_name    = name,
-                .passed       = false,
+                .test_name = name,
+                .passed = false,
                 .expected_hash = actual,
-                .actual_hash  = actual2,
+                .actual_hash = actual2,
                 .error_detail = try allocator.dupe(u8, "non-deterministic hash"),
             });
         }
@@ -264,19 +264,19 @@ pub fn runBuiltinVectors(
 
     // ── Vector 2: sig_count sensitivity ───────────────────────────────────
     {
-        const parent  = [_]u8{0xAA} ** 32;
-        const bh      = [_]u8{0xBB} ** 32;
-        const lth     = [_]u8{0} ** 2048;
-        const h500    = verifyBankHash(parent, 500, bh, &lth);
-        const h501    = verifyBankHash(parent, 501, bh, &lth);
+        const parent = [_]u8{0xAA} ** 32;
+        const bh = [_]u8{0xBB} ** 32;
+        const lth = [_]u8{0} ** 2048;
+        const h500 = verifyBankHash(parent, 500, bh, &lth);
+        const h501 = verifyBankHash(parent, 501, bh, &lth);
         const differs = !std.mem.eql(u8, &h500, &h501);
 
         const name = "bank_hash: sig_count sensitivity (500 != 501)";
         try results.append(allocator, .{
-            .test_name    = name,
-            .passed       = differs,
+            .test_name = name,
+            .passed = differs,
             .expected_hash = h500,
-            .actual_hash  = h501,
+            .actual_hash = h501,
             .error_detail = if (!differs) try allocator.dupe(u8, "sig_count change had no effect") else null,
         });
         if (!differs) failures += 1;
@@ -284,18 +284,18 @@ pub fn runBuiltinVectors(
 
     // ── Vector 3: parent_hash sensitivity ─────────────────────────────────
     {
-        const bh  = [_]u8{0xCC} ** 32;
+        const bh = [_]u8{0xCC} ** 32;
         const lth = [_]u8{0} ** 2048;
-        const h1  = verifyBankHash([_]u8{0x11} ** 32, 100, bh, &lth);
-        const h2  = verifyBankHash([_]u8{0x22} ** 32, 100, bh, &lth);
+        const h1 = verifyBankHash([_]u8{0x11} ** 32, 100, bh, &lth);
+        const h2 = verifyBankHash([_]u8{0x22} ** 32, 100, bh, &lth);
 
         const name = "bank_hash: parent_hash sensitivity";
         const differs = !std.mem.eql(u8, &h1, &h2);
         try results.append(allocator, .{
-            .test_name    = name,
-            .passed       = differs,
+            .test_name = name,
+            .passed = differs,
             .expected_hash = h1,
-            .actual_hash  = h2,
+            .actual_hash = h2,
             .error_detail = if (!differs) try allocator.dupe(u8, "parent_hash change had no effect") else null,
         });
         if (!differs) failures += 1;
@@ -313,10 +313,10 @@ pub fn runBuiltinVectors(
         const all_zero = std.mem.allEqual(u8, &lt_bytes, 0);
         const name = "account_lthash: zero lamports → zero lthash";
         try results.append(allocator, .{
-            .test_name    = name,
-            .passed       = all_zero,
+            .test_name = name,
+            .passed = all_zero,
             .expected_hash = [_]u8{0} ** 32,
-            .actual_hash  = lt_bytes[0..32].*,
+            .actual_hash = lt_bytes[0..32].*,
             .error_detail = if (!all_zero) try allocator.dupe(u8, "expected zero output for lamports=0") else null,
         });
         if (!all_zero) failures += 1;
@@ -334,10 +334,10 @@ pub fn runBuiltinVectors(
         const any_nonzero = !std.mem.allEqual(u8, &lt_bytes, 0);
         const name = "account_lthash: non-zero lamports → non-zero output";
         try results.append(allocator, .{
-            .test_name    = name,
-            .passed       = any_nonzero,
+            .test_name = name,
+            .passed = any_nonzero,
             .expected_hash = lt_bytes[0..32].*,
-            .actual_hash  = lt_bytes[0..32].*,
+            .actual_hash = lt_bytes[0..32].*,
             .error_detail = if (!any_nonzero) try allocator.dupe(u8, "expected non-zero output for lamports>0") else null,
         });
         if (!any_nonzero) failures += 1;
@@ -345,17 +345,17 @@ pub fn runBuiltinVectors(
 
     // ── Vector 6: account lthash determinism ──────────────────────────────
     {
-        const pk  = [_]u8{0x55} ** 32;
+        const pk = [_]u8{0x55} ** 32;
         const own = [_]u8{0x66} ** 32;
         const lt1 = verifyAccountLtHash(&pk, &own, 42_000, true, &[_]u8{ 10, 20, 30 });
         const lt2 = verifyAccountLtHash(&pk, &own, 42_000, true, &[_]u8{ 10, 20, 30 });
-        const det  = std.mem.eql(u8, &lt1, &lt2);
+        const det = std.mem.eql(u8, &lt1, &lt2);
         const name = "account_lthash: deterministic output";
         try results.append(allocator, .{
-            .test_name    = name,
-            .passed       = det,
+            .test_name = name,
+            .passed = det,
             .expected_hash = lt1[0..32].*,
-            .actual_hash  = lt2[0..32].*,
+            .actual_hash = lt2[0..32].*,
             .error_detail = if (!det) try allocator.dupe(u8, "non-deterministic") else null,
         });
         if (!det) failures += 1;
@@ -363,17 +363,17 @@ pub fn runBuiltinVectors(
 
     // ── Vector 7: executable bit sensitivity ──────────────────────────────
     {
-        const pk  = [_]u8{0x77} ** 32;
+        const pk = [_]u8{0x77} ** 32;
         const own = [_]u8{0x88} ** 32;
-        const lt_exec     = verifyAccountLtHash(&pk, &own, 1, true,  &[_]u8{});
-        const lt_no_exec  = verifyAccountLtHash(&pk, &own, 1, false, &[_]u8{});
+        const lt_exec = verifyAccountLtHash(&pk, &own, 1, true, &[_]u8{});
+        const lt_no_exec = verifyAccountLtHash(&pk, &own, 1, false, &[_]u8{});
         const differs = !std.mem.eql(u8, &lt_exec, &lt_no_exec);
         const name = "account_lthash: executable bit changes output";
         try results.append(allocator, .{
-            .test_name    = name,
-            .passed       = differs,
+            .test_name = name,
+            .passed = differs,
             .expected_hash = lt_exec[0..32].*,
-            .actual_hash  = lt_no_exec[0..32].*,
+            .actual_hash = lt_no_exec[0..32].*,
             .error_detail = if (!differs) try allocator.dupe(u8, "executable flag had no effect") else null,
         });
         if (!differs) failures += 1;
@@ -421,13 +421,13 @@ pub const SlotReplayReport = struct {
         const total = self.match_count + self.diff_count;
         if (total == 0) return 0.0;
         return @as(f64, @floatFromInt(self.match_count)) /
-               @as(f64, @floatFromInt(total));
+            @as(f64, @floatFromInt(total));
     }
 
     pub fn printSummary(self: *const SlotReplayReport, writer: anytype) void {
         writer.print(
             "[CONFORMANCE] snapshot_slot={d} replayed={d} match={d} diff={d} no_ref={d} " ++
-            "pass_rate={d:.1}%\n",
+                "pass_rate={d:.1}%\n",
             .{
                 self.snapshot_slot,
                 self.slots_replayed,
@@ -517,30 +517,36 @@ pub fn runSlotReplay(
                     const out = std.io.getStdOut().writer();
                     out.print(
                         "[CONFORMANCE] FAIL slot={d} ours={x:0>2}{x:0>2}..{x:0>2}{x:0>2} " ++
-                        "net={x:0>2}{x:0>2}..{x:0>2}{x:0>2}\n",
+                            "net={x:0>2}{x:0>2}..{x:0>2}{x:0>2}\n",
                         .{
                             slot,
-                            our_hash[0], our_hash[1], our_hash[30], our_hash[31],
-                            oracle_hash[0], oracle_hash[1], oracle_hash[30], oracle_hash[31],
+                            our_hash[0],
+                            our_hash[1],
+                            our_hash[30],
+                            our_hash[31],
+                            oracle_hash[0],
+                            oracle_hash[1],
+                            oracle_hash[30],
+                            oracle_hash[31],
                         },
                     ) catch {};
                 }
                 try result_list.append(allocator, .{
-                    .test_name     = name_buf,
-                    .passed        = matches,
+                    .test_name = name_buf,
+                    .passed = matches,
                     .expected_hash = oracle_hash,
-                    .actual_hash   = our_hash,
-                    .error_detail  = if (!matches) try allocator.dupe(u8, "bank hash diverged") else null,
+                    .actual_hash = our_hash,
+                    .error_detail = if (!matches) try allocator.dupe(u8, "bank hash diverged") else null,
                 });
             } else |_| {
                 // Oracle not available for this slot
                 no_ref_count += 1;
                 try result_list.append(allocator, .{
-                    .test_name     = name_buf,
-                    .passed        = false,
+                    .test_name = name_buf,
+                    .passed = false,
                     .expected_hash = [_]u8{0} ** 32,
-                    .actual_hash   = our_hash,
-                    .error_detail  = try allocator.dupe(u8, "oracle hash unavailable"),
+                    .actual_hash = our_hash,
+                    .error_detail = try allocator.dupe(u8, "oracle hash unavailable"),
                 });
             }
         } else |replay_err| {
@@ -548,11 +554,11 @@ pub fn runSlotReplay(
             if (first_diff == null) first_diff = slot;
             const err_str = try std.fmt.allocPrint(allocator, "replay error: {s}", .{@errorName(replay_err)});
             try result_list.append(allocator, .{
-                .test_name     = name_buf,
-                .passed        = false,
+                .test_name = name_buf,
+                .passed = false,
                 .expected_hash = oracle_hash,
-                .actual_hash   = [_]u8{0} ** 32,
-                .error_detail  = err_str,
+                .actual_hash = [_]u8{0} ** 32,
+                .error_detail = err_str,
             });
         }
 
@@ -562,13 +568,13 @@ pub fn runSlotReplay(
     const results_owned = try result_list.toOwnedSlice(allocator);
 
     return SlotReplayReport{
-        .snapshot_slot  = snapshot_slot,
+        .snapshot_slot = snapshot_slot,
         .slots_replayed = slot_idx,
-        .match_count    = match_count,
-        .diff_count     = diff_count,
-        .no_ref_count   = no_ref_count,
+        .match_count = match_count,
+        .diff_count = diff_count,
+        .no_ref_count = no_ref_count,
         .first_diff_slot = first_diff,
-        .results        = results_owned,
+        .results = results_owned,
     };
 }
 
@@ -603,9 +609,9 @@ fn detectSnapshotSlot(snapshot_dir: []const u8) !u64 {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test "verifyBankHash: deterministic" {
-    const parent   = [_]u8{0x01} ** 32;
-    const bh       = [_]u8{0x02} ** 32;
-    const lth      = [_]u8{0x03} ** 2048;
+    const parent = [_]u8{0x01} ** 32;
+    const bh = [_]u8{0x02} ** 32;
+    const lth = [_]u8{0x03} ** 2048;
     const h1 = verifyBankHash(parent, 100, bh, &lth);
     const h2 = verifyBankHash(parent, 100, bh, &lth);
     try std.testing.expectEqualSlices(u8, &h1, &h2);
@@ -613,34 +619,34 @@ test "verifyBankHash: deterministic" {
 
 test "verifyBankHash: sig_count sensitivity" {
     const parent = [_]u8{0xAA} ** 32;
-    const bh     = [_]u8{0xBB} ** 32;
-    const lth    = [_]u8{0} ** 2048;
+    const bh = [_]u8{0xBB} ** 32;
+    const lth = [_]u8{0} ** 2048;
     const h1 = verifyBankHash(parent, 500, bh, &lth);
     const h2 = verifyBankHash(parent, 501, bh, &lth);
     try std.testing.expect(!std.mem.eql(u8, &h1, &h2));
 }
 
 test "verifyBankHash: parent_hash sensitivity" {
-    const bh  = [_]u8{0xCC} ** 32;
+    const bh = [_]u8{0xCC} ** 32;
     const lth = [_]u8{0} ** 2048;
-    const h1  = verifyBankHash([_]u8{0x11} ** 32, 100, bh, &lth);
-    const h2  = verifyBankHash([_]u8{0x22} ** 32, 100, bh, &lth);
+    const h1 = verifyBankHash([_]u8{0x11} ** 32, 100, bh, &lth);
+    const h2 = verifyBankHash([_]u8{0x22} ** 32, 100, bh, &lth);
     try std.testing.expect(!std.mem.eql(u8, &h1, &h2));
 }
 
 test "verifyBankHash: blockhash sensitivity" {
     const parent = [_]u8{0xDD} ** 32;
-    const lth    = [_]u8{0} ** 2048;
-    const h1     = verifyBankHash(parent, 100, [_]u8{0x11} ** 32, &lth);
-    const h2     = verifyBankHash(parent, 100, [_]u8{0x22} ** 32, &lth);
+    const lth = [_]u8{0} ** 2048;
+    const h1 = verifyBankHash(parent, 100, [_]u8{0x11} ** 32, &lth);
+    const h2 = verifyBankHash(parent, 100, [_]u8{0x22} ** 32, &lth);
     try std.testing.expect(!std.mem.eql(u8, &h1, &h2));
 }
 
 test "verifyBankHash: lthash sensitivity" {
     const parent = [_]u8{0xEE} ** 32;
-    const bh     = [_]u8{0xFF} ** 32;
-    const h1     = verifyBankHash(parent, 100, bh, &([_]u8{0} ** 2048));
-    const h2     = verifyBankHash(parent, 100, bh, &([_]u8{1} ** 2048));
+    const bh = [_]u8{0xFF} ** 32;
+    const h1 = verifyBankHash(parent, 100, bh, &([_]u8{0} ** 2048));
+    const h2 = verifyBankHash(parent, 100, bh, &([_]u8{1} ** 2048));
     try std.testing.expect(!std.mem.eql(u8, &h1, &h2));
 }
 
@@ -648,7 +654,9 @@ test "verifyAccountLtHash: zero lamports → all zero" {
     const lt = verifyAccountLtHash(
         &([_]u8{0x01} ** 32),
         &([_]u8{0x02} ** 32),
-        0, false, &[_]u8{},
+        0,
+        false,
+        &[_]u8{},
     );
     try std.testing.expect(std.mem.allEqual(u8, &lt, 0));
 }
@@ -657,21 +665,23 @@ test "verifyAccountLtHash: non-zero lamports → non-zero" {
     const lt = verifyAccountLtHash(
         &([_]u8{0x03} ** 32),
         &([_]u8{0x04} ** 32),
-        500_000_000, false, &[_]u8{},
+        500_000_000,
+        false,
+        &[_]u8{},
     );
     try std.testing.expect(!std.mem.allEqual(u8, &lt, 0));
 }
 
 test "verifyAccountLtHash: executable bit changes output" {
-    const pk  = [_]u8{0x05} ** 32;
+    const pk = [_]u8{0x05} ** 32;
     const own = [_]u8{0x06} ** 32;
-    const lt1 = verifyAccountLtHash(&pk, &own, 1_000, true,  &[_]u8{});
+    const lt1 = verifyAccountLtHash(&pk, &own, 1_000, true, &[_]u8{});
     const lt2 = verifyAccountLtHash(&pk, &own, 1_000, false, &[_]u8{});
     try std.testing.expect(!std.mem.eql(u8, &lt1, &lt2));
 }
 
 test "verifyAccountLtHash: data changes output" {
-    const pk  = [_]u8{0x07} ** 32;
+    const pk = [_]u8{0x07} ** 32;
     const own = [_]u8{0x08} ** 32;
     const lt1 = verifyAccountLtHash(&pk, &own, 1_000, false, &[_]u8{0x01});
     const lt2 = verifyAccountLtHash(&pk, &own, 1_000, false, &[_]u8{0x02});
@@ -689,7 +699,7 @@ test "verifyBankHashFromLtHash: matches verifyBankHash" {
     }
 
     const parent = [_]u8{0x11} ** 32;
-    const bh     = [_]u8{0x22} ** 32;
+    const bh = [_]u8{0x22} ** 32;
 
     const h1 = verifyBankHash(parent, 300, bh, &lthash_bytes);
     const h2 = verifyBankHashFromLtHash(parent, 300, bh, &lt);
@@ -713,11 +723,11 @@ test "runBuiltinVectors: all pass" {
 
 test "ConformanceResult: format pass" {
     const r = ConformanceResult{
-        .test_name     = "test_foo",
-        .passed        = true,
+        .test_name = "test_foo",
+        .passed = true,
         .expected_hash = [_]u8{0x11} ** 32,
-        .actual_hash   = [_]u8{0x11} ** 32,
-        .error_detail  = null,
+        .actual_hash = [_]u8{0x11} ** 32,
+        .error_detail = null,
     };
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);
@@ -729,11 +739,11 @@ test "ConformanceResult: format pass" {
 
 test "ConformanceResult: format fail" {
     const r = ConformanceResult{
-        .test_name     = "test_bar",
-        .passed        = false,
+        .test_name = "test_bar",
+        .passed = false,
         .expected_hash = [_]u8{0x11} ** 32,
-        .actual_hash   = [_]u8{0x22} ** 32,
-        .error_detail  = "hash mismatch detail",
+        .actual_hash = [_]u8{0x22} ** 32,
+        .error_detail = "hash mismatch detail",
     };
     var buf: [512]u8 = undefined;
     var fbs = std.io.fixedBufferStream(&buf);

@@ -24,11 +24,10 @@
 ///   are fully ported; inner state mutation is marked // TODO: codec.
 ///
 /// Naming: camelCase, no fd_ prefix (Vexor convention).
-
 const std = @import("std");
 const types = @import("../types.zig");
 
-pub const Pubkey      = types.Pubkey;
+pub const Pubkey = types.Pubkey;
 pub const AccountMeta = types.AccountMeta;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,34 +76,34 @@ pub const VOTE_STATE_V4_SZ: usize = 3762;
 // fd_vote_program.c:1655 switch cases
 // ─────────────────────────────────────────────────────────────────────────────
 pub const InstrDiscriminant = enum(u32) {
-    initialize_account             = 0,
-    authorize                      = 1,
-    vote                           = 2,
-    withdraw                       = 3,
-    update_validator_identity      = 4,
-    update_commission              = 5,
-    vote_switch                    = 6,
-    authorize_checked              = 7,
-    update_vote_state              = 8,
-    update_vote_state_switch       = 9,
-    compact_update_vote_state      = 10,
+    initialize_account = 0,
+    authorize = 1,
+    vote = 2,
+    withdraw = 3,
+    update_validator_identity = 4,
+    update_commission = 5,
+    vote_switch = 6,
+    authorize_checked = 7,
+    update_vote_state = 8,
+    update_vote_state_switch = 9,
+    compact_update_vote_state = 10,
     compact_update_vote_state_switch = 11,
-    authorize_with_seed            = 12,
-    authorize_checked_with_seed    = 13,
-    compact_update_vote_state_v2   = 14,
-    tower_sync                     = 15,
-    tower_sync_switch              = 16,
-    initialize_account_v2          = 17,
-    update_commission_bps          = 18,
-    update_commission_collector    = 19,
-    deposit_delegator_rewards      = 20,
+    authorize_with_seed = 12,
+    authorize_checked_with_seed = 13,
+    compact_update_vote_state_v2 = 14,
+    tower_sync = 15,
+    tower_sync_switch = 16,
+    initialize_account_v2 = 17,
+    update_commission_bps = 18,
+    update_commission_collector = 19,
+    deposit_delegator_rewards = 20,
     _,
 };
 
 /// Authorize kind discriminants  (fd_vote_authorize_enum_*)
 pub const AuthorizeKind = enum(u32) {
-    voter         = 0,
-    withdrawer    = 1,
+    voter = 0,
+    withdrawer = 1,
     voter_with_bls = 2,
     _,
 };
@@ -141,13 +140,13 @@ pub const InstrError = error{
 // Minimal borrowed-account view  (mirrors fd_borrowed_account_t fields used here)
 // ─────────────────────────────────────────────────────────────────────────────
 pub const BorrowedAccount = struct {
-    pubkey:      *const [32]u8,
-    lamports:    u64,
-    owner:       [32]u8,
-    data:        []u8,
-    rent_epoch:  u64,
-    executable:  bool,
-    is_signer:   bool,
+    pubkey: *const [32]u8,
+    lamports: u64,
+    owner: [32]u8,
+    data: []u8,
+    rent_epoch: u64,
+    executable: bool,
+    is_signer: bool,
     is_writable: bool,
 };
 
@@ -155,30 +154,30 @@ pub const BorrowedAccount = struct {
 // Instruction context
 // ─────────────────────────────────────────────────────────────────────────────
 pub const InstrCtx = struct {
-    accounts:   []BorrowedAccount,
-    data:       []const u8,
+    accounts: []BorrowedAccount,
+    data: []const u8,
     /// Bit N = 1 → accounts[N] is a transaction signer.
     signer_mask: u64,
 
     /// Feature flags
-    vote_state_v4_active:           bool,
-    bls_pubkey_management_active:   bool,
+    vote_state_v4_active: bool,
+    bls_pubkey_management_active: bool,
     delay_commission_updates_active: bool,
-    deprecate_legacy_vote_ixs:      bool,
+    deprecate_legacy_vote_ixs: bool,
     disable_commission_update_rule: bool,
 
     /// Clock sysvar fields
-    clock_slot:       u64,
-    clock_epoch:      u64,
+    clock_slot: u64,
+    clock_epoch: u64,
     clock_leader_schedule_epoch: u64,
     clock_unix_timestamp: i64,
 
     /// Rent sysvar fields (for rent-exemption checks)
     rent_lamports_per_byte_year: u64,
-    rent_exemption_threshold:    f64,
+    rent_exemption_threshold: f64,
 
     /// EpochSchedule (for commission update timing)
-    epoch_slots_per_epoch:  u64,
+    epoch_slots_per_epoch: u64,
     epoch_first_normal_slot: u64,
 
     pub fn isSigner(ctx: *const InstrCtx, idx: usize) bool {
@@ -230,11 +229,11 @@ pub fn isCommissionUpdateAllowed(slot: u64, slots_per_epoch: u64, first_normal_s
 /// Precondition checks for a proposed vote state update.
 /// fd_vote_program.c:165-200
 pub fn checkProposedVoteStatePreconditions(
-    proposed_slots_empty:  bool,
-    last_voted_slot:       ?u64,
-    proposed_last_slot:    u64,
-    slot_hashes_empty:     bool,
-    earliest_slot_hash:    u64,
+    proposed_slots_empty: bool,
+    last_voted_slot: ?u64,
+    proposed_last_slot: u64,
+    slot_hashes_empty: bool,
+    earliest_slot_hash: u64,
 ) InstrError!void {
     // fd_vote_program.c:165-168
     if (proposed_slots_empty) return InstrError.VoteEmptySlots;
@@ -294,8 +293,8 @@ fn initializeAccount(ctx: *const InstrCtx, vote_account: *const BorrowedAccount,
     // TODO: write full Borsh-encoded VoteState (V3 or V4)
     @memset(vote_account.data, 0);
     std.mem.writeInt(u32, vote_account.data[0..4], 2, .little); // discriminant = Current
-    @memcpy(vote_account.data[4..36],   ctx.data[4..36]);   // node_pubkey
-    @memcpy(vote_account.data[36..68],  ctx.data[36..68]);  // authorized_voter
+    @memcpy(vote_account.data[4..36], ctx.data[4..36]); // node_pubkey
+    @memcpy(vote_account.data[36..68], ctx.data[36..68]); // authorized_voter
     @memcpy(vote_account.data[68..100], ctx.data[68..100]); // authorized_withdrawer
     vote_account.data[100] = ctx.data[100]; // commission
 }

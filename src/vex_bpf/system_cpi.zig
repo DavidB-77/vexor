@@ -48,34 +48,34 @@
 const std = @import("std");
 
 // ── System program instruction discriminants (little-endian u32) ────────────
-pub const IX_CREATE_ACCOUNT:           u32 = 0;
-pub const IX_ASSIGN:                   u32 = 1;
-pub const IX_TRANSFER:                 u32 = 2;
+pub const IX_CREATE_ACCOUNT: u32 = 0;
+pub const IX_ASSIGN: u32 = 1;
+pub const IX_TRANSFER: u32 = 2;
 pub const IX_CREATE_ACCOUNT_WITH_SEED: u32 = 3;
-pub const IX_ADVANCE_NONCE:            u32 = 4;
-pub const IX_WITHDRAW_NONCE:           u32 = 5;
-pub const IX_INITIALIZE_NONCE:         u32 = 6;
-pub const IX_AUTHORIZE_NONCE:          u32 = 7;
-pub const IX_ALLOCATE:                 u32 = 8;
-pub const IX_ALLOCATE_WITH_SEED:       u32 = 9;
-pub const IX_ASSIGN_WITH_SEED:         u32 = 10;
-pub const IX_TRANSFER_WITH_SEED:       u32 = 11;
-pub const IX_UPGRADE_NONCE:            u32 = 12;
+pub const IX_ADVANCE_NONCE: u32 = 4;
+pub const IX_WITHDRAW_NONCE: u32 = 5;
+pub const IX_INITIALIZE_NONCE: u32 = 6;
+pub const IX_AUTHORIZE_NONCE: u32 = 7;
+pub const IX_ALLOCATE: u32 = 8;
+pub const IX_ALLOCATE_WITH_SEED: u32 = 9;
+pub const IX_ASSIGN_WITH_SEED: u32 = 10;
+pub const IX_TRANSFER_WITH_SEED: u32 = 11;
+pub const IX_UPGRADE_NONCE: u32 = 12;
 
 // ── Solana SystemError → r0 encoding ────────────────────────────────────────
 // We return non-zero r0 so the BPF caller's `Result::?` propagates Err.
 // Exact codes match Solana SystemError variants where possible; for cases
 // outside SystemError we use generic InstructionError values (≥ 0xC).
-pub const ERR_INSUFFICIENT_FUNDS:     u64 = 1;       // 0x01 SystemError::ResultWithNegativeLamports
-pub const ERR_INVALID_INSTRUCTION:    u64 = 2;       // generic
-pub const ERR_INVALID_ACCOUNT_DATA:   u64 = 0x0A;    // InstructionError::InvalidAccountData
+pub const ERR_INSUFFICIENT_FUNDS: u64 = 1; // 0x01 SystemError::ResultWithNegativeLamports
+pub const ERR_INVALID_INSTRUCTION: u64 = 2; // generic
+pub const ERR_INVALID_ACCOUNT_DATA: u64 = 0x0A; // InstructionError::InvalidAccountData
 pub const ERR_ACCOUNT_DATA_TOO_SMALL: u64 = 0x0B;
-pub const ERR_ACCOUNT_ALREADY_INIT:   u64 = 0x05;    // InstructionError::AccountAlreadyInitialized
-pub const ERR_INVALID_OWNER:          u64 = 0x14;
-pub const ERR_NOT_SUPPORTED:          u64 = 0x29;    // InstructionError::UnsupportedSysvar (re-purposed)
-pub const ERR_OVERFLOW:               u64 = 0x10;    // InstructionError::ArithmeticOverflow
-pub const ERR_INVALID_ARGUMENT:       u64 = 0x03;
-pub const ERR_EXTERNAL_LAMPORT_SPEND: u64 = 0x06;    // SystemError::ExternalAccountLamportSpend
+pub const ERR_ACCOUNT_ALREADY_INIT: u64 = 0x05; // InstructionError::AccountAlreadyInitialized
+pub const ERR_INVALID_OWNER: u64 = 0x14;
+pub const ERR_NOT_SUPPORTED: u64 = 0x29; // InstructionError::UnsupportedSysvar (re-purposed)
+pub const ERR_OVERFLOW: u64 = 0x10; // InstructionError::ArithmeticOverflow
+pub const ERR_INVALID_ARGUMENT: u64 = 0x03;
+pub const ERR_EXTERNAL_LAMPORT_SPEND: u64 = 0x06; // SystemError::ExternalAccountLamportSpend
 
 // Maximum data length permitted by Solana System program.
 pub const MAX_PERMITTED_DATA_LENGTH: u64 = 10 * 1024 * 1024; // 10 MiB
@@ -276,12 +276,22 @@ test "transfer insufficient funds" {
     var own: [32]u8 = .{0} ** 32;
     var data: [0]u8 = .{};
     const from = AccountSlice{
-        .lamports_ptr = &lam_from, .data = &data, .data_len_hdr = &dlen,
-        .owner_ptr = &own, .realloc_capacity = 0, .pubkey = .{0}**32, .is_writable = true,
+        .lamports_ptr = &lam_from,
+        .data = &data,
+        .data_len_hdr = &dlen,
+        .owner_ptr = &own,
+        .realloc_capacity = 0,
+        .pubkey = .{0} ** 32,
+        .is_writable = true,
     };
     const to = AccountSlice{
-        .lamports_ptr = &lam_to, .data = &data, .data_len_hdr = &dlen,
-        .owner_ptr = &own, .realloc_capacity = 0, .pubkey = .{1}**32, .is_writable = true,
+        .lamports_ptr = &lam_to,
+        .data = &data,
+        .data_len_hdr = &dlen,
+        .owner_ptr = &own,
+        .realloc_capacity = 0,
+        .pubkey = .{1} ** 32,
+        .is_writable = true,
     };
     try std.testing.expectEqual(ERR_INSUFFICIENT_FUNDS, execTransfer(from, to, 100));
 }
@@ -292,8 +302,13 @@ test "assign owner change" {
     var own: [32]u8 = .{0} ** 32;
     var data: [0]u8 = .{};
     const tgt = AccountSlice{
-        .lamports_ptr = &lam, .data = &data, .data_len_hdr = &dlen,
-        .owner_ptr = &own, .realloc_capacity = 0, .pubkey = .{0}**32, .is_writable = true,
+        .lamports_ptr = &lam,
+        .data = &data,
+        .data_len_hdr = &dlen,
+        .owner_ptr = &own,
+        .realloc_capacity = 0,
+        .pubkey = .{0} ** 32,
+        .is_writable = true,
     };
     const new_owner: [32]u8 = .{0xAB} ** 32;
     try std.testing.expectEqual(@as(u64, 0), execAssign(tgt, new_owner));
@@ -304,14 +319,15 @@ test "allocate sets data_len" {
     var lam: [8]u8 = .{0} ** 8;
     var dlen: [8]u8 = .{0} ** 8;
     var own: [32]u8 = .{0} ** 32;
-    var buf: [128]u8 = .{0xCC} ** 128;  // pretend full input region (data + realloc)
+    var buf: [128]u8 = .{0xCC} ** 128; // pretend full input region (data + realloc)
     const tgt = AccountSlice{
         .lamports_ptr = &lam,
-        .data = buf[0..0],          // current data_len = 0
+        .data = buf[0..0], // current data_len = 0
         .data_len_hdr = &dlen,
         .owner_ptr = &own,
         .realloc_capacity = 128,
-        .pubkey = .{0}**32, .is_writable = true,
+        .pubkey = .{0} ** 32,
+        .is_writable = true,
     };
     try std.testing.expectEqual(@as(u64, 0), execAllocate(tgt, 64));
     try std.testing.expectEqual(@as(u64, 64), std.mem.readInt(u64, &dlen, .little));

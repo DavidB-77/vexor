@@ -183,7 +183,7 @@ pub const EXP_POLY: [4]f64 = .{
 };
 
 pub const EXP_TAB: [256]u64 = .{
-    0x0, 0x3ff0000000000000,
+    0x0,                0x3ff0000000000000,
     0x3c9b3b4f1a88bf6e, 0x3feff63da9fb3335,
     0xbc7160139cd8dc5d, 0x3fefec9a3e778061,
     0xbc905e7a108766d1, 0x3fefe315e86e7f85,
@@ -312,4 +312,3 @@ pub const EXP_TAB: [256]u64 = .{
     0x3c77893b4d91cd9d, 0x3fefe7c1819e90d8,
     0x3c5305c14160cc89, 0x3feff3c22b8f71f1,
 };
-

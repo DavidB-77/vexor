@@ -17,29 +17,29 @@ const std = @import("std");
 
 /// One transaction-level account as stored in the fixture JSON.
 pub const TxAccount = struct {
-    pubkey:     [32]u8,
-    owner:      [32]u8,
-    lamports:   u64,
-    data:       []const u8,
+    pubkey: [32]u8,
+    owner: [32]u8,
+    lamports: u64,
+    data: []const u8,
     executable: bool,
     rent_epoch: u64,
 };
 
 /// Instruction-account entry: index into tx_accounts + signer/writable flags.
 pub const IxAccount = struct {
-    idx:        usize,
-    is_signer:   bool,
+    idx: usize,
+    is_signer: bool,
     is_writable: bool,
 };
 
 pub const Fixture = struct {
-    name:           []const u8,
-    program_id:     [32]u8,
-    ix_data:        []const u8,
-    tx_accounts:    []const TxAccount,
-    ix_accounts:    []const IxAccount,
+    name: []const u8,
+    program_id: [32]u8,
+    ix_data: []const u8,
+    tx_accounts: []const TxAccount,
+    ix_accounts: []const IxAccount,
     /// Base64-encoded expected serialised buffer (from FD golden).
-    expected_b64:   []const u8,
+    expected_b64: []const u8,
     /// Expected out_ix_data_vaddr (INPUT_START + in-buffer offset).
     expected_vaddr: u64,
 };
@@ -49,12 +49,8 @@ pub const Fixture = struct {
 const aligned_data_len_0__a0d = [0]u8{};
 const aligned_data_len_0__a1d = [0]u8{};
 const aligned_data_len_0__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_0__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 131, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_0__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_0__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 131, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 130, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_0__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_0__id = [_]u8{ 17, 34 };
 const aligned_data_len_0__ia = [_]IxAccount{
@@ -71,14 +67,10 @@ const aligned_data_len_0 = Fixture{
 };
 
 const aligned_data_len_1__a0d = [0]u8{};
-const aligned_data_len_1__a1d = [_]u8{ 0 };
+const aligned_data_len_1__a1d = [_]u8{0};
 const aligned_data_len_1__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 136, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_1__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 137, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 136, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_1__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 136, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_1__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 137, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 136, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_1__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_1__id = [_]u8{ 17, 34 };
 const aligned_data_len_1__ia = [_]IxAccount{
@@ -97,12 +89,8 @@ const aligned_data_len_1 = Fixture{
 const aligned_data_len_15__a0d = [0]u8{};
 const aligned_data_len_15__a1d = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
 const aligned_data_len_15__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 148, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_15__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 149, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 148, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_15__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 148, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_15__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 149, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 148, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_15__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_15__id = [_]u8{ 17, 34 };
 const aligned_data_len_15__ia = [_]IxAccount{
@@ -121,12 +109,8 @@ const aligned_data_len_15 = Fixture{
 const aligned_data_len_16__a0d = [0]u8{};
 const aligned_data_len_16__a1d = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 };
 const aligned_data_len_16__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 154, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_16__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 155, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 154, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_16__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 154, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_16__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 155, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 154, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_16__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_16__id = [_]u8{ 17, 34 };
 const aligned_data_len_16__ia = [_]IxAccount{
@@ -145,12 +129,8 @@ const aligned_data_len_16 = Fixture{
 const aligned_data_len_17__a0d = [0]u8{};
 const aligned_data_len_17__a1d = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
 const aligned_data_len_17__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 160, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_17__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 161, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 160, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_17__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 160, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_17__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 161, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 160, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_17__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_17__id = [_]u8{ 17, 34 };
 const aligned_data_len_17__ia = [_]IxAccount{
@@ -169,12 +149,8 @@ const aligned_data_len_17 = Fixture{
 const aligned_data_len_31__a0d = [0]u8{};
 const aligned_data_len_31__a1d = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30 };
 const aligned_data_len_31__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 166, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_31__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 167, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 166, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_31__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 166, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_31__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 167, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 166, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_31__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_31__id = [_]u8{ 17, 34 };
 const aligned_data_len_31__ia = [_]IxAccount{
@@ -193,12 +169,8 @@ const aligned_data_len_31 = Fixture{
 const aligned_data_len_32__a0d = [0]u8{};
 const aligned_data_len_32__a1d = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 };
 const aligned_data_len_32__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 172, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_32__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 172, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_32__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 172, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_32__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 173, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 172, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_32__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_32__id = [_]u8{ 17, 34 };
 const aligned_data_len_32__ia = [_]IxAccount{
@@ -217,12 +189,8 @@ const aligned_data_len_32 = Fixture{
 const aligned_data_len_8__a0d = [0]u8{};
 const aligned_data_len_8__a1d = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7 };
 const aligned_data_len_8__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 142, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_data_len_8__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 143, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 142, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_data_len_8__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 142, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_data_len_8__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 143, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 142, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_data_len_8__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_data_len_8__id = [_]u8{ 17, 34 };
 const aligned_data_len_8__ia = [_]IxAccount{
@@ -242,15 +210,9 @@ const aligned_dup_between__a0d = [0]u8{};
 const aligned_dup_between__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_dup_between__a2d = [_]u8{ 6, 7, 8 };
 const aligned_dup_between__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 190, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_dup_between__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 191, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 190, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_dup_between__a1d,
-       .executable = false, .rent_epoch = 100 },
-    .{ .pubkey = [32]u8{ 192, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 190, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 2000, .data = &aligned_dup_between__a2d,
-       .executable = false, .rent_epoch = 200 },
+    .{ .pubkey = [32]u8{ 190, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_dup_between__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 191, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 190, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_dup_between__a1d, .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 192, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 190, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 2000, .data = &aligned_dup_between__a2d, .executable = false, .rent_epoch = 200 },
 };
 const aligned_dup_between__id = [_]u8{ 51, 68 };
 const aligned_dup_between__ia = [_]IxAccount{
@@ -271,12 +233,8 @@ const aligned_dup_between = Fixture{
 const aligned_duplicate__a0d = [0]u8{};
 const aligned_duplicate__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_duplicate__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_duplicate__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 113, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_duplicate__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_duplicate__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 113, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 112, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_duplicate__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_duplicate__id = [_]u8{ 170, 187 };
 const aligned_duplicate__ia = [_]IxAccount{
@@ -297,15 +255,9 @@ const aligned_five_accounts_three_dups__a0d = [0]u8{};
 const aligned_five_accounts_three_dups__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_five_accounts_three_dups__a2d = [_]u8{ 6, 7, 8 };
 const aligned_five_accounts_three_dups__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 208, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_five_accounts_three_dups__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 209, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 208, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_five_accounts_three_dups__a1d,
-       .executable = false, .rent_epoch = 100 },
-    .{ .pubkey = [32]u8{ 210, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 208, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 2000, .data = &aligned_five_accounts_three_dups__a2d,
-       .executable = false, .rent_epoch = 200 },
+    .{ .pubkey = [32]u8{ 208, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_five_accounts_three_dups__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 209, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 208, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_five_accounts_three_dups__a1d, .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 210, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 208, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 2000, .data = &aligned_five_accounts_three_dups__a2d, .executable = false, .rent_epoch = 200 },
 };
 const aligned_five_accounts_three_dups__id = [_]u8{ 119, 136 };
 const aligned_five_accounts_three_dups__ia = [_]IxAccount{
@@ -329,15 +281,9 @@ const aligned_mixed_writable_readonly__a0d = [0]u8{};
 const aligned_mixed_writable_readonly__a1d = [_]u8{ 1, 2, 3 };
 const aligned_mixed_writable_readonly__a2d = [_]u8{ 4, 5, 6, 7 };
 const aligned_mixed_writable_readonly__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 199, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_mixed_writable_readonly__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 199, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_mixed_writable_readonly__a1d,
-       .executable = false, .rent_epoch = 100 },
-    .{ .pubkey = [32]u8{ 201, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 199, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 2000, .data = &aligned_mixed_writable_readonly__a2d,
-       .executable = false, .rent_epoch = 200 },
+    .{ .pubkey = [32]u8{ 199, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_mixed_writable_readonly__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 200, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 199, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_mixed_writable_readonly__a1d, .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 201, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 199, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 2000, .data = &aligned_mixed_writable_readonly__a2d, .executable = false, .rent_epoch = 200 },
 };
 const aligned_mixed_writable_readonly__id = [_]u8{ 85, 102 };
 const aligned_mixed_writable_readonly__ia = [_]IxAccount{
@@ -359,18 +305,10 @@ const aligned_multi_alignment__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_multi_alignment__a2d = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
 const aligned_multi_alignment__a3d = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 };
 const aligned_multi_alignment__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_multi_alignment__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 179, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_multi_alignment__a1d,
-       .executable = false, .rent_epoch = 100 },
-    .{ .pubkey = [32]u8{ 180, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 2000, .data = &aligned_multi_alignment__a2d,
-       .executable = false, .rent_epoch = 200 },
-    .{ .pubkey = [32]u8{ 181, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 3000, .data = &aligned_multi_alignment__a3d,
-       .executable = false, .rent_epoch = 300 },
+    .{ .pubkey = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_multi_alignment__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 179, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_multi_alignment__a1d, .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 180, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 2000, .data = &aligned_multi_alignment__a2d, .executable = false, .rent_epoch = 200 },
+    .{ .pubkey = [32]u8{ 181, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 178, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 3000, .data = &aligned_multi_alignment__a3d, .executable = false, .rent_epoch = 300 },
 };
 const aligned_multi_alignment__id = [_]u8{ 171, 205 };
 const aligned_multi_alignment__ia = [_]IxAccount{
@@ -391,12 +329,8 @@ const aligned_multi_alignment = Fixture{
 const aligned_readonly__a0d = [0]u8{};
 const aligned_readonly__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_readonly__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 124, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_readonly__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 125, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 124, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_readonly__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 124, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_readonly__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 125, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 124, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_readonly__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_readonly__id = [_]u8{ 238, 255 };
 const aligned_readonly__ia = [_]IxAccount{
@@ -415,12 +349,8 @@ const aligned_readonly = Fixture{
 const aligned_single_account__a0d = [0]u8{};
 const aligned_single_account__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_single_account__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 97, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_single_account__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 98, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 97, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_single_account__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 97, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_single_account__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 98, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 97, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_single_account__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_single_account__id = [_]u8{ 222, 173, 190, 239 };
 const aligned_single_account__ia = [_]IxAccount{
@@ -441,18 +371,10 @@ const aligned_three_mixed_all__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_three_mixed_all__a2d = [_]u8{ 6, 7, 8, 9 };
 const aligned_three_mixed_all__a3d = [0]u8{};
 const aligned_three_mixed_all__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_three_mixed_all__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_three_mixed_all__a1d,
-       .executable = false, .rent_epoch = 100 },
-    .{ .pubkey = [32]u8{ 219, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 2000, .data = &aligned_three_mixed_all__a2d,
-       .executable = false, .rent_epoch = 200 },
-    .{ .pubkey = [32]u8{ 220, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 3000, .data = &aligned_three_mixed_all__a3d,
-       .executable = false, .rent_epoch = 300 },
+    .{ .pubkey = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_three_mixed_all__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 218, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_three_mixed_all__a1d, .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 219, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 2000, .data = &aligned_three_mixed_all__a2d, .executable = false, .rent_epoch = 200 },
+    .{ .pubkey = [32]u8{ 220, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 217, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 3000, .data = &aligned_three_mixed_all__a3d, .executable = false, .rent_epoch = 300 },
 };
 const aligned_three_mixed_all__id = [_]u8{ 153, 170, 187 };
 const aligned_three_mixed_all__ia = [_]IxAccount{
@@ -474,15 +396,9 @@ const aligned_two_accounts__a0d = [0]u8{};
 const aligned_two_accounts__a1d = [_]u8{ 1, 2, 3, 4, 5 };
 const aligned_two_accounts__a2d = [_]u8{ 6, 7, 8, 9, 10, 11, 12 };
 const aligned_two_accounts__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_two_accounts__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 104, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_two_accounts__a1d,
-       .executable = false, .rent_epoch = 100 },
-    .{ .pubkey = [32]u8{ 105, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 2000, .data = &aligned_two_accounts__a2d,
-       .executable = false, .rent_epoch = 200 },
+    .{ .pubkey = [32]u8{ 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_two_accounts__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 104, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_two_accounts__a1d, .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 105, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 103, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 2000, .data = &aligned_two_accounts__a2d, .executable = false, .rent_epoch = 200 },
 };
 const aligned_two_accounts__id = [_]u8{ 202, 254 };
 const aligned_two_accounts__ia = [_]IxAccount{
@@ -502,12 +418,8 @@ const aligned_two_accounts = Fixture{
 const aligned_zero_data__a0d = [0]u8{};
 const aligned_zero_data__a1d = [0]u8{};
 const aligned_zero_data__ta = [_]TxAccount{
-    .{ .pubkey = [32]u8{ 118, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 },
-       .lamports = 0, .data = &aligned_zero_data__a0d,
-       .executable = true, .rent_epoch = 0 },
-    .{ .pubkey = [32]u8{ 119, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 118, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
-       .lamports = 1000, .data = &aligned_zero_data__a1d,
-       .executable = false, .rent_epoch = 100 },
+    .{ .pubkey = [32]u8{ 118, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 2, 168, 246, 145, 78, 136, 161, 110, 57, 90, 225, 40, 148, 143, 250, 105, 86, 147, 55, 104, 24, 221, 71, 67, 82, 33, 243, 198, 0, 0, 0, 0 }, .lamports = 0, .data = &aligned_zero_data__a0d, .executable = true, .rent_epoch = 0 },
+    .{ .pubkey = [32]u8{ 119, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .owner = [32]u8{ 118, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }, .lamports = 1000, .data = &aligned_zero_data__a1d, .executable = false, .rent_epoch = 100 },
 };
 const aligned_zero_data__id = [_]u8{ 204, 221 };
 const aligned_zero_data__ia = [_]IxAccount{

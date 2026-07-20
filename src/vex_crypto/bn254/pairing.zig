@@ -21,14 +21,14 @@ pub const BATCH_MAX = 16;
 /// NAF-like signed digits of the ate loop count (6x+2 recoding), LSB→MSB, as in
 /// the reference Miller loop.
 const loop_naf = [_]i2{
-    0,  0,  0,  1,  0,  1,  0,  -1,
-    0,  0,  -1, 0,  0,  0,  1,  0,
-    0,  -1, 0,  -1, 0,  0,  0,  1,
-    0,  -1, 0,  0,  0,  0,  -1, 0,
-    0,  1,  0,  -1, 0,  0,  1,  0,
-    0,  0,  0,  0,  -1, 0,  0,  -1,
-    0,  1,  0,  -1, 0,  0,  0,  -1,
-    0,  -1, 0,  0,  0,  1,  0,  -1,
+    0, 0,  0,  1,  0,  1, 0,  -1,
+    0, 0,  -1, 0,  0,  0, 1,  0,
+    0, -1, 0,  -1, 0,  0, 0,  1,
+    0, -1, 0,  0,  0,  0, -1, 0,
+    0, 1,  0,  -1, 0,  0, 1,  0,
+    0, 0,  0,  0,  -1, 0, 0,  -1,
+    0, 1,  0,  -1, 0,  0, 0,  -1,
+    0, -1, 0,  0,  0,  1, 0,  -1,
 };
 
 /// Miller loop over parallel batches of (P∈G1 affine, Q∈G2 affine).

@@ -17,7 +17,7 @@ pub const CompressionType = enum {
     lz4,
     gzip,
     none,
-    
+
     pub fn fromExtension(filename: []const u8) CompressionType {
         if (std.mem.endsWith(u8, filename, ".zst") or std.mem.endsWith(u8, filename, ".zstd")) {
             return .zstd;
@@ -28,7 +28,6 @@ pub const CompressionType = enum {
         }
         return .none;
     }
-    
 };
 
 /// A chunk of data in the streaming pipeline
@@ -43,7 +42,6 @@ pub const StreamChunk = struct {
     is_final: bool,
     /// Original size (if known)
     original_size: ?u64,
-    
 };
 
 /// Thread-safe queue for chunk passing between stages
@@ -54,9 +52,9 @@ pub fn ChunkQueue(comptime T: type) type {
         mutex: Mutex,
         not_empty: Thread.Condition,
         closed: Atomic(bool),
-        
+
         const Self = @This();
-        
+
         pub fn init(allocator: Allocator) Self {
             return .{
                 .allocator = allocator,
@@ -66,40 +64,38 @@ pub fn ChunkQueue(comptime T: type) type {
                 .closed = Atomic(bool).init(false),
             };
         }
-        
+
         pub fn deinit(self: *Self) void {
             self.items.deinit(self.allocator);
         }
-        
+
         /// Push an item to the queue
         pub fn push(self: *Self, item: T) !void {
             self.mutex.lock();
             defer self.mutex.unlock();
-            
+
             try self.items.append(self.allocator, item);
             self.not_empty.signal();
         }
-        
+
         /// Pop an item from the queue (blocks if empty)
         pub fn pop(self: *Self) ?T {
             self.mutex.lock();
             defer self.mutex.unlock();
-            
+
             while (self.items.items.len == 0) {
                 if (self.closed.load(.monotonic)) return null;
                 self.not_empty.wait(&self.mutex);
             }
-            
+
             return self.items.orderedRemove(0);
         }
-        
-        
+
         /// Close the queue (no more items will be added)
         pub fn close(self: *Self) void {
             self.closed.store(true, .monotonic);
             self.not_empty.broadcast();
         }
-        
     };
 }
 
@@ -109,7 +105,7 @@ pub const DecompressProgress = struct {
     decompressed_bytes_out: Atomic(u64),
     chunks_processed: Atomic(u32),
     start_time: i64,
-    
+
     pub fn init() DecompressProgress {
         return .{
             .compressed_bytes_in = Atomic(u64).init(0),
@@ -118,44 +114,43 @@ pub const DecompressProgress = struct {
             .start_time = std.time.milliTimestamp(),
         };
     }
-    
+
     pub fn compressionRatio(self: *const DecompressProgress) f32 {
         const compressed = self.compressed_bytes_in.load(.monotonic);
         const decompressed = self.decompressed_bytes_out.load(.monotonic);
         if (compressed == 0) return 0;
         return @as(f32, @floatFromInt(decompressed)) / @as(f32, @floatFromInt(compressed));
     }
-    
 };
 
 /// Streaming decompression pipeline
 pub const StreamingDecompressor = struct {
     allocator: Allocator,
     compression_type: CompressionType,
-    
+
     /// Input queue (compressed chunks)
     input_queue: ChunkQueue(StreamChunk),
     /// Output queue (decompressed chunks)
     output_queue: ChunkQueue(StreamChunk),
-    
+
     /// Worker thread
     worker_thread: ?Thread,
-    
+
     /// Progress tracking
     progress: DecompressProgress,
-    
+
     /// Configuration
     config: Config,
-    
+
     pub const Config = struct {
         /// Buffer size for decompression (default 4MB)
         buffer_size: usize = 4 * 1024 * 1024,
         /// Maximum output queue size (back-pressure)
         max_queue_size: u32 = 16,
     };
-    
+
     const Self = @This();
-    
+
     pub fn init(allocator: Allocator, compression_type: CompressionType, config: Config) Self {
         return .{
             .allocator = allocator,
@@ -167,14 +162,13 @@ pub const StreamingDecompressor = struct {
             .config = config,
         };
     }
-    
+
     pub fn deinit(self: *Self) void {
         self.stop();
         self.input_queue.deinit();
         self.output_queue.deinit();
     }
-    
-    
+
     /// Stop the decompression worker
     pub fn stop(self: *Self) void {
         self.input_queue.close();
@@ -184,7 +178,7 @@ pub const StreamingDecompressor = struct {
         }
         self.output_queue.close();
     }
-    
+
     /// Decompress a complete zstd frame from `input` into `output`, returning the number of
     /// decompressed bytes written. Uses the pure-Zig `std.compress.zstd` decoder (Zig 0.15.2) — no FFI.
     ///
@@ -209,9 +203,7 @@ pub const StreamingDecompressor = struct {
 
         return try zstd_stream.reader.streamRemaining(&out);
     }
-    
 };
-
 
 /// PERF #3 boot self-test: decode an embedded REAL zstd frame (system `zstd -19` of a known 1480-byte
 /// input) and verify byte-exact, exercising the std.compress.zstd decode path in the PRODUCTION binary
@@ -220,9 +212,9 @@ pub const StreamingDecompressor = struct {
 /// a failure must not block the validator from voting.
 pub fn zstdSelfTest(allocator: Allocator) bool {
     const compressed = [_]u8{
-        40, 181, 47, 253, 100, 200, 4, 117, 1, 0, 84, 2, 86, 101, 120, 111, 114, 32, 122, 115,
-        116, 100, 32, 75, 65, 84, 58, 32, 116, 104, 101, 32, 113, 117, 105, 99, 107, 32, 98, 114,
-        111, 119, 110, 32, 102, 111, 120, 46, 32, 1, 0, 5, 13, 253, 234, 9, 36, 137, 253, 8,
+        40,  181, 47,  253, 100, 200, 4,   117, 1,   0,   84,  2,  86,  101, 120, 111, 114, 32,  122, 115,
+        116, 100, 32,  75,  65,  84,  58,  32,  116, 104, 101, 32, 113, 117, 105, 99,  107, 32,  98,  114,
+        111, 119, 110, 32,  102, 111, 120, 46,  32,  1,   0,   5,  13,  253, 234, 9,   36,  137, 253, 8,
     };
     const unit = "Vexor zstd KAT: the quick brown fox. ";
     const reps = 40;
@@ -250,17 +242,17 @@ test "compression type detection" {
 
 test "chunk queue" {
     const allocator = std.testing.allocator;
-    
+
     var queue = ChunkQueue(u32).init(allocator);
     defer queue.deinit();
-    
+
     try queue.push(1);
     try queue.push(2);
     try queue.push(3);
-    
+
     try std.testing.expectEqual(@as(u32, 1), queue.pop().?);
     try std.testing.expectEqual(@as(u32, 2), queue.pop().?);
-    
+
     queue.close();
     try std.testing.expectEqual(@as(u32, 3), queue.pop().?);
     try std.testing.expectEqual(@as(?u32, null), queue.pop());
@@ -268,10 +260,10 @@ test "chunk queue" {
 
 test "decompress progress" {
     var progress = DecompressProgress.init();
-    
+
     _ = progress.compressed_bytes_in.fetchAdd(1000, .monotonic);
     _ = progress.decompressed_bytes_out.fetchAdd(4000, .monotonic);
-    
+
     try std.testing.expect(progress.compressionRatio() > 3.9);
     try std.testing.expect(progress.compressionRatio() < 4.1);
 }
@@ -284,9 +276,9 @@ test "decompress progress" {
 test "perf#3: decompressZstd decodes a real zstd frame byte-exact" {
     const allocator = std.testing.allocator;
     const compressed = [_]u8{
-        40, 181, 47, 253, 100, 200, 4, 117, 1, 0, 84, 2, 86, 101, 120, 111, 114, 32, 122, 115,
-        116, 100, 32, 75, 65, 84, 58, 32, 116, 104, 101, 32, 113, 117, 105, 99, 107, 32, 98, 114,
-        111, 119, 110, 32, 102, 111, 120, 46, 32, 1, 0, 5, 13, 253, 234, 9, 36, 137, 253, 8,
+        40,  181, 47,  253, 100, 200, 4,   117, 1,   0,   84,  2,  86,  101, 120, 111, 114, 32,  122, 115,
+        116, 100, 32,  75,  65,  84,  58,  32,  116, 104, 101, 32, 113, 117, 105, 99,  107, 32,  98,  114,
+        111, 119, 110, 32,  102, 111, 120, 46,  32,  1,   0,   5,  13,  253, 234, 9,   36,  137, 253, 8,
     };
     const unit = "Vexor zstd KAT: the quick brown fox. ";
     const reps = 40;
@@ -308,4 +300,3 @@ test "perf#3: decompressZstd decodes a real zstd frame byte-exact" {
     var tiny: [16]u8 = undefined;
     try std.testing.expect(if (d.decompressZstd(&compressed, &tiny)) |_| false else |_| true);
 }
-

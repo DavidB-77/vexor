@@ -19,7 +19,6 @@
 ///   fd_runtime_read_genesis()          — genesis loading (snapshot.zig)
 ///
 /// Naming: camelCase, no fd_ prefix (Vexor convention).
-
 const std = @import("std");
 const vex_crypto = @import("vex_crypto");
 const types = @import("types.zig");
@@ -77,7 +76,7 @@ pub const AccountState = struct {
 /// fd_runtime.c:190-213 uses fd_rent_t to compute minimum exempt balance.
 pub const RentParams = struct {
     lamports_per_byte_year: u64,
-    exemption_threshold: f64,   // Typically 2.0 (years)
+    exemption_threshold: f64, // Typically 2.0 (years)
     burn_percent: u8,
 
     /// Compute minimum rent-exempt balance for an account of `data_len` bytes.
@@ -330,7 +329,7 @@ pub const SaveAccountResult = enum(u2) {
 ///       is a TODO stub — wire to Vexor's AccountsDb (storage/accounts.zig).
 pub fn saveAccount(
     bank_lthash: *LtHash,
-    old_state: ?AccountState,   // null → account didn't exist (new creation)
+    old_state: ?AccountState, // null → account didn't exist (new creation)
     new_state: AccountState,
 ) SaveAccountResult {
     // fd_runtime.c:1089-1093: compute lthash_prev
@@ -358,7 +357,7 @@ pub fn saveAccount(
 
     // fd_runtime.c:1096: save_type = (old_exist<<1) | new_exist
     const save_type: SaveAccountResult = switch ((@as(u2, if (old_exist) 1 else 0) << 1) |
-                                                  (@as(u2, if (new_exist) 1 else 0))) {
+        (@as(u2, if (new_exist) 1 else 0))) {
         3 => .UpdatedExisting,
         1 => .CreatedNew,
         2 => .Deleted,
@@ -412,7 +411,7 @@ pub fn saveAccount(
 pub fn updateBankHash(
     bank_lthash: *const LtHash,
     prev_bank_hash: *const Hash,
-    poh_hash: *const Hash,        // bank->f.poh — last entry hash in slot
+    poh_hash: *const Hash, // bank->f.poh — last entry hash in slot
     signature_count: u64,
 ) Hash {
     // fd_runtime.c:853-858: fd_hashes_hash_bank(lthash, prev_bank_hash, poh, sig_count)
@@ -579,7 +578,7 @@ pub fn commitTransaction(ctx: *CommitContext) CommitResult {
         }
         // fd_runtime.c:1226: accumulate fees even on failure
         ctx.total_execution_fees.* +|= ctx.execution_fee;
-        ctx.total_priority_fees.*  +|= ctx.priority_fee;
+        ctx.total_priority_fees.* +|= ctx.priority_fee;
         ctx.total_signature_count.* +|= ctx.signature_count;
         return .FailedRollback;
     }
@@ -592,8 +591,8 @@ pub fn commitTransaction(ctx: *CommitContext) CommitResult {
 
     // fd_runtime.c:1223-1239: atomically accumulate bank-level counters
     // fd_runtime.c:1226-1228: txn_count, execution_fees, priority_fees, signature_count
-    ctx.total_execution_fees.*  +|= ctx.execution_fee;
-    ctx.total_priority_fees.*   +|= ctx.priority_fee;
+    ctx.total_execution_fees.* +|= ctx.execution_fee;
+    ctx.total_priority_fees.* +|= ctx.priority_fee;
     ctx.total_signature_count.* +|= ctx.signature_count;
 
     // TODO: fd_txncache_insert (status cache) — fd_runtime.c:1251-1259
@@ -623,7 +622,7 @@ test "validateFeeCollector: accepts rent-exempt system-owned account" {
     const rent = RentParams{ .lamports_per_byte_year = 1, .exemption_threshold = 1.0, .burn_percent = 50 };
     const acc = AccountState{
         .pubkey = [_]u8{0} ** 32,
-        .lamports = 10_000_000,  // well above minimum
+        .lamports = 10_000_000, // well above minimum
         .owner = SYSTEM_PROGRAM_ID,
         .executable = false,
         .rent_epoch = 0,

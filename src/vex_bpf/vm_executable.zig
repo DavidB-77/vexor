@@ -9,16 +9,16 @@
 //!   fd_vm.h                   (fd_vm_init parameters: rodata, text_off, entry_pc)
 //!   agave: sbpf/src/elf.rs, sbpf/src/verifier.rs
 
-const std   = @import("std");
-const sbpf  = @import("vm_sbpf.zig");
-const mem   = @import("vm_memory.zig");
+const std = @import("std");
+const sbpf = @import("vm_sbpf.zig");
+const mem = @import("vm_memory.zig");
 
-const Version     = sbpf.Version;
+const Version = sbpf.Version;
 const Instruction = sbpf.Instruction;
-const Allocator   = std.mem.Allocator;
+const Allocator = std.mem.Allocator;
 
 // ── ELF machine types ─────────────────────────────────────────────────────────
-const EM_BPF:  u16 = 247;
+const EM_BPF: u16 = 247;
 const EM_SBPF: u16 = 263; // Solana-specific (SIMD-0189)
 
 // ── VM config ────────────────────────────────────────────────────────────────
@@ -45,8 +45,8 @@ pub const Config = struct {
 // fd_sbpf_calldests_t / sig/src/vm/executable.zig:Registry
 
 pub const FunctionEntry = struct {
-    name: []const u8,   // owned by registry
-    value: u64,         // instruction index (pc)
+    name: []const u8, // owned by registry
+    value: u64, // instruction index (pc)
 };
 
 pub const FunctionRegistry = struct {
@@ -148,51 +148,51 @@ pub const LoadError = error{
 // All matching elf.h / sig/src/vm/elf.zig ELF64 types.
 
 const Elf64Hdr = extern struct {
-    e_ident:     [16]u8,
-    e_type:      u16,
-    e_machine:   u16,
-    e_version:   u32,
-    e_entry:     u64,
-    e_phoff:     u64,
-    e_shoff:     u64,
-    e_flags:     u32,
-    e_ehsize:    u16,
+    e_ident: [16]u8,
+    e_type: u16,
+    e_machine: u16,
+    e_version: u32,
+    e_entry: u64,
+    e_phoff: u64,
+    e_shoff: u64,
+    e_flags: u32,
+    e_ehsize: u16,
     e_phentsize: u16,
-    e_phnum:     u16,
+    e_phnum: u16,
     e_shentsize: u16,
-    e_shnum:     u16,
-    e_shstrndx:  u16,
+    e_shnum: u16,
+    e_shstrndx: u16,
 };
 
 const Elf64Shdr = extern struct {
-    sh_name:      u32,
-    sh_type:      u32,
-    sh_flags:     u64,
-    sh_addr:      u64,
-    sh_offset:    u64,
-    sh_size:      u64,
-    sh_link:      u32,
-    sh_info:      u32,
+    sh_name: u32,
+    sh_type: u32,
+    sh_flags: u64,
+    sh_addr: u64,
+    sh_offset: u64,
+    sh_size: u64,
+    sh_link: u32,
+    sh_info: u32,
     sh_addralign: u64,
-    sh_entsize:   u64,
+    sh_entsize: u64,
 };
 
 const Elf64Sym = extern struct {
-    st_name:  u32,
-    st_info:  u8,
+    st_name: u32,
+    st_info: u8,
     st_other: u8,
     st_shndx: u16,
     st_value: u64,
-    st_size:  u64,
+    st_size: u64,
 };
 
-const SHT_NULL:    u32 = 0;
-const SHT_PROGBITS:u32 = 1;
-const SHT_SYMTAB:  u32 = 2;
-const SHT_STRTAB:  u32 = 3;
-const SHT_NOBITS:  u32 = 8;
-const SHF_ALLOC:   u64 = 0x2;
-const SHF_EXECINSTR:u64 = 0x4;
+const SHT_NULL: u32 = 0;
+const SHT_PROGBITS: u32 = 1;
+const SHT_SYMTAB: u32 = 2;
+const SHT_STRTAB: u32 = 3;
+const SHT_NOBITS: u32 = 8;
+const SHF_ALLOC: u64 = 0x2;
+const SHF_EXECINSTR: u64 = 0x4;
 
 // ELF flags field (e_flags) encodes sbpf version.
 // sig/src/vm/elf.zig:ElfFlags  /  agave: sbpf/src/elf.rs parse_sbpf_version
@@ -227,7 +227,7 @@ pub fn load(
 
     // Magic check
     if (!std.mem.eql(u8, hdr.e_ident[0..4], "\x7fELF")) return LoadError.InvalidMagic;
-    if (hdr.e_ident[4] != 2) return LoadError.InvalidClass;    // ELFCLASS64
+    if (hdr.e_ident[4] != 2) return LoadError.InvalidClass; // ELFCLASS64
     if (hdr.e_ident[5] != 1) return LoadError.InvalidEncoding; // little-endian
     if (hdr.e_machine != EM_BPF and hdr.e_machine != EM_SBPF)
         return LoadError.UnsupportedMachine;
@@ -236,10 +236,7 @@ pub fn load(
     // fd_vm.h / sig/src/vm/elf.zig:parseSbpfVersion
     const version: Version = blk: {
         const raw_ver = (hdr.e_flags >> 5) & 0xF; // upper nibble of flags
-        break :blk if (raw_ver >= 3) .v3
-               else if (raw_ver >= 2) .v2
-               else if (raw_ver >= 1 or (hdr.e_flags & ELF_FLAG_SBPF_V1 != 0)) .v1
-               else .v0;
+        break :blk if (raw_ver >= 3) .v3 else if (raw_ver >= 2) .v2 else if (raw_ver >= 1 or (hdr.e_flags & ELF_FLAG_SBPF_V1 != 0)) .v1 else .v0;
     };
     // Reject programs newer than our configured maximum.
     if (@intFromEnum(version) > @intFromEnum(config.maximum_version))
@@ -251,8 +248,8 @@ pub fn load(
 
     // Pass 1: find virtual address range of all ALLOC sections; find .text.
     var base_vaddr: u64 = std.math.maxInt(u64);
-    var top_vaddr:  u64 = 0;
-    var text_sh:   ?*const Elf64Shdr = null;
+    var top_vaddr: u64 = 0;
+    var text_sh: ?*const Elf64Shdr = null;
     var symtab_sh: ?*const Elf64Shdr = null;
     var strtab_sh: ?*const Elf64Shdr = null;
     {
@@ -297,11 +294,13 @@ pub fn load(
     }
 
     // Compute fd_vm_init parameters.
-    const text_off   = text.sh_addr - base_vaddr;
-    const text_size  = text.sh_size;
+    const text_off = text.sh_addr - base_vaddr;
+    const text_size = text.sh_size;
     const entry_byte: u64 = if (hdr.e_entry >= text.sh_addr and
         hdr.e_entry < text.sh_addr + text_size)
-        hdr.e_entry - text.sh_addr else 0;
+        hdr.e_entry - text.sh_addr
+    else
+        0;
     const entry_pc = entry_byte / 8;
 
     const text_vaddr = version.textVaddr();
@@ -329,21 +328,23 @@ pub fn load(
             const is_func = (sym.st_info & 0x0f) == 2; // STT_FUNC
             if (sname.len > 0 and sym.st_value != 0 and is_func) {
                 const sym_pc = if (sym.st_value >= text.sh_addr)
-                    (sym.st_value - text.sh_addr) / 8 else continue;
+                    (sym.st_value - text.sh_addr) / 8
+                else
+                    continue;
                 registry.register(allocator, sname, sym_pc) catch {}; // ignore OOM on extras
             }
         }
     }
 
     var exe = Executable{
-        .rodata            = rodata,
-        .instructions      = instructions,
-        .text_vaddr        = text_vaddr,
-        .entry_pc          = entry_pc,
-        .version           = version,
-        .config            = config,
+        .rodata = rodata,
+        .instructions = instructions,
+        .text_vaddr = text_vaddr,
+        .entry_pc = entry_pc,
+        .version = version,
+        .config = config,
         .function_registry = registry,
-        .allocator         = allocator,
+        .allocator = allocator,
     };
 
     // Verification pass (basic — full verifier is below).
@@ -358,17 +359,17 @@ pub fn load(
 
 fn verify(exe: *const Executable) LoadError!void {
     const insns = exe.instructions;
-    const ver   = exe.version;
-    const n     = insns.len;
+    const ver = exe.version;
+    const n = insns.len;
     if (n == 0) return LoadError.NoProgram;
 
     var i: usize = 0;
     while (i < n) : (i += 1) {
         const inst = insns[i];
-        const op   = inst.opcode;
-        const cls  = op & 0x07;
-        const dst: u4  = @truncate(inst.dst);
-        const src: u4  = @truncate(inst.src);
+        const op = inst.opcode;
+        const cls = op & 0x07;
+        const dst: u4 = @truncate(inst.dst);
+        const src: u4 = @truncate(inst.src);
         _ = src;
 
         // r10 is the frame pointer — writing it is illegal.

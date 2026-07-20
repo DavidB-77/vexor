@@ -135,14 +135,22 @@ pub const SnapshotService = struct {
         // Write metadata as fixed-size binary
         var buf: [128]u8 = undefined;
         var off: usize = 0;
-        @memcpy(buf[off..][0..8], "VXSNAP01"); off += 8;
-        std.mem.writeInt(u64, buf[off..][0..8], meta.slot, .little); off += 8;
-        @memcpy(buf[off..][0..32], &meta.bank_hash); off += 32;
-        std.mem.writeInt(u64, buf[off..][0..8], meta.parent_slot, .little); off += 8;
-        std.mem.writeInt(u64, buf[off..][0..8], meta.epoch, .little); off += 8;
-        std.mem.writeInt(u64, buf[off..][0..8], meta.lamports_total, .little); off += 8;
-        std.mem.writeInt(u64, buf[off..][0..8], meta.accounts_count, .little); off += 8;
-        std.mem.writeInt(i64, buf[off..][0..8], meta.timestamp, .little); off += 8;
+        @memcpy(buf[off..][0..8], "VXSNAP01");
+        off += 8;
+        std.mem.writeInt(u64, buf[off..][0..8], meta.slot, .little);
+        off += 8;
+        @memcpy(buf[off..][0..32], &meta.bank_hash);
+        off += 32;
+        std.mem.writeInt(u64, buf[off..][0..8], meta.parent_slot, .little);
+        off += 8;
+        std.mem.writeInt(u64, buf[off..][0..8], meta.epoch, .little);
+        off += 8;
+        std.mem.writeInt(u64, buf[off..][0..8], meta.lamports_total, .little);
+        off += 8;
+        std.mem.writeInt(u64, buf[off..][0..8], meta.accounts_count, .little);
+        off += 8;
+        std.mem.writeInt(i64, buf[off..][0..8], meta.timestamp, .little);
+        off += 8;
 
         file.writeAll(buf[0..off]) catch {};
 

@@ -110,18 +110,18 @@ else
     "background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0";
 
 // vex-fd modules
-const vex_svm     = @import("vex_svm");
-const vex_crypto  = @import("vex_crypto");
-const vex_store   = @import("vex_store");
+const vex_svm = @import("vex_svm");
+const vex_crypto = @import("vex_crypto");
+const vex_store = @import("vex_store");
 const vex_network = @import("vex_network");
 const vex_consensus = @import("vex_consensus");
-const core        = @import("core");
-const vex_bpf2    = @import("vex_bpf2");
-const vex_topo    = @import("vex_topo"); // Phase 9: declarative tile→core topology table
+const core = @import("core");
+const vex_bpf2 = @import("vex_bpf2");
+const vex_topo = @import("vex_topo"); // Phase 9: declarative tile→core topology table
 
 // vex_svm sub-exports (accessed via module import, not raw file paths)
 const bootstrap_mod = vex_svm.bootstrap;
-const replay_mod    = vex_svm.replay_stage;
+const replay_mod = vex_svm.replay_stage;
 
 // ── CPU pinning helper ───────────────────────────────────────────────────────
 
@@ -155,13 +155,13 @@ fn signalHandler(sig: c_int) callconv(.c) void {
     }
 
     const msg = switch (sig) {
-        2  => "[SIGNAL] Received SIGINT (2)\n",
+        2 => "[SIGNAL] Received SIGINT (2)\n",
         15 => "[SIGNAL] Received SIGTERM (15)\n",
-        1  => "[SIGNAL] Received SIGHUP (1)\n",
-        6  => "[SIGNAL] Received SIGABRT (6)\n",
-        7  => "[SIGNAL] Received SIGBUS (7)\n",
-        8  => "[SIGNAL] Received SIGFPE (8)\n",
-        4  => "[SIGNAL] Received SIGILL (4)\n",
+        1 => "[SIGNAL] Received SIGHUP (1)\n",
+        6 => "[SIGNAL] Received SIGABRT (6)\n",
+        7 => "[SIGNAL] Received SIGBUS (7)\n",
+        8 => "[SIGNAL] Received SIGFPE (8)\n",
+        4 => "[SIGNAL] Received SIGILL (4)\n",
         11 => "[SIGNAL] Received SIGSEGV (11) - SEGFAULT!\n",
         else => "[SIGNAL] Received unknown signal\n",
     };
@@ -182,8 +182,8 @@ fn installSignalHandlers() void {
     for (signals) |sig| {
         const act = std.posix.Sigaction{
             .handler = .{ .handler = signalHandler },
-            .mask    = @as(std.posix.sigset_t, @bitCast([_]u8{0} ** @sizeOf(std.posix.sigset_t))),
-            .flags   = 0,
+            .mask = @as(std.posix.sigset_t, @bitCast([_]u8{0} ** @sizeOf(std.posix.sigset_t))),
+            .flags = 0,
         };
         std.posix.sigaction(sig, &act, null);
     }
@@ -374,7 +374,7 @@ pub fn main() !void {
         for (args[2..], 0..) |arg, i| {
             rpc_args[i + 2] = arg;
         }
-        try runValidator(allocator, rpc_args[0 .. args.len]);
+        try runValidator(allocator, rpc_args[0..args.len]);
     } else if (std.mem.eql(u8, command, "version")) {
         printVersion();
     } else if (std.mem.eql(u8, command, "help")) {
@@ -729,14 +729,14 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         const is_x86_64 = @import("builtin").cpu.arch == .x86_64;
         const cpufiles = @import("builtin").cpu.features;
         const has_avx512 = if (is_x86_64) std.Target.x86.featureSetHas(cpufiles, .avx512f) else false;
-        const has_avx2   = if (is_x86_64) std.Target.x86.featureSetHas(cpufiles, .avx2)   else false;
-        const has_gfni   = if (is_x86_64) std.Target.x86.featureSetHas(cpufiles, .gfni)   else false;
+        const has_avx2 = if (is_x86_64) std.Target.x86.featureSetHas(cpufiles, .avx2) else false;
+        const has_gfni = if (is_x86_64) std.Target.x86.featureSetHas(cpufiles, .gfni) else false;
 
         std.log.debug("\nExecution Environment:\n", .{});
         std.log.debug("  CPU Architecture: {s}\n", .{@tagName(@import("builtin").cpu.arch)});
-        std.log.debug("  AVX-512:  {s}\n", .{if (has_avx512) "ENABLED"  else "disabled"});
-        std.log.debug("  AVX2:     {s}\n", .{if (has_avx2)   "ACTIVE"   else "MISSING"});
-        std.log.debug("  GFNI:     {s}\n", .{if (has_gfni)   "ACTIVE"   else "MISSING"});
+        std.log.debug("  AVX-512:  {s}\n", .{if (has_avx512) "ENABLED" else "disabled"});
+        std.log.debug("  AVX2:     {s}\n", .{if (has_avx2) "ACTIVE" else "MISSING"});
+        std.log.debug("  GFNI:     {s}\n", .{if (has_gfni) "ACTIVE" else "MISSING"});
         std.log.debug("  Shred version: {d}\n", .{config.expected_shred_version orelse 0});
         std.log.debug("\n", .{});
     }
@@ -777,19 +777,19 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         }
 
         const bootstrap_config = bootstrap_mod.BootstrapConfig{
-            .identity_path             = config.identity_path.?,
-            .vote_account_path         = config.vote_account_path,
-            .ledger_dir                = config.ledger_path,
-            .accounts_dir              = config.accounts_path,
-            .snapshots_dir             = config.snapshots_path,
-            .rpc_url_override          = config.rpc_url_override,
-            .cluster                   = @tagName(config.cluster),
-            .enable_voting             = config.enable_voting,
-            .enable_parallel_snapshot  = config.enable_parallel_snapshot,
+            .identity_path = config.identity_path.?,
+            .vote_account_path = config.vote_account_path,
+            .ledger_dir = config.ledger_path,
+            .accounts_dir = config.accounts_path,
+            .snapshots_dir = config.snapshots_path,
+            .rpc_url_override = config.rpc_url_override,
+            .cluster = @tagName(config.cluster),
+            .enable_voting = config.enable_voting,
+            .enable_parallel_snapshot = config.enable_parallel_snapshot,
             .parallel_snapshot_threads = @intCast(config.parallel_snapshot_threads),
-            .force_fresh_snapshot      = config.force_fresh_snapshot,
+            .force_fresh_snapshot = config.force_fresh_snapshot,
             // Genesis mode: skip snapshot, create empty slot-0 bank for localnet
-            .genesis_mode              = (config.cluster == .localnet),
+            .genesis_mode = (config.cluster == .localnet),
         };
 
         var bootstrap = try bootstrap_mod.ValidatorBootstrap.init(allocator, bootstrap_config);
@@ -865,18 +865,22 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
             const stats = live_feature_set.loadFromAccountsDb(allocator, result.accounts_db) catch |err| blk: {
                 std.debug.print("[FEATURES] loadFromAccountsDb error: {any} — FeatureSet will be empty\n", .{err});
                 break :blk vex_svm.features.FeatureSet.LoadStats{
-                    .total_known = 0, .found = 0, .activated = 0, .pending = 0,
-                    .skipped_bad_owner = 0, .skipped_bad_size = 0, .skipped_parse_error = 0,
+                    .total_known = 0,
+                    .found = 0,
+                    .activated = 0,
+                    .pending = 0,
+                    .skipped_bad_owner = 0,
+                    .skipped_bad_size = 0,
+                    .skipped_parse_error = 0,
                 };
             };
             const current_slot: u64 = result.root_bank.slot;
             std.debug.print(
                 "[FEATURES] Loaded {d} activated / {d} total known features (current slot {d}; {d} pending, {d} accounts not found, owner-skip {d}, size-skip {d}, parse-skip {d})\n",
                 .{
-                    stats.activated, stats.total_known, current_slot,
-                    stats.pending,
-                    stats.total_known - stats.found,
-                    stats.skipped_bad_owner, stats.skipped_bad_size, stats.skipped_parse_error,
+                    stats.activated,        stats.total_known,               current_slot,
+                    stats.pending,          stats.total_known - stats.found, stats.skipped_bad_owner,
+                    stats.skipped_bad_size, stats.skipped_parse_error,
                 },
             );
         }
@@ -935,7 +939,9 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                     // Leader not found — likely crossed an epoch boundary.
                     // Trigger a background re-fetch at most once per 1000 slots to avoid
                     // hammering RPC. lookup() is called from replay, not the hot-path inner loop.
-                    const S = struct { var last_fetch_slot: u64 = 0; };
+                    const S = struct {
+                        var last_fetch_slot: u64 = 0;
+                    };
                     if (slot_val > S.last_fetch_slot + 1000) {
                         S.last_fetch_slot = slot_val;
                         std.log.debug("[LeaderLookup] Epoch boundary detected at slot {d}, refreshing schedule...\n", .{slot_val});
@@ -1060,11 +1066,11 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         if (config.public_ip) |ip| {
             gossip_svc.setSelfInfo(
                 ip,
-                config.gossip_port,     // 8000
-                config.tpu_port,        // 8004
-                config.tvu_port,        // 8003
-                config.repair_port,     // 8002
-                config.rpc_port,        // 8899
+                config.gossip_port, // 8000
+                config.tpu_port, // 8004
+                config.tvu_port, // 8003
+                config.repair_port, // 8002
+                config.rpc_port, // 8899
             );
             std.log.debug("[MAIN] Gossip ContactInfo set: {d}.{d}.{d}.{d}\n", .{ ip[0], ip[1], ip[2], ip[3] });
         } else {
@@ -1118,8 +1124,8 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         var tvu_config = vex_network.TvuService.Config{};
         tvu_config.shred_version = config.expected_shred_version orelse 0;
         tvu_config.keypair = &identity_kp;
-        tvu_config.tvu_port = config.tvu_port;       // 8003
-        tvu_config.repair_port = config.repair_port;  // 8002
+        tvu_config.tvu_port = config.tvu_port; // 8003
+        tvu_config.repair_port = config.repair_port; // 8002
         // d27i (2026-05-11): wire the global --repair-interface / --interface flags
         // into the TVU config. Without this, tvu_config.repair_interface stayed ""
         // (default), the condition at tvu.zig:549 `repair_interface.len > 0` was
@@ -2185,10 +2191,11 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 // 28-31 is permitted (no cpuset cgroup confinement — confirmed by
                 // the worker's own pinToCore(28) taking effect).
                 const argv = [_][]const u8{
-                    "/usr/bin/taskset", "-c", "28-31",
-                    "/usr/bin/curl", "-s", "-o", "/dev/null", "-m", "5", "-X", "POST",
-                    "-H",  "Content-Type: application/json",
-                    "-d",  body,
+                    "/usr/bin/taskset",               "-c",   "28-31",
+                    "/usr/bin/curl",                  "-s",   "-o",
+                    "/dev/null",                      "-m",   "5",
+                    "-X",                             "POST", "-H",
+                    "Content-Type: application/json", "-d",   body,
                     rpc_endpoint,
                 };
                 // Stage 0 (2026-06-17): spawn curl WITHOUT copying the validator's
@@ -2917,7 +2924,7 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         tvu_config.shred_version = config.expected_shred_version orelse 0;
         for (args) |arg| {
             if (std.mem.eql(u8, arg, "--enable-af-xdp")) tvu_config.enable_af_xdp = true;
-            if (std.mem.eql(u8, arg, "--xdp-zero-copy"))  tvu_config.xdp_zero_copy  = true;
+            if (std.mem.eql(u8, arg, "--xdp-zero-copy")) tvu_config.xdp_zero_copy = true;
         }
 
         var tvu_svc = try vex_network.TvuService.init(allocator, tvu_config);
@@ -3036,4 +3043,3 @@ fn printUsage() void {
     // levels (the reason `vex-fd help` / `--help` previously appeared to print nothing).
     std.debug.print("{s}", .{usage});
 }
-

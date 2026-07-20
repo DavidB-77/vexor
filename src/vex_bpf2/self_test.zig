@@ -53,17 +53,17 @@ pub const Report = struct {
 // ──────────────────────────────────────────────────────────────────────────────
 
 const MODULES = [_]ModuleStatus{
-    .{ .name = "M1 elf parser",        .state = .ok,        .api_count =  8, .test_count = 19, .note = "" },
-    .{ .name = "M2 memory",            .state = .ok,        .api_count =  6, .test_count = 21, .note = "" },
-    .{ .name = "M3 verifier",          .state = .ok,        .api_count =  4, .test_count = 50, .note = "" },
-    .{ .name = "M4 interpreter",       .state = .ok,        .api_count =  5, .test_count = 19, .note = "" },
-    .{ .name = "M5 serialize",         .state = .ok,        .api_count =  6, .test_count = 13, .note = "" },
-    .{ .name = "M6 syscalls",          .state = .partial,   .api_count = 42, .test_count = 30, .note = "registered=42, placeholders=9" },
-    .{ .name = "M7 cpi",               .state = .ok,        .api_count =  4, .test_count = 16, .note = "MAX_DEPTH=5" },
-    .{ .name = "M8 invoke_ctx",        .state = .ok,        .api_count = 10, .test_count =  8, .note = "" },
-    .{ .name = "M8 sysvar_cache",      .state = .ok,        .api_count = 18, .test_count =  8, .note = "vex-058 locked" },
-    .{ .name = "M8 loader",            .state = .ok,        .api_count =  2, .test_count =  8, .note = "9 ix variants" },
-    .{ .name = "M9 builtins",          .state = .partial,   .api_count =  7, .test_count = 40, .note = "full=2, parser-only=4, skeleton=1" },
+    .{ .name = "M1 elf parser", .state = .ok, .api_count = 8, .test_count = 19, .note = "" },
+    .{ .name = "M2 memory", .state = .ok, .api_count = 6, .test_count = 21, .note = "" },
+    .{ .name = "M3 verifier", .state = .ok, .api_count = 4, .test_count = 50, .note = "" },
+    .{ .name = "M4 interpreter", .state = .ok, .api_count = 5, .test_count = 19, .note = "" },
+    .{ .name = "M5 serialize", .state = .ok, .api_count = 6, .test_count = 13, .note = "" },
+    .{ .name = "M6 syscalls", .state = .partial, .api_count = 42, .test_count = 30, .note = "registered=42, placeholders=9" },
+    .{ .name = "M7 cpi", .state = .ok, .api_count = 4, .test_count = 16, .note = "MAX_DEPTH=5" },
+    .{ .name = "M8 invoke_ctx", .state = .ok, .api_count = 10, .test_count = 8, .note = "" },
+    .{ .name = "M8 sysvar_cache", .state = .ok, .api_count = 18, .test_count = 8, .note = "vex-058 locked" },
+    .{ .name = "M8 loader", .state = .ok, .api_count = 2, .test_count = 8, .note = "9 ix variants" },
+    .{ .name = "M9 builtins", .state = .partial, .api_count = 7, .test_count = 40, .note = "full=2, parser-only=4, skeleton=1" },
 };
 
 // ──────────────────────────────────────────────────────────────────────────────

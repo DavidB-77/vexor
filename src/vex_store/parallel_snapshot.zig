@@ -682,7 +682,7 @@ pub const ParallelSnapshotLoader = struct {
         var snapshot_lthash: ?[2048]u8 = null;
         var file_sz_map = if (manifest_slot > 0) blk: {
             const m = snapshot_manifest.parseManifest(self.allocator, snapshot_dir, manifest_slot) catch |err| {
-                std.log.debug("[ParallelLoader] Manifest parse failed (slot={d}): {} — using stat() sizes\n", .{manifest_slot, err});
+                std.log.debug("[ParallelLoader] Manifest parse failed (slot={d}): {} — using stat() sizes\n", .{ manifest_slot, err });
                 break :blk snapshot_manifest.FileSzMap.init(self.allocator);
             };
             std.log.debug("[ParallelLoader] Manifest parsed: {d} AppendVec sizes loaded, {d} staked vote accounts captured, {d} per-epoch stake tables\n", .{
@@ -699,7 +699,9 @@ pub const ParallelSnapshotLoader = struct {
             if (m.signature_count) |sc| self.snapshot_signature_count = sc;
             // task #28: capture the EFFECTIVE PoH cadence (was discarded). hashes_per_tick None =
             // low-power → keep the 62500 testnet default rather than 0.
-            if (m.hashes_per_tick) |hpt| { if (hpt > 1) self.snapshot_hashes_per_tick = hpt; }
+            if (m.hashes_per_tick) |hpt| {
+                if (hpt > 1) self.snapshot_hashes_per_tick = hpt;
+            }
             // verify_ticks: preserve the RAW Option (un-defaulted) for canonical
             // `unwrap_or(0)` semantics in the tick-validity gate.
             self.snapshot_hashes_per_tick_raw = m.hashes_per_tick;
@@ -748,7 +750,10 @@ pub const ParallelSnapshotLoader = struct {
                     if (mf.hard_forks.len > 0) self.allocator.free(@constCast(mf.hard_forks));
 
                     if (snapshot_manifest.mergeFileSzMapsByProvenance(
-                        self.allocator, full_slot, &mf_map, &m.file_sz_map,
+                        self.allocator,
+                        full_slot,
+                        &mf_map,
+                        &m.file_sz_map,
                     )) |merged| {
                         var primary_map = m.file_sz_map;
                         primary_map.deinit();
@@ -784,7 +789,7 @@ pub const ParallelSnapshotLoader = struct {
         // higher-slot-wins guard a no-op — full's SlotHistory could clobber
         // the incremental's, leaving ~96k stale bits at boot.
         var file_paths = std.ArrayListUnmanaged([]const u8){};
-        var file_ids   = std.ArrayListUnmanaged(u64){};
+        var file_ids = std.ArrayListUnmanaged(u64){};
         var file_slots = std.ArrayListUnmanaged(u64){};
         defer {
             for (file_paths.items) |p| self.allocator.free(p);
@@ -803,7 +808,7 @@ pub const ParallelSnapshotLoader = struct {
             // would re-enable the bug r52+r53 closes.
             const dot_pos = std.mem.lastIndexOf(u8, entry.name, ".") orelse continue;
             const slot = std.fmt.parseInt(u64, entry.name[0..dot_pos], 10) catch continue;
-            const id = std.fmt.parseInt(u64, entry.name[dot_pos+1..], 10) catch continue;
+            const id = std.fmt.parseInt(u64, entry.name[dot_pos + 1 ..], 10) catch continue;
             const full_path = try std.fs.path.join(self.allocator, &.{ accounts_path, entry.name });
             try file_paths.append(self.allocator, full_path);
             try file_ids.append(self.allocator, id);
@@ -853,7 +858,10 @@ pub const ParallelSnapshotLoader = struct {
                     const fkey = (@as(u128, ctx.file_slots[i]) << 64) | @as(u128, ctx.file_ids[i]);
                     const file_sz = ctx.file_sz_map.get(fkey);
                     const result = ctx.loader.mmapAndIndex(
-                        ctx.file_paths[i], ctx.file_slots[i], file_sz, ctx.accounts_db,
+                        ctx.file_paths[i],
+                        ctx.file_slots[i],
+                        file_sz,
+                        ctx.accounts_db,
                     ) catch |err| {
                         const cur = ctx.error_count.fetchAdd(1, .monotonic);
                         // r72-perm-fix (2026-05-05): keep the first 5 errors at .warn

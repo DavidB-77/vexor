@@ -19,7 +19,6 @@
 ///   Vote, System, ComputeBudget, ZkElGamal, BpfLoader1/2/Upgradeable, LoaderV4
 ///
 /// Naming: camelCase, no fd_ prefix (Vexor convention).
-
 const std = @import("std");
 const vex_crypto = @import("vex_crypto");
 const types = @import("types.zig");
@@ -132,62 +131,62 @@ const SECP256R1_PRECOMPILE_ID: [32]u8 = .{
 /// Instruction-level error codes.
 /// Mirrors FD_EXECUTOR_INSTR_ERR_* (fd_executor.c:1549-1651).
 pub const InstrError = enum(i32) {
-    Success                    = 0,
-    Fatal                      = -1,
-    GenericError               = 1,
-    InvalidArg                 = 2,
-    InvalidInstrData           = 3,
-    InvalidAccData             = 4,
-    AccDataTooSmall            = 5,
-    InsufficientFunds          = 6,
-    IncorrectProgramId         = 7,
-    MissingRequiredSignature   = 8,
-    AccAlreadyInitialized      = 9,
-    UninitializedAccount       = 10,
-    UnbalancedInstr            = 11,
-    ModifiedProgramId          = 12,
+    Success = 0,
+    Fatal = -1,
+    GenericError = 1,
+    InvalidArg = 2,
+    InvalidInstrData = 3,
+    InvalidAccData = 4,
+    AccDataTooSmall = 5,
+    InsufficientFunds = 6,
+    IncorrectProgramId = 7,
+    MissingRequiredSignature = 8,
+    AccAlreadyInitialized = 9,
+    UninitializedAccount = 10,
+    UnbalancedInstr = 11,
+    ModifiedProgramId = 12,
     ExternalAccountLamportSpend = 13,
-    ExternalDataModified       = 14,
-    ReadonlyLamportChange      = 15,
-    ReadonlyDataModified       = 16,
-    DuplicateAccountIdx        = 17,
-    ExecutableModified         = 18,
-    RentEpochModified          = 19,
-    NotEnoughAccKeys           = 20,
-    AccDataSizeChanged         = 21,
-    AccNotExecutable           = 22,
-    AccBorrowFailed            = 23,
-    AccBorrowOutstanding       = 24,
-    DuplicateAccountOutOfSync  = 25,
-    CustomError                = 26,
-    InvalidError               = 27,
-    ExecutableDataModified     = 28,
-    ExecutableLamportChange    = 29,
+    ExternalDataModified = 14,
+    ReadonlyLamportChange = 15,
+    ReadonlyDataModified = 16,
+    DuplicateAccountIdx = 17,
+    ExecutableModified = 18,
+    RentEpochModified = 19,
+    NotEnoughAccKeys = 20,
+    AccDataSizeChanged = 21,
+    AccNotExecutable = 22,
+    AccBorrowFailed = 23,
+    AccBorrowOutstanding = 24,
+    DuplicateAccountOutOfSync = 25,
+    CustomError = 26,
+    InvalidError = 27,
+    ExecutableDataModified = 28,
+    ExecutableLamportChange = 29,
     ExecutableAccountNotRentExempt = 30,
-    UnsupportedProgramId       = 31,
-    CallDepth                  = 32,
-    MissingAcc                 = 33,
-    ReentrancyNotAllowed       = 34,
-    MaxSeedLengthExceeded      = 35,
-    InvalidSeeds               = 36,
-    InvalidRealloc             = 37,
-    ComputeBudgetExceeded      = 38,
-    PrivilegeEscalation        = 39,
+    UnsupportedProgramId = 31,
+    CallDepth = 32,
+    MissingAcc = 33,
+    ReentrancyNotAllowed = 34,
+    MaxSeedLengthExceeded = 35,
+    InvalidSeeds = 36,
+    InvalidRealloc = 37,
+    ComputeBudgetExceeded = 38,
+    PrivilegeEscalation = 39,
     ProgramEnvironmentSetupFailure = 40,
-    ProgramFailedToComplete    = 41,
-    ProgramFailedToCompile     = 42,
-    AccImmutable               = 43,
-    IncorrectAuthority         = 44,
-    BorshIoError               = 45,
-    AccNotRentExempt           = 46,
-    InvalidAccOwner            = 47,
-    ArithmeticOverflow         = 48,
-    UnsupportedSysvar          = 49,
-    IllegalOwner               = 50,
-    MaxAccsDataAllocsExceeded  = 51,
-    MaxAccsExceeded            = 52,
-    MaxInsnTraceLensExceeded   = 53,
-    BuiltinsMustConsumeCUs     = 54,
+    ProgramFailedToComplete = 41,
+    ProgramFailedToCompile = 42,
+    AccImmutable = 43,
+    IncorrectAuthority = 44,
+    BorshIoError = 45,
+    AccNotRentExempt = 46,
+    InvalidAccOwner = 47,
+    ArithmeticOverflow = 48,
+    UnsupportedSysvar = 49,
+    IllegalOwner = 50,
+    MaxAccsDataAllocsExceeded = 51,
+    MaxAccsExceeded = 52,
+    MaxInsnTraceLensExceeded = 53,
+    BuiltinsMustConsumeCUs = 54,
 };
 
 /// Transaction-level error codes.
@@ -264,7 +263,7 @@ pub fn rentTransitionAllowed(pre: RentState, post: RentState) bool {
             .RentPaying => |pre_rp| {
                 // fd_executor.c:123-124: data_size must match, lamports can only decrease
                 return post_rp.data_size == pre_rp.data_size and
-                       post_rp.lamports <= pre_rp.lamports;
+                    post_rp.lamports <= pre_rp.lamports;
             },
         },
     };
@@ -279,21 +278,21 @@ pub fn rentTransitionAllowed(pre: RentState, post: RentState) bool {
 /// fd_executor.c:65-72: VOTE, SYS, COMPUTE_BUDGET, ZK_EL_GAMAL, BPF_LOADER_1/2/UPGRADEABLE, LOADER_V4
 pub const NativeProgramKind = enum {
     // ── Precompiles (checked first, fd_executor.c:103-108) ──
-    Ed25519Precompile,    // fd_precompiles.c:452: ED25519_SV_PROG_ID → fd_precompile_ed25519_verify
-    Secp256k1Precompile,  // fd_precompiles.c:453: KECCAK_SECP_PROG_ID → fd_precompile_secp256k1_verify
-    Secp256r1Precompile,  // fd_precompiles.c:454: SECP256R1_PROG_ID → fd_precompile_secp256r1_verify
+    Ed25519Precompile, // fd_precompiles.c:452: ED25519_SV_PROG_ID → fd_precompile_ed25519_verify
+    Secp256k1Precompile, // fd_precompiles.c:453: KECCAK_SECP_PROG_ID → fd_precompile_secp256k1_verify
+    Secp256r1Precompile, // fd_precompiles.c:454: SECP256R1_PROG_ID → fd_precompile_secp256r1_verify
 
     // ── Native builtins ──
-    Vote,           // fd_executor.c:65: VOTE_PROG_ID → fd_vote_program_execute
-    System,         // fd_executor.c:66: SYS_PROG_ID → fd_system_program_execute
-    ComputeBudget,  // fd_executor.c:67: COMPUTE_BUDGET_PROG_ID → fd_compute_budget_program_execute
-    ZkElGamal,      // fd_executor.c:68: ZK_EL_GAMAL_PROG_ID → fd_executor_zk_elgamal_proof_program_execute
-    BpfLoader1,     // fd_executor.c:69: BPF_LOADER_1_PROG_ID → fd_bpf_loader_program_execute (.is_bpf_loader=1)
-    BpfLoader2,     // fd_executor.c:70: BPF_LOADER_2_PROG_ID → fd_bpf_loader_program_execute (.is_bpf_loader=1)
+    Vote, // fd_executor.c:65: VOTE_PROG_ID → fd_vote_program_execute
+    System, // fd_executor.c:66: SYS_PROG_ID → fd_system_program_execute
+    ComputeBudget, // fd_executor.c:67: COMPUTE_BUDGET_PROG_ID → fd_compute_budget_program_execute
+    ZkElGamal, // fd_executor.c:68: ZK_EL_GAMAL_PROG_ID → fd_executor_zk_elgamal_proof_program_execute
+    BpfLoader1, // fd_executor.c:69: BPF_LOADER_1_PROG_ID → fd_bpf_loader_program_execute (.is_bpf_loader=1)
+    BpfLoader2, // fd_executor.c:70: BPF_LOADER_2_PROG_ID → fd_bpf_loader_program_execute (.is_bpf_loader=1)
     BpfLoaderUpgradeable, // fd_executor.c:71: BPF_UPGRADEABLE_PROG_ID → fd_bpf_loader_program_execute (.is_bpf_loader=1)
-    LoaderV4,       // fd_executor.c:72: LOADER_V4_PROG_ID → fd_loader_v4_program_execute (.is_bpf_loader=1)
-    Bpf,            // BPF program: dispatch to sBPF executor (vex_bpf)
-    Unknown,        // No matching program found
+    LoaderV4, // fd_executor.c:72: LOADER_V4_PROG_ID → fd_loader_v4_program_execute (.is_bpf_loader=1)
+    Bpf, // BPF program: dispatch to sBPF executor (vex_bpf)
+    Unknown, // No matching program found
 
     /// Returns true if this kind is a precompile (not a native builtin).
     /// Used to skip return_data reset (fd_executor.c:1163).
@@ -310,9 +309,9 @@ pub const NativeProgramKind = enum {
 /// fd_executor.c:78-81
 pub fn isBpfLoader(program_id: *const [32]u8) bool {
     return std.mem.eql(u8, program_id, &BPF_LOADER_1_PROG_ID) or
-           std.mem.eql(u8, program_id, &BPF_LOADER_2_PROG_ID) or
-           std.mem.eql(u8, program_id, &BPF_UPGRADEABLE_PROG_ID) or
-           std.mem.eql(u8, program_id, &LOADER_V4_PROG_ID);
+        std.mem.eql(u8, program_id, &BPF_LOADER_2_PROG_ID) or
+        std.mem.eql(u8, program_id, &BPF_UPGRADEABLE_PROG_ID) or
+        std.mem.eql(u8, program_id, &LOADER_V4_PROG_ID);
 }
 
 /// Look up the native program for a given program ID and owner.
@@ -334,7 +333,7 @@ pub fn lookupNativeProgram(
 ) InstrError!NativeProgramKind {
     // fd_executor.c:103-108: precompile check (ed25519, secp256k1, secp256r1)
     // fd_executor_lookup_native_precompile_program() — checked BEFORE native loader
-    if (std.mem.eql(u8, program_id, &ED25519_PRECOMPILE_ID))  return .Ed25519Precompile;
+    if (std.mem.eql(u8, program_id, &ED25519_PRECOMPILE_ID)) return .Ed25519Precompile;
     if (std.mem.eql(u8, program_id, &SECP256K1_PRECOMPILE_ID)) return .Secp256k1Precompile;
     if (std.mem.eql(u8, program_id, &SECP256R1_PRECOMPILE_ID)) return .Secp256r1Precompile;
 
@@ -352,14 +351,14 @@ pub fn lookupNativeProgram(
     const lookup = if (is_native) program_id else owner;
 
     // fd_executor.c:130-146: perfect hash lookup in dispatch table
-    if (std.mem.eql(u8, lookup, &VOTE_PROG_ID))          return .Vote;
-    if (std.mem.eql(u8, lookup, &SYS_PROG_ID))           return .System;
+    if (std.mem.eql(u8, lookup, &VOTE_PROG_ID)) return .Vote;
+    if (std.mem.eql(u8, lookup, &SYS_PROG_ID)) return .System;
     if (std.mem.eql(u8, lookup, &COMPUTE_BUDGET_PROG_ID)) return .ComputeBudget;
-    if (std.mem.eql(u8, lookup, &ZK_ELGAMAL_PROG_ID))    return .ZkElGamal;
-    if (std.mem.eql(u8, lookup, &BPF_LOADER_1_PROG_ID))  return .BpfLoader1;
-    if (std.mem.eql(u8, lookup, &BPF_LOADER_2_PROG_ID))  return .BpfLoader2;
+    if (std.mem.eql(u8, lookup, &ZK_ELGAMAL_PROG_ID)) return .ZkElGamal;
+    if (std.mem.eql(u8, lookup, &BPF_LOADER_1_PROG_ID)) return .BpfLoader1;
+    if (std.mem.eql(u8, lookup, &BPF_LOADER_2_PROG_ID)) return .BpfLoader2;
     if (std.mem.eql(u8, lookup, &BPF_UPGRADEABLE_PROG_ID)) return .BpfLoaderUpgradeable;
-    if (std.mem.eql(u8, lookup, &LOADER_V4_PROG_ID))     return .LoaderV4;
+    if (std.mem.eql(u8, lookup, &LOADER_V4_PROG_ID)) return .LoaderV4;
 
     // fd_executor.c:139-141: native program not in table → UnsupportedProgramId
     // (also covers migrated programs that now run as BPF)
@@ -383,10 +382,10 @@ pub const MAX_INSTR_TRACE: usize = 64;
 /// Instruction stack entry — mirrors fd_exec_instr_ctx_t (simplified).
 /// fd_executor.c:1131-1138: fields populated in fd_execute_instr()
 pub const InstrStackEntry = struct {
-    program_id_idx: u16,         // Index into transaction account keys
-    program_id: [32]u8,          // Resolved program pubkey
-    starting_lamports_hi: u64,   // High bits of account sum before instruction (128-bit)
-    starting_lamports_lo: u64,   // Low bits of account sum before instruction
+    program_id_idx: u16, // Index into transaction account keys
+    program_id: [32]u8, // Resolved program pubkey
+    starting_lamports_hi: u64, // High bits of account sum before instruction (128-bit)
+    starting_lamports_lo: u64, // Low bits of account sum before instruction
 };
 
 /// Instruction execution stack.
@@ -744,62 +743,62 @@ pub fn transactionCheck(
 /// Matches Agave's log output format for instruction errors.
 pub fn instrErrorString(err: InstrError) []const u8 {
     return switch (err) {
-        .Success                    => "",
-        .Fatal                      => "",
-        .GenericError               => "generic instruction error",
-        .InvalidArg                 => "invalid program argument",
-        .InvalidInstrData           => "invalid instruction data",
-        .InvalidAccData             => "invalid account data for instruction",
-        .AccDataTooSmall            => "account data too small for instruction",
-        .InsufficientFunds          => "insufficient funds for instruction",
-        .IncorrectProgramId         => "incorrect program id for instruction",
-        .MissingRequiredSignature   => "missing required signature for instruction",
-        .AccAlreadyInitialized      => "instruction requires an uninitialized account",
-        .UninitializedAccount       => "instruction requires an initialized account",
-        .UnbalancedInstr            => "sum of account balances before and after instruction do not match",
-        .ModifiedProgramId          => "instruction illegally modified the program id of an account",
+        .Success => "",
+        .Fatal => "",
+        .GenericError => "generic instruction error",
+        .InvalidArg => "invalid program argument",
+        .InvalidInstrData => "invalid instruction data",
+        .InvalidAccData => "invalid account data for instruction",
+        .AccDataTooSmall => "account data too small for instruction",
+        .InsufficientFunds => "insufficient funds for instruction",
+        .IncorrectProgramId => "incorrect program id for instruction",
+        .MissingRequiredSignature => "missing required signature for instruction",
+        .AccAlreadyInitialized => "instruction requires an uninitialized account",
+        .UninitializedAccount => "instruction requires an initialized account",
+        .UnbalancedInstr => "sum of account balances before and after instruction do not match",
+        .ModifiedProgramId => "instruction illegally modified the program id of an account",
         .ExternalAccountLamportSpend => "instruction spent from the balance of an account it does not own",
-        .ExternalDataModified       => "instruction modified data of an account it does not own",
-        .ReadonlyLamportChange      => "instruction changed the balance of a read-only account",
-        .ReadonlyDataModified       => "instruction modified data of a read-only account",
-        .DuplicateAccountIdx        => "instruction contains duplicate accounts",
-        .ExecutableModified         => "instruction changed executable bit of an account",
-        .RentEpochModified          => "instruction modified rent epoch of an account",
-        .NotEnoughAccKeys           => "insufficient account keys for instruction",
-        .AccDataSizeChanged         => "program other than the account's owner changed the size of the account data",
-        .AccNotExecutable           => "instruction expected an executable account",
-        .AccBorrowFailed            => "instruction tries to borrow reference for an account which is already borrowed",
-        .AccBorrowOutstanding       => "instruction left account with an outstanding borrowed reference",
-        .DuplicateAccountOutOfSync  => "instruction modifications of multiply-passed account differ",
-        .CustomError                => "",
-        .InvalidError               => "program returned invalid error code",
-        .ExecutableDataModified     => "instruction changed executable accounts data",
-        .ExecutableLamportChange    => "instruction changed the balance of an executable account",
+        .ExternalDataModified => "instruction modified data of an account it does not own",
+        .ReadonlyLamportChange => "instruction changed the balance of a read-only account",
+        .ReadonlyDataModified => "instruction modified data of a read-only account",
+        .DuplicateAccountIdx => "instruction contains duplicate accounts",
+        .ExecutableModified => "instruction changed executable bit of an account",
+        .RentEpochModified => "instruction modified rent epoch of an account",
+        .NotEnoughAccKeys => "insufficient account keys for instruction",
+        .AccDataSizeChanged => "program other than the account's owner changed the size of the account data",
+        .AccNotExecutable => "instruction expected an executable account",
+        .AccBorrowFailed => "instruction tries to borrow reference for an account which is already borrowed",
+        .AccBorrowOutstanding => "instruction left account with an outstanding borrowed reference",
+        .DuplicateAccountOutOfSync => "instruction modifications of multiply-passed account differ",
+        .CustomError => "",
+        .InvalidError => "program returned invalid error code",
+        .ExecutableDataModified => "instruction changed executable accounts data",
+        .ExecutableLamportChange => "instruction changed the balance of an executable account",
         .ExecutableAccountNotRentExempt => "executable accounts must be rent exempt",
-        .UnsupportedProgramId       => "Unsupported program id",
-        .CallDepth                  => "Cross-program invocation call depth too deep",
-        .MissingAcc                 => "An account required by the instruction is missing",
-        .ReentrancyNotAllowed       => "Cross-program invocation reentrancy not allowed for this instruction",
-        .MaxSeedLengthExceeded      => "Length of the seed is too long for address generation",
-        .InvalidSeeds               => "Provided seeds do not result in a valid address",
-        .InvalidRealloc             => "Failed to reallocate account data",
-        .ComputeBudgetExceeded      => "Computational budget exceeded",
-        .PrivilegeEscalation        => "Cross-program invocation with unauthorized signer or writable account",
+        .UnsupportedProgramId => "Unsupported program id",
+        .CallDepth => "Cross-program invocation call depth too deep",
+        .MissingAcc => "An account required by the instruction is missing",
+        .ReentrancyNotAllowed => "Cross-program invocation reentrancy not allowed for this instruction",
+        .MaxSeedLengthExceeded => "Length of the seed is too long for address generation",
+        .InvalidSeeds => "Provided seeds do not result in a valid address",
+        .InvalidRealloc => "Failed to reallocate account data",
+        .ComputeBudgetExceeded => "Computational budget exceeded",
+        .PrivilegeEscalation => "Cross-program invocation with unauthorized signer or writable account",
         .ProgramEnvironmentSetupFailure => "Failed to create program execution environment",
-        .ProgramFailedToComplete    => "Program failed to complete",
-        .ProgramFailedToCompile     => "Program failed to compile",
-        .AccImmutable               => "Account is immutable",
-        .IncorrectAuthority         => "Incorrect authority provided",
-        .BorshIoError               => "Failed to serialize or deserialize account data",
-        .AccNotRentExempt           => "An account does not have enough lamports to be rent-exempt",
-        .InvalidAccOwner            => "Invalid account owner",
-        .ArithmeticOverflow         => "Program arithmetic overflowed",
-        .UnsupportedSysvar          => "Unsupported sysvar",
-        .IllegalOwner               => "Provided owner is not allowed",
-        .MaxAccsDataAllocsExceeded  => "Accounts data allocations exceeded the maximum allowed per transaction",
-        .MaxAccsExceeded            => "Max accounts exceeded",
-        .MaxInsnTraceLensExceeded   => "Max instruction trace length exceeded",
-        .BuiltinsMustConsumeCUs     => "Builtin programs must consume compute units",
+        .ProgramFailedToComplete => "Program failed to complete",
+        .ProgramFailedToCompile => "Program failed to compile",
+        .AccImmutable => "Account is immutable",
+        .IncorrectAuthority => "Incorrect authority provided",
+        .BorshIoError => "Failed to serialize or deserialize account data",
+        .AccNotRentExempt => "An account does not have enough lamports to be rent-exempt",
+        .InvalidAccOwner => "Invalid account owner",
+        .ArithmeticOverflow => "Program arithmetic overflowed",
+        .UnsupportedSysvar => "Unsupported sysvar",
+        .IllegalOwner => "Provided owner is not allowed",
+        .MaxAccsDataAllocsExceeded => "Accounts data allocations exceeded the maximum allowed per transaction",
+        .MaxAccsExceeded => "Max accounts exceeded",
+        .MaxInsnTraceLensExceeded => "Max instruction trace length exceeded",
+        .BuiltinsMustConsumeCUs => "Builtin programs must consume compute units",
     };
 }
 

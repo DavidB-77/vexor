@@ -1216,7 +1216,9 @@ test "FIX2: sol_big_mod_exp — agave stub: r0=1, ZERO CU consumed, output untou
         &h.ic,
         syscalls.nameHash("sol_big_mod_exp"),
         memory.MM_HEAP_START + 200,
-        0, 0, 0,
+        0,
+        0,
+        0,
         memory.MM_HEAP_START + 300,
     );
     try testing.expectEqual(@as(u64, 1), r);
