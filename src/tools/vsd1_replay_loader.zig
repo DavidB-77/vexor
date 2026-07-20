@@ -849,7 +849,7 @@ test "parseVsd1 round-trips a hand-built dump" {
 // incident-422359406-fec-datacomplete-truncation-2026-07-16.md for provenance:
 // "OUR corrupted copy... (197076B md5 993bb497f00598ea345080f6dd2c0847) — fixed
 // assembler must NOT produce/accept this."
-const FAIL_BIN_PATH = "/home/davidb/forensics/incident-422359406-tickgate-stall/vex_slot_422359406_fail.bin";
+const FAIL_BIN_PATH = "tests/fixtures/vex_slot_422359406_fail.bin";
 const FAIL_BIN_MD5 = "993bb497f00598ea345080f6dd2c0847";
 
 fn hexDigest(digest: [std.crypto.hash.Md5.digest_length]u8) [32]u8 {

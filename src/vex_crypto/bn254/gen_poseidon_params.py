@@ -7,8 +7,10 @@ output must match Firedancer/solana byte-for-byte), so a wrong constant fails
 loudly rather than silently forking."""
 import re, sys
 
-SRC = "/home/davidb/firedancer-release/firedancer-0.820.30113/src/ballet/bn254/fd_poseidon_params.c"
-OUT = "/home/davidb/vexor-next/src/vex_crypto/bn254/poseidon_params.zig"
+# Expected inputs (adjust for your checkout): the upstream Firedancer params
+# source this parses, and the Zig params file this script regenerates.
+SRC = "firedancer/src/ballet/bn254/fd_poseidon_params.c"
+OUT = "src/vex_crypto/bn254/poseidon_params.zig"
 
 r = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001
 R = (1 << 256) % r
