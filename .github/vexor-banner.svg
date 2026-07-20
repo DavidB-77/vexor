@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 210" role="img" aria-label="Vexor">
+  <defs>
+    <linearGradient id="vexg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EC4899"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+  <text x="450" y="158" text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif" font-size="160"
+        font-weight="800" letter-spacing="10"
+        fill="url(#vexg)" opacity="0.17">VEXOR</text>
+</svg>

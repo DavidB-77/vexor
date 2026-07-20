@@ -1,4 +1,29 @@
+<p align="center">
+  <img src=".github/vexor-banner.svg" alt="" width="100%">
+</p>
+
 # Vexor
+
+<p align="center">
+  <a href="https://github.com/DavidB-77/vexor/releases"><img src="https://img.shields.io/badge/release-v0.9.1-38BDF8" alt="release v0.9.1"></a>
+  <a href="https://ziglang.org/"><img src="https://img.shields.io/badge/zig-0.15.2-F7A41D" alt="zig 0.15.2"></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license Apache-2.0"></a>
+  <a href="https://docs.vexornode.xyz/reliability/conformance/"><img src="https://img.shields.io/badge/conformance-85.82%25%20raw%20%C2%B7%2092.74%25%20consensus-brightgreen" alt="conformance: official harness, version-matched"></a>
+  <br>
+  <a href="https://www.validators.app/validators/3J2jADiEoKMaooCQbkyr9aLnjAb5ApDWfVvKgzyK2fbP?network=testnet"><img src="https://img.shields.io/badge/testnet-live%20%C2%B7%20voting-EC4899" alt="live and voting on Solana testnet — independently tracked"></a>
+  <a href="https://docs.vexornode.xyz/design/why-byte-faithful/"><img src="https://img.shields.io/badge/deploy%20gate-1%2C992%2F1%2C992%20slots%20byte--identical-brightgreen" alt="every deploy replays 1,992 canonical slots byte-identical"></a>
+  <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-reporting%20policy-8B5CF6" alt="security reporting policy"></a>
+  <br>
+  <a href="https://github.com/DavidB-77/vexor/actions/workflows/build.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/build.yml/badge.svg?branch=main" alt="build"></a>
+  <a href="https://github.com/DavidB-77/vexor/actions/workflows/test.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/test.yml/badge.svg?branch=main" alt="test"></a>
+  <a href="https://github.com/DavidB-77/vexor/actions/workflows/lint.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/lint.yml/badge.svg?branch=main" alt="lint"></a>
+</p>
+
+<!-- Badge policy: every badge above states something true and verifiable today.
+     The release badge is static until the repo is public (shields.io cannot read
+     private repos) — swap to img.shields.io/github/v/tag/DavidB-77/vexor at flip.
+     Post-flip additions worth enrolling for (not fakeable, must be earned):
+     OpenSSF Scorecard + Best Practices badge, codecov once coverage CI exists. -->
 
 An independent, Zig-native Solana validator — built from the ground up in Zig,
 **byte-for-byte behavior-compatible with the Agave validator** by design.
