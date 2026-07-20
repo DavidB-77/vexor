@@ -155,13 +155,25 @@ assumes a NIC with XDP zero-copy support (there is a standard-socket fallback).
 ## Acknowledgments
 
 Vexor exists because other teams built great validator clients in the open.
-The reference-oracle relationships that shaped Vexor's byte-fidelity work are
-credited in [`NOTICE`](./NOTICE)/[`PROVENANCE.md`](./PROVENANCE.md) (Agave,
-Firedancer, Sig). Vexor aims to stand alongside the ecosystem's other
-production clients, such as
-**[Jito-Solana](https://github.com/jito-foundation/jito-solana)** — another
-independent client serving the same network, with Vexor taking its own path
-on efficiency, performance, and self-containment.
+We learned how a Solana validator really works — how consensus, replay,
+gossip, and block production behave on a live cluster — in large part by
+studying the open source of **[Agave](https://github.com/anza-xyz/agave)**
+(Anza), **[Firedancer](https://github.com/firedancer-io/firedancer)** (Jump),
+and **[Sig](https://github.com/Syndica/sig)** (Syndica), and by using their
+implementations as reference oracles to verify Vexor's behavior
+byte-for-byte. We're grateful for that openness; without it, building an
+independent client would have been immeasurably harder.
+
+Where Vexor directly ports or adapts specific code or algorithms, that
+lineage is declared explicitly — with upstream commits and licenses — in
+[`NOTICE`](./NOTICE) and [`PROVENANCE.md`](./PROVENANCE.md). Everything else
+is an independent, from-scratch implementation written to match the
+network's canonical *behavior*, not the reference code.
+
+Vexor aims to stand alongside the ecosystem's other production clients, such
+as **[Jito-Solana](https://github.com/jito-foundation/jito-solana)** —
+another independent client serving the same network — with Vexor taking its
+own path on efficiency, performance, and self-containment.
 
 ## License
 
