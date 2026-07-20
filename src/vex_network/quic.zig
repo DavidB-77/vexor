@@ -1246,6 +1246,14 @@ pub const Endpoint = struct {
 
         const conn = try Connection.init(self.allocator, self, peer_addr, true);
         conn.remote_cid = remote_cid; // client's SCID = where we send replies
+        // Retain the client's ORIGINAL destination CID (the DCID it chose for its first Initial).
+        // RFC 9000 §7.3/§18.2: the server MUST echo this back as the
+        // `original_destination_connection_id` (0x00) transport parameter, and a strict client
+        // (quinn/Agave) aborts with TRANSPORT_PARAMETER_ERROR "CID authentication failure" if it is
+        // missing or does not match. Connection.init seeds initial_dcid with a random value that is
+        // unused on the server path (only the client branch of processLongHeaderPacket reads it), so
+        // repurposing it here to carry the observed client DCID is safe.
+        conn.initial_dcid = client_dcid;
 
         // Derive Initial secrets from the client's DCID so role-aware RX can decrypt the
         // ClientHello (Initial packets are keyed off the client's original destination CID).
@@ -1626,13 +1634,24 @@ pub const Endpoint = struct {
         var sh = ServerHandshake.init(self.allocator, &conn.tls, &cert, seed);
         defer sh.deinit();
         sh.selected_alpn = self.config.alpn;
-        // Echo the client's chosen source CID back as our initial_source_connection_id so the
-        // client's transport-parameter check (if any) is satisfied.
+        // RFC 9000 §7.3: advertise our own source CID as `initial_source_connection_id` (0x0f).
+        // This MUST equal the SCID the server writes into its Initial packet header — sendServerCrypto
+        // uses conn.local_cid, so use the same value here.
         if (conn.local_cid.len > 0) {
             var scid: [20]u8 = [_]u8{0} ** 20;
             @memcpy(scid[0..conn.local_cid.len], conn.local_cid.slice());
             sh.transport_params.initial_source_cid = scid;
             sh.transport_params.initial_source_cid_len = conn.local_cid.len;
+        }
+        // RFC 9000 §18.2: the server MUST echo the client's original destination CID as
+        // `original_destination_connection_id` (0x00). acceptConnection stashed it in initial_dcid.
+        // Without this, quinn/Agave abort the handshake with TRANSPORT_PARAMETER_ERROR
+        // ("CID authentication failure") before it completes — the tx-ingest handshake blocker.
+        if (conn.initial_dcid.len > 0) {
+            var odcid: [20]u8 = [_]u8{0} ** 20;
+            @memcpy(odcid[0..conn.initial_dcid.len], conn.initial_dcid.slice());
+            sh.transport_params.original_dcid = odcid;
+            sh.transport_params.original_dcid_len = conn.initial_dcid.len;
         }
 
         // ClientHello transcript was already appended in appendCryptoData (the client transcribes
