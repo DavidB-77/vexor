@@ -167,6 +167,18 @@ test "live-path: VEX_SLOT_HASH_INJECT_FILE drives fetchSlotHashesRemote -> insta
     _ = setenv("VEX_SLOT_HASH_INJECT_FILE", file_path.ptr, 1);
     defer _ = unsetenv("VEX_SLOT_HASH_INJECT_FILE");
 
+    // Force getNetworkBankHash down its cold-prime path (synchronous
+    // fetchSlotHashesRemote -> installSlotHashes -> sweep). ReplayStage.init
+    // spawns sysvar_refresh_thread, which can complete a REAL network fetch and
+    // populate cached_slot_hashes BEFORE stopAndJoinWorkers joins it (join waits
+    // for the in-flight fetch, it does not prevent it). A non-null cache makes
+    // getNetworkBankHash skip the inject fetch, so scanCachedSlotHash misses the
+    // injected slot — the "expected 1, found 0" race. Clearing here (workers are
+    // already joined and dead, so nothing repopulates it) makes the inject path
+    // deterministic. arena-backed; no free needed.
+    stage.pending_slot_hashes = null;
+    stage.cached_slot_hashes = null;
+
     // fetchSlotHashesRemote/installSlotHashes are private (file-scope); this
     // test reaches the REAL chain via getNetworkBankHash (made pub for this
     // KAT — see its doc comment), a genuine production caller (vote path)
