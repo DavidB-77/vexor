@@ -7223,6 +7223,41 @@ pub const ReplayStage = struct {
                             self.maybeRefreshLastVote();
                             return;
                         }
+                        // FIX (2026-07-20, cross-fork lockout wedge @423281048): the gate
+                        // above proves the TIP extends our own tower, but says nothing
+                        // about the TARGET — fork-choice's actual pick. When the target is
+                        // NOT an ancestor of the tip, fork-choice has selected a DIFFERENT
+                        // fork (the cluster disagrees with the fork we're standing on) and
+                        // it is merely non-advancing by slot number. Voting our own tip
+                        // then is the opposite of Agave's FailedSwitchThreshold semantics
+                        // (no vote, reset to own fork, wait): each fallback vote doubles
+                        // our own lockouts on the losing fork. Live @423281048-063 this
+                        // loop cast 10 extra own-fork votes against canonical target
+                        // 423281051 → ~1024-slot lockout → delinquency, where withholding
+                        // leaves lockouts 8/4/2 and the node re-joins canonical within a
+                        // few slots (as 5 sibling episodes that night did). The fallback's
+                        // ONLY intended case is a same-fork target that trails a
+                        // genuinely-advancing own-fork tip (propagation lag), so require
+                        // target ∈ ancestors(tip). isAncestorBySlot is false on unknown
+                        // ancestry → conservative direction (withhold, never dig).
+                        const target_on_own_fork = if (self.fork_choice) |*fc_ck|
+                            fc_ck.isAncestorBySlot(bank_in.slot, bank.slot)
+                        else
+                            true; // no fork-choice data (bootstrap/unit harness) → legacy permissive behavior
+                        if (!target_on_own_fork) {
+                            _ = VoteCensus.silent_withhold.fetchAdd(1, .monotonic);
+                            const XfDbg = struct {
+                                var n: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+                            };
+                            const xn = XfDbg.n.fetchAdd(1, .monotonic) + 1;
+                            if (xn <= 3 or xn % 200 == 0)
+                                std.log.warn(
+                                    "[PROP-RETARGET] fallback=tip REFUSED — target={d} is NOT an ancestor of tip={d} (fork-choice prefers a different fork) — withholding instead of deepening own-fork lockout [#{d}]",
+                                    .{ bank.slot, bank_in.slot, xn },
+                                );
+                            self.maybeRefreshLastVote();
+                            return;
+                        }
                         const fc_n = VoteCensus.fallback_decided.fetchAdd(1, .monotonic) + 1;
                         if (fc_n <= 3 or fc_n % 200 == 0)
                             std.log.warn(

@@ -3173,3 +3173,51 @@ test "switchThresholdVoterBreakdown: SameFork short-circuit reports zero attribu
     try std.testing.expectEqual(@as(u32, 0), bd.gossip_seen);
     try std.testing.expectEqual(@as(usize, 0), bd.top_len);
 }
+
+test "KAT @423281048 — cross-fork non-advancing target must fail the fallback ancestry gate" {
+    // Live wedge 2026-07-20: node voted skip-fork 048→054→055→056 (canonical
+    // 049–053 arrived late via repair). Fork-choice retargeted to canonical 051,
+    // non-advancing vs last_vote 056 → the .tip fallback voted own tips 057–063,
+    // deepening lockout ~2^10 slots → delinquency. The replay_stage gate pair must
+    // decide: tip extends our tower (old gate TRUE) but target is NOT an ancestor
+    // of the tip (new gate FALSE) → withhold. Slots use the incident's low bytes.
+    var fc = HeaviestSubtreeForkChoice.init(std.testing.allocator);
+    defer fc.deinit();
+    const mk = struct {
+        fn h(b: u8) core.Hash {
+            var x = core.Hash.ZERO;
+            x.data[0] = b;
+            return x;
+        }
+    };
+    const r: SlotHashKey = .{ .slot = 1048, .hash = mk.h(48) }; // 423281048 = last landed vote
+    try fc.seedRoot(r);
+    // Canonical fork: 048 → 049 → 050 → 051 (late-arriving; fork-choice's pick).
+    const k49: SlotHashKey = .{ .slot = 1049, .hash = mk.h(49) };
+    const k50: SlotHashKey = .{ .slot = 1050, .hash = mk.h(50) };
+    const k51: SlotHashKey = .{ .slot = 1051, .hash = mk.h(51) };
+    try fc.addNewLeafSlot(k49, r);
+    try fc.addNewLeafSlot(k50, k49);
+    try fc.addNewLeafSlot(k51, k50);
+    // Own (skip) fork: 048 → 054 → 055 → 056 → 057 (last_vote=056, frozen tip=057).
+    const k54: SlotHashKey = .{ .slot = 1054, .hash = mk.h(54) };
+    const k55: SlotHashKey = .{ .slot = 1055, .hash = mk.h(55) };
+    const k56: SlotHashKey = .{ .slot = 1056, .hash = mk.h(56) };
+    const k57: SlotHashKey = .{ .slot = 1057, .hash = mk.h(57) };
+    try fc.addNewLeafSlot(k54, r);
+    try fc.addNewLeafSlot(k55, k54);
+    try fc.addNewLeafSlot(k56, k55);
+    try fc.addNewLeafSlot(k57, k56);
+
+    // Old gate (ed7c750): tip 057 DOES extend last_vote 056 — passes, as live.
+    try std.testing.expect(fc.isAncestorBySlot(1057, 1056));
+    // New gate: canonical target 051 is NOT an ancestor of tip 057 → REFUSE the
+    // fallback (this exact predicate returned true-equivalent live and dug the hole).
+    try std.testing.expect(!fc.isAncestorBySlot(1057, 1051));
+    // Preserved liveness case (vote-coverage fix, 2026-07-10): a same-fork target
+    // that merely trails the advancing own-fork tip still passes both gates.
+    try std.testing.expect(fc.isAncestorBySlot(1057, 1054));
+    // Root/self edges stay ancestors (sanity for the conservative-direction claim).
+    try std.testing.expect(fc.isAncestorBySlot(1057, 1048));
+    try std.testing.expect(fc.isAncestorBySlot(1057, 1057));
+}

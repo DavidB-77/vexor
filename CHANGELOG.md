@@ -16,6 +16,7 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 ### Validator
 #### Changes
 * The validator binary is now named `vexor` (previously `vex-fd`).
+* Consensus: the non-advancing vote-retarget fallback now withholds instead of voting the local fork tip when fork choice has selected a different fork. Previously, during cluster fork events the fallback could repeatedly extend the local fork's tower lockouts against the canonical fork, in the worst case locking the validator out long enough to go delinquent. A known-answer test pins the fork topology from the live incident.
 
 ## 0.9.1-a
 ### Validator
