@@ -1348,7 +1348,7 @@ test "23. getDataShredsForSlot serves ordered raw data shreds (get_slot_entries 
 }
 
 // ── Ledger-tile contract KATs (LIVE builds the MPSC ring + tile thread in
-// origin-tree post-Phase-2; these gate the VexLedger SIDE of the contract: the
+// the internal tree post-Phase-2; these gate the VexLedger SIDE of the contract: the
 // shared FINISH ring-blob codec + the producer-enqueue→tile-drain→putShred/
 // finishSlot sequence + the ring-full DROP path's detectable-gap property). ──
 
