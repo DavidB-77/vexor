@@ -52,26 +52,10 @@ applied in detail to the crypto stack).
 
   • Sig — Syndica  (Syndica/sig), Apache-2.0.
       Three distinct kinds of lineage:
-      (a) The zk-ElGamal proof subsystem (src/vex_bpf2/zksdk/) is an
-          INDEPENDENT VEXOR RE-IMPLEMENTATION, written from scratch in native
-          Zig across 12 modules (~7,150 lines):
-            elgamal.zig, pedersen.zig, merlin.zig,
-            range_proof/bulletproofs.zig, range_proof/ipp.zig,
-            sigma_proofs/ciphertext_ciphertext.zig,
-            sigma_proofs/ciphertext_commitment.zig,
-            sigma_proofs/percentage_with_cap.zig,
-            sigma_proofs/pubkey_validity.zig,
-            sigma_proofs/zero_ciphertext.zig,
-            sigma_proofs/grouped_ciphertext/2_handles.zig,
-            sigma_proofs/grouped_ciphertext/3_handles.zig
-          These files previously carried Sig's implementation substantially
-          verbatim; they have since been fully rewritten as Vexor's own code.
-          Sig's implementation was used as a reference and differential-test
-          oracle throughout that rewrite — Vexor's re-implementation is
-          verified byte-for-byte against it (per-module parity KATs plus
-          3,124/3,124 zk_sdk conformance) — but it is not a copy of Sig's
-          code and carries no Sig copyright. Credited here and in
-          PROVENANCE.md (@prov:zksdk.module-map).
+      (a) The zk-ElGamal proof subsystem (src/vex_bpf2/zksdk/) is a Vexor
+          re-implementation of Sig's, written from scratch in native Zig.
+          It is not a copy of Sig's code and carries no Sig copyright.
+          Details in PROVENANCE.md (@prov:zksdk.module-map).
       (b) The legacy sBPF interpreter (src/vex_bpf/vm.zig +
           vm_interpreter.zig) was originally ported from Sig's
           src/vm/{interpreter,memory,sbpf,elf}.zig and has since been
