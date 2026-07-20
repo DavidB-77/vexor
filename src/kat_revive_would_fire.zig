@@ -28,15 +28,29 @@ const Pubkey = core.Pubkey;
 
 /// ReplayStage.init unconditionally spawns worker_thread + sysvar_refresh_thread
 /// (real background threads — this is production init, not a test-only stub).
-/// A bare `is_running.store(false, .release)` (kat_mark_dead_cascade.zig's
-/// pattern) is safe for THAT KAT because it never exercises the sysvar-refresh
-/// chain — but this file's tests DO (directly, or via getNetworkBankHash), and
 /// `cached_slot_hashes`/`pending_slot_hashes` are single-writer-assumed fields
 /// (installSlotHashes frees+reassigns with no lock) — a still-live
-/// sysvar_refresh_thread racing this test's manual field writes / real calls
-/// is a genuine use-after-free. `ReplayStage.deinit()` already documents the
-/// correct fix (stop + JOIN both threads); this mirrors that, without the rest
-/// of deinit's teardown (the arena reclaims everything else on test exit).
+/// sysvar_refresh_thread OR worker_thread racing this test's manual field
+/// writes / real calls is a genuine use-after-free. `ReplayStage.deinit()`
+/// already documents the correct fix (stop + JOIN both threads); this mirrors
+/// that, without the rest of deinit's teardown (the arena reclaims everything
+/// else on test exit).
+///
+/// CORRECTION (2026-07-17): this comment previously claimed a bare
+/// `is_running.store(false, .release)` (kat_mark_dead_cascade.zig's pre-fix
+/// pattern) was safe for that file "because it never exercises the
+/// sysvar-refresh chain." That was wrong — replayWorker (worker_thread) has
+/// its OWN independent periodic call into fetchSlotHashesRemote ->
+/// installSlotHashes (the "PR-5aq proactive cluster SlotHashes refresh"
+/// block, replay_stage.zig ~:9683-9694), entirely separate from
+/// sysvar_refresh_thread, and a bare store(false) does not stop a worker
+/// already mid-iteration (e.g. blocked in fetchSlotHashesRemote's `waitpid`
+/// for up to curl's -m 3 = 3s). Reproduced as a real SIGSEGV (gdb-confirmed:
+/// self.allocator.free at replay_stage.zig:2336, called from replayWorker at
+/// :9693, on an orphaned never-joined thread from an earlier test) under
+/// deliberate CPU starvation; kat_mark_dead_cascade.zig now calls this same
+/// `stopAndJoinWorkers` pattern too. See its 2026-07-17 CI-SIGSEGV FIX
+/// header comment for the full writeup.
 fn stopAndJoinWorkers(stage: *ReplayStage) void {
     stage.is_running.store(false, .release);
     if (stage.worker_thread) |t| {
@@ -136,8 +150,10 @@ test "live-path: VEX_SLOT_HASH_INJECT_FILE drives fetchSlotHashesRemote -> insta
     {
         const f = try tmp.dir.createFile("inject.txt", .{});
         defer f.close();
-        // 421935259's real canonical base58 hash (== the slot's bank_hash),
-        // cross-checked against the incident RCA, hex 222355518d051e1f...f09bbe.
+        // 421935259's real canonical base58 hash, from
+        // forensics/incident-421935259/canon-block-421935259.json's "blockhash"
+        // field (== the slot's bank_hash), cross-checked against RCA-FINAL.md Q1
+        // hex 222355518d051e1f...f09bbe.
         var line_buf: [128]u8 = undefined;
         const line = try std.fmt.bufPrint(&line_buf, "slot={d} hash=3JG7REXRN7QAYJhj7j9nFPeVq3okjBFMHhSnXBzpuFxZ\n", .{DEAD_SLOT});
         try f.writeAll(line);

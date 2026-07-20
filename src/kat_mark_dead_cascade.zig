@@ -46,6 +46,69 @@ const Hash = vex_svm.Hash;
 const LtHash = vex_crypto.LtHash;
 const Pubkey = core.Pubkey;
 
+/// 2026-07-17 CI-SIGSEGV FIX — ReplayStage.init unconditionally spawns TWO
+/// real background threads (worker_thread=replayWorker, sysvar_refresh_thread
+/// =sysvarRefreshWorker), both of which allocate/free through `self.allocator`
+/// from their own thread context. This file passes an ArenaAllocator (chosen
+/// to dodge std.testing.allocator's leak-panic — ReplayStage.init isn't
+/// designed for a leak-checked per-alloc deinit, see the arena comment below)
+/// as that allocator — but std.heap.ArenaAllocator has ZERO internal
+/// synchronization, unlike production's std.heap.c_allocator (thread-safe
+/// libc malloc, see main.zig's allocator-selection comment: "recv/verify/
+/// replay threads all allocate").
+///
+/// This file's PREVIOUS fix attempt was a bare `is_running.store(false,
+/// .release)` at the top of cascadeWorker/livePathWorker, on the theory that
+/// it "never exercises the sysvar-refresh chain" (see the — now corrected —
+/// claim in kat_revive_would_fire.zig's header, which added the real fix,
+/// `stopAndJoinWorkers`, only for ITS OWN direct sysvar_refresh_thread
+/// exposure). That theory was WRONG: replayWorker (worker_thread) has its
+/// OWN independent periodic call into the exact same fetchSlotHashesRemote
+/// -> installSlotHashes chain (the "PR-5aq proactive cluster SlotHashes
+/// refresh" block, replay_stage.zig ~:9683-9694) — completely unrelated to
+/// sysvar_refresh_thread. A bare is_running.store(false) is only a hint the
+/// worker checks between loop iterations; it does NOT stop a worker already
+/// mid-iteration, and fetchSlotHashesRemote posix_spawns a real `curl -m 3`
+/// child and blocks in waitpid() for up to 3s — a wide, genuine window in
+/// which the still-live worker_thread calls self.allocator.dupeZ/.free on
+/// the SAME ArenaAllocator this test's own thread is concurrently mutating
+/// (building the 20k-entry pending_chain / running markSlotDead's cascade).
+///
+/// CONFIRMED BY REPRODUCTION (2026-07-17, gdb on 15 captured core dumps under
+/// deliberate CPU starvation): the crash is `self.allocator.free(s)` at
+/// replay_stage.zig:2336 inside fetchSlotHashesRemote, called from
+/// replayWorker at :9693 — on a thread whose `self` pointer belonged to a
+/// DIFFERENT, already-torn-down ReplayStage from an earlier test in the same
+/// process (that test function returned — and its arena's backing STACK
+/// frame was reused — while its worker_thread was still leaked and running,
+/// having never been joined). A textbook orphaned-thread use-after-free of a
+/// non-thread-safe arena, NOT a bug in markSlotDead/verifyTicksKill
+/// themselves (neither appears anywhere in the crashing thread's backtrace).
+/// Production is never exposed: main.zig always constructs the allocator as
+/// std.heap.c_allocator (thread-safe) and ReplayStage.deinit() always stops
+/// AND JOINS both threads before freeing anything.
+///
+/// FIX: mirror kat_revive_would_fire.zig's `stopAndJoinWorkers` exactly, and
+/// call it on the MAIN test thread immediately after ReplayStage.init()
+/// returns — before spawning cascadeWorker/livePathWorker, before any
+/// pending_chain/dead_slots manipulation, before any further arena use. This
+/// closes the window entirely: init() performs no allocator use on the main
+/// thread after spawning worker_thread (verified: the only code between the
+/// spawn and `return stage` is the sysvar_refresh_thread spawn itself), so
+/// by the time stopAndJoinWorkers returns, no other thread can still be
+/// touching this stage's arena.
+fn stopAndJoinWorkers(stage: *ReplayStage) void {
+    stage.is_running.store(false, .release);
+    if (stage.worker_thread) |t| {
+        t.join();
+        stage.worker_thread = null;
+    }
+    if (stage.sysvar_refresh_thread) |t| {
+        t.join();
+        stage.sysvar_refresh_thread = null;
+    }
+}
+
 /// Depth of the linear orphan chain. Each slot k (1..=N) defers with
 /// target_parent = k-1, so killing slot 0 must cascade through all N. With the
 /// pre-fix recursion this needs ~N stack frames; on the 512 KiB worker stack
@@ -59,10 +122,11 @@ const CHAIN_DEPTH: u64 = 20_000;
 /// recursion overflows quickly. Sets `ok.*` true only if markSlotDead returns
 /// (post-fix). On the pre-fix build the process SIGSEGVs here and never returns.
 fn cascadeWorker(stage: *ReplayStage, ok: *bool) void {
-    // Stop the background replay worker thread so it can't race our manual
-    // pending_chain/dead_slots manipulation — this is a single-threaded
+    // Background worker_thread/sysvar_refresh_thread are already stopped AND
+    // JOINED by the caller (stopAndJoinWorkers, called right after
+    // ReplayStage.init returns — see the 2026-07-17 CI-SIGSEGV FIX comment
+    // above) before this thread was even spawned. This is a single-threaded
     // logic-bug repro, not a concurrency test.
-    stage.is_running.store(false, .release);
 
     // Build a LINEAR orphan chain entirely in pending_chain:
     //   slot 1  -> target_parent 0
@@ -101,8 +165,11 @@ test "markSlotDead deep orphan cascade does not overflow the stack (verify_ticks
     const allocator = arena.allocator();
 
     const stage = try ReplayStage.init(allocator, Pubkey{ .data = [_]u8{0} ** 32 });
-    // No stage.deinit(): the worker thread is stopped inside cascadeWorker and
-    // the arena reclaims all of stage's memory on test exit.
+    stopAndJoinWorkers(stage); // eliminate the race BEFORE any manual state manipulation
+    // No full stage.deinit(): that would free dead_slots/pending_chain before
+    // this test's own assertions read them. The arena reclaims all of
+    // stage's memory on test exit; stopAndJoinWorkers already guarantees no
+    // other thread is touching it by then.
 
     var ok = false;
     // 512 KiB stack: large enough for the iterative fix's O(1) depth, far too
@@ -137,7 +204,15 @@ const LIVE_CHAIN_DEPTH: u64 = 20_000;
 const KILL_SLOT: u64 = 1_000_000;
 
 fn livePathWorker(stage: *ReplayStage, bank: *Bank, ok: *bool) void {
-    stage.is_running.store(false, .release);
+    // Background worker_thread/sysvar_refresh_thread are already stopped AND
+    // JOINED by the caller (stopAndJoinWorkers) before this thread was even
+    // spawned — see the 2026-07-17 CI-SIGSEGV FIX comment at the top of this
+    // file. This is the exact fix `is_running.store(false, .release)` here
+    // (pre-fix) failed to provide: it's only a hint checked between
+    // replayWorker loop iterations, not a stop — a worker already inside
+    // fetchSlotHashesRemote's `waitpid` (up to curl's -m 3 = 3s) keeps
+    // running, unsynchronized, against the SAME arena this thread is about
+    // to mutate.
 
     // Insert the UNFROZEN bank for KILL_SLOT into self.banks: present but
     // is_frozen=false, bank_hash all-zeros — exactly the state a verify_ticks
@@ -170,6 +245,7 @@ test "live-path: verifyTicksKill on UNFROZEN slot with deep orphan chain does no
     const allocator = arena.allocator();
 
     const stage = try ReplayStage.init(allocator, Pubkey{ .data = [_]u8{0} ** 32 });
+    stopAndJoinWorkers(stage); // eliminate the race BEFORE any manual state manipulation
 
     // Real unfrozen Bank for KILL_SLOT (is_frozen=false, bank_hash=0 by init).
     const bank = try Bank.init(
