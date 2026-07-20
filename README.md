@@ -117,6 +117,16 @@ reference — not against baked-in expected outputs. Latest full-corpus run
   other family byte-identical. Numbers here are reported honestly, including
   the unflattering ones while they lasted.
 
+## Hardware
+
+Vexor is developed and operated on a single reference machine: AMD EPYC 9374F
+(32 Zen 4 cores), 512 GB RAM, separate NVMe drives for ledger and snapshots,
+accounts held on a RAM-backed filesystem, and a Mellanox ConnectX-6 Dx NIC
+(AF_XDP receive path). **Minimum requirements have not been characterized** —
+treat the reference configuration as the only proven one. In particular, the
+accounts store currently assumes a large-RAM machine, and the AF_XDP fast path
+assumes a NIC with XDP zero-copy support (there is a standard-socket fallback).
+
 ## Acknowledgments
 
 Vexor exists because other teams built great validator clients in the open.
