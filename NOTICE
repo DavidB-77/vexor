@@ -54,7 +54,7 @@ applied in detail to the crypto stack).
       Three distinct kinds of lineage:
       (a) The zk-ElGamal proof subsystem (src/vex_bpf2/zksdk/) is an
           INDEPENDENT VEXOR RE-IMPLEMENTATION, written from scratch in native
-          Zig across 12 modules (~8,200 lines):
+          Zig across 12 modules (~7,150 lines):
             elgamal.zig, pedersen.zig, merlin.zig,
             range_proof/bulletproofs.zig, range_proof/ipp.zig,
             sigma_proofs/ciphertext_ciphertext.zig,
