@@ -5,7 +5,7 @@
 //! bincode(fixint,LE) of the struct behind a u32 version tag from
 //! vote_state_versions.rs (0=V0_23_5, 1=V1_14_11, 2=V3/current, 3=V4).
 //! @prov:voteforge.wire-format — exact V4/V3 field-order upstream citations.
-//! Shape follows a Firedancer-style flat fixed-capacity layout: stack-resident
+//! Shape follows the flat fixed-capacity layout approach Firedancer uses: stack-resident
 //! structs, direct offset reads/writes, zero heap. NOT derived from Sig — the
 //! transplant is only the differential oracle in the KATs (kat_vote_codec.zig).
 //!

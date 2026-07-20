@@ -32,7 +32,7 @@ pub const LedgerDb = struct {
     latest_slot: std.atomic.Value(u64),
     finalized_slot: std.atomic.Value(u64),
 
-    /// Last slot that was fully replayed (Firedancer-style: only counts replayed slots)
+    /// Last slot that was fully replayed (matches Firedancer's semantics: only counts replayed slots)
     last_replayed_slot: std.atomic.Value(u64),
 
     /// Block height: increments by 1 for each non-skipped slot. Always <= slot number.

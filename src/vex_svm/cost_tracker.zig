@@ -163,7 +163,7 @@ pub const CostTracker = struct {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// KAT — admission ordering. @prov:cost-tracker.would-fit. Run: zig build test-cost-tracker
+// KAT — admission ordering. @prov:cost-tracker.would-fit — Run: zig build test-cost-tracker
 // ════════════════════════════════════════════════════════════════════════════
 
 const testing = std.testing;

@@ -52,9 +52,15 @@ trustworthy as the project grows.
 
 - Large unsolicited rewrites of a subsystem — open an issue first.
 - Changes that alter consensus-affecting behavior without a KAT.
-- Anything that reintroduces a dependency on Firedancer or Sig code at
-  build or runtime (Vexor's crypto and vote execution are deliberately
-  independent — see `NOTICE`).
+- Undeclared code copied or ported from other clients. Vexor **does** contain
+  declared ports and carried upstream files (e.g. the Sig-derived
+  `src/vex_bpf2/zksdk/` subtree and the Firedancer-derived SVM-core ports —
+  see `NOTICE` and `PROVENANCE.md`); contributions touching those files must
+  preserve their upstream attribution, and any *new* ported or adapted code
+  must arrive with its own `PROVENANCE.md` row and license-compatible
+  attribution. Vexor's crypto leaf and vote executor (voteforge) are
+  deliberately independent — don't reintroduce upstream code dependencies
+  there.
 
 ## Getting your PR merged
 

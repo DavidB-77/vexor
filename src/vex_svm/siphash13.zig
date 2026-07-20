@@ -1,4 +1,5 @@
 //! Canonical SipHash1-3 (1 compression round, 3 finalization rounds).
+//! @prov:svm.siphash13-port
 //!
 //! Byte-exact port of Firedancer `src/ballet/siphash13/fd_siphash13.c`
 //! (v0.1004.40101) which is itself the antirez/Aumasson reference SipHash.

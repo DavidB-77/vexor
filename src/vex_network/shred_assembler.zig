@@ -112,7 +112,7 @@ pub const ShredAssembler = struct {
             std.StaticBitSet(32768).initEmpty(),
 
         received_count: u32 = 0,
-        /// Highest data-shred index received so far (O(1) tracking, Firedancer-style)
+        /// Highest data-shred index received so far (O(1) tracking, as Firedancer does)
         highest_received_index: u32 = 0,
         last_index: ?u32 = null,
         is_complete: bool = false,

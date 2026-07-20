@@ -156,7 +156,7 @@ pub const XdpConfig = struct {
     /// fill-ring starvation. The old FIX #79 comment (65536 healthier) was the
     /// misattribution corrected by project-fix79-buffer-attribution-wrong: that
     /// run's health came from the BPF nuke, not the buffer. Fill must be < UMEM
-    /// frame_count so spare frames exist for in-flight RX (FD-style headroom).
+    /// frame_count so spare frames exist for in-flight RX (headroom, matching Firedancer's sizing discipline).
     fill_size: u32 = 16384,
     /// Completion ring size
     comp_size: u32 = 2048,

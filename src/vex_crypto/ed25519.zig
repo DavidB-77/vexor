@@ -1,4 +1,5 @@
 //! Vexor Ed25519 Implementation
+//! @prov:crypto.ed25519
 //!
 //! SIMD-optimized Ed25519 signature verification.
 //! Targets AVX2/AVX-512 on x86_64 and NEON on ARM.

@@ -2194,7 +2194,7 @@ pub const GossipService = struct {
         );
 
         // Log the advertised addresses
-        std.log.debug("[Gossip] Advertising contact info (modern format for Firedancer):\n", .{});
+        std.log.debug("[Gossip] Advertising contact info (modern ContactInfo format):\n", .{});
         std.log.debug("   IP: {d}.{d}.{d}.{d}\n", .{ ip[0], ip[1], ip[2], ip[3] });
         std.log.debug("   Gossip: port {d}\n", .{gossip_port});
         std.log.debug("   TPU: port {d}\n", .{tpu_port});

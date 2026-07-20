@@ -19,7 +19,9 @@ instead of being duplicated here.
   validator client, byte-for-byte behavior-compatible with Agave by design.
 - Pure-Zig cryptography (ed25519, blake3, bn254/alt_bn128, poseidon, LtHash)
   — no Firedancer FFI dependency.
-- Clean-room Zig sBPF interpreter and CPI dispatch.
+- Zig sBPF interpreter stack and CPI dispatch (legacy interpreter originally
+  ported from Sig, since heavily reworked; the vex_bpf2 rebuild is an
+  independent spec-for-spec implementation — see `PROVENANCE.md`).
 - Conflict-DAG parallel transaction executor.
 - AF_XDP zero-copy networking (receive path).
 - VexLedger: a Zig-native append-segment blockstore.

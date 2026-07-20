@@ -699,7 +699,7 @@ pub const SolanaTpuQuic = struct {
         // Bounded pool: when full, EVICT THE OLDEST connection so the CURRENT leader is ALWAYS admitted —
         // NEVER refuse (refusing wedged QUIC votes → delinquency 2026-06-23). Mirrors Agave ConnectionCache
         // evict-on-full (connection_cache.rs:216-232) with a deterministic oldest-by-conn_created pick
-        // instead of Agave's random; FD-style small pool (128) keeps this rare. Re-handshake of an evicted
+        // instead of Agave's random; a small pool (128, Firedancer-sized) keeps this rare. Re-handshake of an evicted
         // recurring leader is cheap (poll-driven). Holds the mutex across the evict (endpoint maps + maps).
         if (self.connections.count() >= MAX_VOTE_CONNS) {
             self.evictOldestLocked();

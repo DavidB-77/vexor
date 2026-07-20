@@ -1,4 +1,5 @@
-/// vote_fd.zig — Firedancer fd_vote_program.c port for Vexor
+/// vote_v2.zig — Firedancer fd_vote_program.c port for Vexor
+/// @prov:svm.vote-v2-port
 ///
 /// Ported from:
 ///   firedancer/src/flamenco/runtime/program/fd_vote_program.c (2291 lines)

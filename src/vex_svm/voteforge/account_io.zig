@@ -1,4 +1,4 @@
-//! voteforge, stage 2 — account-I/O layer: FD-style borrow-only-what's-touched
+//! voteforge, stage 2 — account-I/O layer: borrow-only-what's-touched (as in Firedancer)
 //! account model over Vexor's flat `[]u8 + lamports + owner` account world
 //! (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 2, §F.1 layer 2, executive
 //! summary lever #2).
@@ -10,9 +10,9 @@
 //! port: `is_writing`/`is_reading`/`try_borrow`/`try_borrow_mut`/
 //! `release_borrow`/`release_borrow_mut`, incl. the "shared borrows stack,
 //! exclusive borrow is alone" semantics proven by that file's own `#[test]`
-//! cases. `BorrowedAccount` is carried into this tree's transplant almost
-//! verbatim as `native/sigvote/runtime/borrowed_account.zig`, itself cited
-//! per-method against the same Agave lines: `check_data_is_mutable`,
+//! cases. `BorrowedAccount` was also carried almost verbatim into the (since
+//! removed, vote-rewrite Stage 8) transplant's `borrowed_account.zig`, itself
+//! cited per-method against the same Agave lines: `check_data_is_mutable`,
 //! `check_can_set_data_length`, `set_lamports`/`add_lamports`/
 //! `subtract_lamports`, `set_data_length`/`set_data_from_slice`,
 //! `set_owner`, `set_executable`.

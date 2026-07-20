@@ -18,7 +18,7 @@ comptime {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// BPF SYSCALL INTERFACE (Firedancer-style)
+// BPF SYSCALL INTERFACE (direct bpf(2) syscalls, no libbpf — same approach Firedancer takes)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // We'll define the BPF structures manually to avoid C union issues
@@ -92,7 +92,7 @@ const BpfAttr = extern union {
     },
 };
 
-// BPF syscall wrapper (like Firedancer's bpf() function)
+// BPF syscall wrapper (serves the same role as Firedancer's bpf() helper)
 // Use C syscall function
 extern "c" fn syscall(number: c_long, ...) c_long;
 
@@ -166,7 +166,7 @@ pub const XdpProgram = struct {
     /// For now, we'll create maps manually and load a simple program
     /// TODO: Parse ELF file to extract program and maps
     pub fn init(allocator: Allocator, ifindex: u32, mode: AttachMode, bind_port: u16) !Self {
-        // Create XSKMAP (like Firedancer)
+        // Create XSKMAP (matches Firedancer's XSKMAP setup)
         var xsks_map_attr: BpfAttr = std.mem.zeroes(BpfAttr);
         xsks_map_attr.map_create.map_type = BPF_MAP_TYPE_XSKMAP;
         xsks_map_attr.map_create.key_size = 4;
@@ -254,7 +254,7 @@ pub const XdpProgram = struct {
     /// Initialize XDP program WITHOUT attaching to NIC (safe initialization)
     /// Call attach() separately after registering sockets in XSKMAP
     pub fn initWithoutAttach(allocator: Allocator, ifindex: u32, mode: AttachMode, bind_port: u16) !Self {
-        // Create XSKMAP (like Firedancer)
+        // Create XSKMAP (matches Firedancer's XSKMAP setup)
         var xsks_map_attr: BpfAttr = std.mem.zeroes(BpfAttr);
         xsks_map_attr.map_create.map_type = BPF_MAP_TYPE_XSKMAP;
         xsks_map_attr.map_create.key_size = 4;
@@ -344,12 +344,13 @@ pub const XdpProgram = struct {
         std.log.warn("[XDP] ✅ Program attached to interface {d} via BPF_LINK_CREATE (kernel chose mode; verify via 'bpftool net list')", .{self.ifindex});
     }
 
-    /// Generate and load BPF program at runtime (Firedancer-style)
-    /// No need for clang/LLVM - bytecode is generated directly!
+    /// Generate and load BPF program at runtime (runtime bytecode generation,
+    /// the same approach Firedancer takes). No need for clang/LLVM - bytecode
+    /// is generated directly!
     fn loadBpfProgram(allocator: Allocator, xsks_map_fd: i32, port_filter_map_fd: i32, bind_port: u16) !i32 {
         _ = port_filter_map_fd; // Not used - we embed ports directly in bytecode
 
-        // Generate eBPF bytecode at runtime (like Firedancer)
+        // Generate eBPF bytecode at runtime
         var code_buf: [512]u64 = undefined;
         const ports = [_]u16{bind_port};
 

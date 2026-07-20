@@ -1,4 +1,5 @@
 /// nonce.zig — Durable Nonce Program for Vexor
+/// @prov:svm.nonce-port
 ///
 /// Ported from:
 ///   firedancer/src/flamenco/runtime/program/fd_system_program_nonce.c (860 lines)

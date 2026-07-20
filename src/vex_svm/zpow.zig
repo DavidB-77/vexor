@@ -1,6 +1,7 @@
 //! Pure-Zig port of the ARM optimized-routines double-double pow(f64,f64)
 //! algorithm, FMA variant (__FP_FAST_FMA branches — the path taken on any
 //! CPU with usable FMA+AVX2, true for znver4, the build target here).
+//! @prov:math.pow
 //!
 //! PROVENANCE (re-sourced 2026-07-15, see PROVENANCE.md + POW-RESOURCE-
 //! PROGRESS.log for the full verification record): this is the ARM Limited

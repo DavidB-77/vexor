@@ -24,6 +24,9 @@ const enc = @import("shred_encoder.zig");
 const layout = @import("shred_layout.zig");
 const hdr = @import("shred_header.zig");
 
+// NOTE: this KAT requires a LOCAL Firedancer checkout (not shipped in this
+// repo): fixtures from firedancer-io/firedancer tag v0.1002.40103, path
+// src/disco/shred/fixtures. Without it the test is skipped/fails to open.
 const FIX_DIR = "firedancer-v0.1002.40103/src/disco/shred/fixtures";
 
 // FD_SHREDDER_CHAINED_FEC_SET_PAYLOAD_SZ / _RESIGNED_ (fd_shredder.h): 32 * data_shred_payload_sz.

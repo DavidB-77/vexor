@@ -27,7 +27,7 @@ pub const InstructionOpcodes = enum(u32) {
     UpgradeNonceAccount = 12,
 };
 
-/// 1:1 Clean-room translation of Firedancer's algorithmic System Program Execution Module.
+/// 1:1 translation of Firedancer's algorithmic System Program Execution Module.
 /// Firedancer strictly prohibits mutating variables before all safety invariants have successfully returned.
 pub fn executeTransfer(
     from: *types.AccountMeta,

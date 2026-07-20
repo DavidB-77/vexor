@@ -1,7 +1,9 @@
 /// hashes.zig — Firedancer fd_hashes.c port for Vexor
+/// @prov:svm.hashes-port
 ///
 /// Ported from:
-///   firedancer-reference/fd_hashes.c (138 lines)
+///   firedancer/src/flamenco/runtime/fd_hashes.c (138 lines)
+///   (originally worked from a local reference checkout, not shipped in this repo)
 ///
 /// Functions ported:
 ///   fd_hashes_account_lthash_simple() → accountLtHash()

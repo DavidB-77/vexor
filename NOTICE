@@ -2,37 +2,92 @@ Vexor — an independent, Zig-native Solana validator.
 Copyright (c) 2026 the Vexor authors.
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 
-Vexor is an ORIGINAL reimplementation written from scratch in Zig. Its runtime
-behavior is byte-for-byte compatible with the Agave validator by design. That
-compatibility was achieved by using the Apache-2.0 licensed projects below as
-REFERENCE IMPLEMENTATIONS and DIFFERENTIAL TEST ORACLES — reading their source,
-reimplementing the behavior in Zig, and verifying bit-for-bit against their
-output. Vexor links NONE of their code at runtime (the crypto is a pure-Zig
-reimplementation; see PROVENANCE.md).
+Vexor is an independent reimplementation of the Solana validator in Zig — not
+a fork of any existing client. Its runtime behavior is byte-for-byte
+compatible with the Agave validator by design. That compatibility was achieved
+by using the Apache-2.0 licensed projects below as REFERENCE IMPLEMENTATIONS
+and DIFFERENTIAL TEST ORACLES — reading their source, reimplementing the
+behavior in Zig, and verifying bit-for-bit against their output. The majority
+of the tree is original Vexor work; where a subsystem was instead PORTED or
+CARRIED from an upstream project, that lineage is declared below and
+enumerated per-file/per-function in PROVENANCE.md. We do NOT claim "from
+scratch, no reference" (see src/vex_crypto/NOTICE for the same principle
+applied in detail to the crypto stack).
 
   • Agave — Anza  (anza-xyz/agave), Apache-2.0.
       Primary behavioral reference: consensus / fork choice, SVM + sBPF
       execution, compute-budget & cost model, CPI, vote / stake / loader
-      programs, sysvars, account (LtHash) hashing.
+      programs, sysvars, account (LtHash) hashing. Vexor's implementations of
+      these are reimplementations in Zig, verified byte-for-byte against
+      Agave's output; no Agave (Rust) code is compiled into Vexor.
 
   • Firedancer — Jump Crypto  (firedancer-io/firedancer), Apache-2.0.
-      Reference for leaf cryptography (the "Ballet" ed25519 / blake3 / bn254 /
-      poseidon routines) and select high-performance data structures.
-      NOTE: Vexor no longer links Firedancer at all — its cryptography is an
-      independent pure-Zig reimplementation, unconditionally (the historical
-      -Dpure_zig build flag is retained as a no-op for recipe compatibility).
+      Two distinct kinds of lineage:
+      (a) Reference for leaf cryptography (the "Ballet" ed25519 / blake3 /
+          bn254 / poseidon routines) and select high-performance data
+          structures. Vexor no longer links any Firedancer C code — its
+          cryptography is an independent pure-Zig reimplementation,
+          unconditionally (the historical -Dpure_zig build flag is retained
+          as a no-op for recipe compatibility).
+      (b) Whole-file Zig PORTS of Firedancer C modules in the SVM core and
+          networking stack — logic translated near-line-by-line from the
+          upstream C into Zig (no C is compiled or linked). Each file
+          declares its upstream source in its own header and in
+          PROVENANCE.md; the principal ones:
+            src/vex_svm/executor.zig           ← fd_executor.c
+            src/vex_svm/runtime.zig            ← fd_runtime.c
+            src/vex_svm/native/system_v2.zig   ← fd_system_program.c
+            src/vex_svm/native/vote_v2.zig     ← fd_vote_program.c
+            src/vex_svm/native/nonce.zig       ← fd_system_program_nonce.c
+            src/vex_svm/native/stake_state.zig ← fd_stake_types.h/.c
+            src/vex_svm/rewards.zig            ← fd_rewards.c/.h
+            src/vex_svm/hashes.zig             ← fd_hashes.c
+            src/vex_svm/tx_dispatcher.zig      ← fd_rdisp (single-lane)
+            src/vex_svm/siphash13.zig          ← fd_siphash13.c (byte-exact)
+            src/vex_network/bmtree.zig         ← fd_bmtree.h
+          plus further declared ports (blockhash queue, stakes/stake-history
+          math, FEC/Reed-Solomon resolver, gossip parse paths, tower
+          push_vote, and others) — see PROVENANCE.md for the complete
+          row-level list.
 
   • Sig — Syndica  (Syndica/sig), Apache-2.0.
-      Reference for Zig-idiomatic Solana structures during early bring-up.
-      NOTE: the one subsystem that carried Sig-derived code — the vote-program
-      transplant used as a differential oracle while Vexor's own vote executor
-      was validated — has been removed. Vexor's vote program, like the rest of
-      the client, is now an independent reimplementation; Vexor's
-      implementations are independent of Sig at both build and runtime.
+      Three distinct kinds of lineage:
+      (a) The zk-ElGamal proof subsystem (src/vex_bpf2/zksdk/) is a Sig port
+          carried SUBSTANTIALLY VERBATIM: 12 files (~6,150 lines) from Sig's
+          shared/zksdk/ are byte-identical to upstream except each file's
+          single root-import line, repointed to the local
+          src/vex_bpf2/zksdk/root.zig (that file's header documents the
+          scheme):
+            elgamal.zig, pedersen.zig, merlin.zig,
+            range_proof/bulletproofs.zig, range_proof/ipp.zig,
+            sigma_proofs/ciphertext_ciphertext.zig,
+            sigma_proofs/ciphertext_commitment.zig,
+            sigma_proofs/percentage_with_cap.zig,
+            sigma_proofs/pubkey_validity.zig,
+            sigma_proofs/zero_ciphertext.zig,
+            sigma_proofs/grouped_ciphertext/2_handles.zig,
+            sigma_proofs/grouped_ciphertext/3_handles.zig
+          These are live, built, runtime code — Apache-2.0, © Syndica,
+          credited here and in PROVENANCE.md (@prov:zksdk.module-map).
+      (b) The legacy sBPF interpreter (src/vex_bpf/vm.zig +
+          vm_interpreter.zig) was originally ported from Sig's
+          src/vm/{interpreter,memory,sbpf,elf}.zig and has since been
+          heavily reworked (PROVENANCE.md @prov:vm.module-map). The vex_bpf2
+          rebuild that ships beside it is an independent spec-for-spec
+          implementation against solana-sbpf.
+      (c) The ed25519 vectorized field/point kernels under
+          src/vex_crypto/ed25519/ are curve25519-dalek IFMA kernels carried
+          substantially verbatim via Sig — fully documented in
+          src/vex_crypto/NOTICE.
+      Beyond these, Sig served as a reference for Zig-idiomatic Solana
+      structures during early bring-up. One Sig-derived subsystem HAS been
+      removed: the vote-program transplant used as a differential oracle
+      while Vexor's own vote executor was validated. voteforge, the live
+      vote executor, is Vexor-original and imports no Sig code.
 
-Per-subsystem provenance — exactly which Vexor file/function reimplements which
-upstream source, and whether it was reimplemented, ported, or verified
-byte-exact — is maintained in PROVENANCE.md (the provenance ledger).
+Per-subsystem provenance — exactly which Vexor file/function reimplements,
+ports, or byte-exact-matches which upstream source — is maintained in
+PROVENANCE.md (the provenance ledger).
 
 Vexor also vendors one piece of third-party code directly (not a behavioral
 reference — actual linked source):
@@ -42,6 +97,13 @@ reference — actual linked source):
       built directly from its C/assembly source. See vendor/blst/LICENSE for
       the license text as distributed by Supranational.
 
+Additional carried artifacts are declared in src/vex_crypto/NOTICE: the
+fiat-crypto BN254 base-field Montgomery reduction (MIT/Apache-2.0/
+BSD-1-Clause), the ARM optimized-routines pow port (Apache-2.0), the
+light-poseidon / circomlib Poseidon parameters (reached via Firedancer), and
+the Google Wycheproof KAT corpus (Apache-2.0).
+
 "Agave", "Firedancer", "Sig", and "Solana" are trademarks of their respective
 owners. This notice is provided in the spirit of Apache-2.0 attribution for
-work that was reimplemented with the above projects as reference.
+work that was reimplemented, ported, or carried with the above projects as
+reference and upstream sources.

@@ -1,4 +1,5 @@
 //! Vexor Rewards — Epoch reward calculation and partitioned distribution.
+//! @prov:svm.rewards-port
 //!
 //! Ported from Firedancer's fd_rewards.c / fd_rewards.h / fd_rewards_base.h.
 //! Agave counterpart: solana_runtime::bank::partitioned_epoch_rewards.

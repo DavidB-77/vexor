@@ -13,6 +13,8 @@
   <a href="https://www.validators.app/validators/3J2jADiEoKMaooCQbkyr9aLnjAb5ApDWfVvKgzyK2fbP?network=testnet"><img src="https://img.shields.io/badge/testnet-live%20%C2%B7%20voting-EC4899" alt="live and voting on Solana testnet — independently tracked"></a>
   <a href="https://docs.vexornode.xyz/design/why-byte-faithful/"><img src="https://img.shields.io/badge/deploy%20gate-1%2C992%2F1%2C992%20slots%20byte--identical-brightgreen" alt="every deploy replays 1,992 canonical slots byte-identical"></a>
   <a href="./SECURITY.md"><img src="https://img.shields.io/badge/security-reporting%20policy-8B5CF6" alt="security reporting policy"></a>
+  <a href="https://x.com/vexornode"><img src="https://img.shields.io/badge/@vexornode-000000?logo=x&logoColor=white" alt="Vexor Node on X"></a>
+  <a href="https://vexornode.xyz"><img src="https://img.shields.io/badge/vexornode.xyz-website-3EC5FF" alt="vexornode.xyz"></a>
   <br>
   <a href="https://github.com/DavidB-77/vexor/actions/workflows/build.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/build.yml/badge.svg?branch=main" alt="build"></a>
   <a href="https://github.com/DavidB-77/vexor/actions/workflows/test.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/test.yml/badge.svg?branch=main" alt="test"></a>
@@ -25,13 +27,17 @@
      Post-flip additions worth enrolling for (not fakeable, must be earned):
      OpenSSF Scorecard + Best Practices badge, codecov once coverage CI exists. -->
 
-An independent, Zig-native Solana validator — built from the ground up in Zig,
-**byte-for-byte behavior-compatible with the Agave validator** by design.
+An independent, Zig-native Solana validator — **byte-for-byte
+behavior-compatible with the Agave validator** by design. The majority of the
+tree is original Vexor work; every ported subsystem is declared in
+[`NOTICE`](./NOTICE) and [`PROVENANCE.md`](./PROVENANCE.md).
 
 Vexor runs its own pure-Zig cryptography (ed25519, blake3, bn254/alt_bn128,
-poseidon, LtHash — no Firedancer FFI), a clean-room Zig sBPF interpreter, a
-conflict-DAG parallel executor, AF_XDP zero-copy networking, and its own
-VexLedger blockstore.
+poseidon, LtHash — no Firedancer FFI), a Zig sBPF interpreter stack (the
+legacy interpreter was originally ported from Sig and since heavily reworked;
+the vex_bpf2 rebuild is an independent spec-for-spec implementation — see
+`PROVENANCE.md`), a conflict-DAG parallel executor, AF_XDP zero-copy
+networking, and its own VexLedger blockstore.
 
 **Status: testnet-only, 0.9.x pre-production.** Mainnet is out of scope —
 Vexor does not run there. `1.0.0` is reserved for the production-grade
@@ -39,17 +45,18 @@ milestone.
 
 ## Attribution
 
-Vexor is an **original reimplementation**, not a fork. Its Agave-compatible
-behavior was achieved by using these Apache-2.0 projects as **reference
-implementations and differential test oracles** — reimplementing their behavior
-in Zig and verifying bit-for-bit against their output:
+Vexor is an **independent implementation**, not a fork. Most of its
+Agave-compatible behavior was achieved by using these Apache-2.0 projects as
+**reference implementations and differential test oracles** — reimplementing
+their behavior in Zig and verifying bit-for-bit against their output. Some
+subsystems are instead declared **ports**, and every one is enumerated in
+`NOTICE` and `PROVENANCE.md`:
 
-- **[Agave](https://github.com/anza-xyz/agave)** (Anza) — primary behavioral reference.
-- **[Firedancer](https://github.com/firedancer-io/firedancer)** (Jump Crypto) — leaf-crypto reference; **no longer linked** (crypto is now pure-Zig).
-- **[Sig](https://github.com/Syndica/sig)** (Syndica) — Zig-idiomatic structure reference during bring-up.
+- **[Agave](https://github.com/anza-xyz/agave)** (Anza) — primary behavioral reference; no Agave (Rust) code is compiled into Vexor.
+- **[Firedancer](https://github.com/firedancer-io/firedancer)** (Jump Crypto) — leaf-crypto reference (**no C linked** — crypto is pure-Zig), plus declared whole-file Zig ports of several SVM-core and networking modules (executor, runtime, system/vote/nonce programs, rewards, hashes, scheduler, and more — see `NOTICE`).
+- **[Sig](https://github.com/Syndica/sig)** (Syndica) — Zig-idiomatic structure reference during bring-up; the zk-ElGamal proof subsystem (`src/vex_bpf2/zksdk/`) is a Sig port carried substantially verbatim, and the legacy sBPF interpreter has Sig lineage (see `NOTICE`).
 
-Vexor links none of their code at runtime. Full credit and per-subsystem
-provenance:
+Full credit and per-subsystem provenance:
 
 - **[`NOTICE`](./NOTICE)** — project-level attribution.
 - **[`PROVENANCE.md`](./PROVENANCE.md)** — the fine-grained ledger mapping each

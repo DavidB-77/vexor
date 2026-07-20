@@ -206,7 +206,7 @@ pub fn getClusterNodes(ctx: *const RpcContext, _: ?[]const u8, response: *Respon
     try response.append("}]");
 }
 
-/// getEpochInfo - Returns epoch info (Firedancer-style: uses replay state)
+/// getEpochInfo - Returns epoch info from replay state (matches Firedancer's semantics)
 pub fn getEpochInfo(ctx: *const RpcContext, _: ?[]const u8, response: *ResponseBuilder) !void {
     const slots_per_epoch: u64 = 432000;
     // Use replayed slot for consistency (matches getSlot)
@@ -229,7 +229,7 @@ pub fn getEpochInfo(ctx: *const RpcContext, _: ?[]const u8, response: *ResponseB
     try response.appendFmt("\"slotIndex\":{d},", .{slot_index});
     try response.appendFmt("\"slotsInEpoch\":{d},", .{slots_in_epoch});
     try response.appendFmt("\"absoluteSlot\":{d},", .{replay_slot});
-    // Block height from replay (Firedancer-style), NOT same as slot
+    // Block height from replay (matches Firedancer's semantics), NOT same as slot
     const bh = if (ctx.ledger_db) |db| db.block_height.load(.seq_cst) else ctx.current_slot;
     try response.appendFmt("\"blockHeight\":{d},", .{bh});
     const txn_count = if (ctx.ledger_db) |db| db.transaction_count.load(.seq_cst) else 0;
@@ -1160,7 +1160,7 @@ fn afterFirstU64(s: []const u8) ?[]const u8 {
 // SLOT METHODS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// getSlot - Returns last replayed slot (Firedancer-style, NOT gossip network tip)
+/// getSlot - Returns last replayed slot (matches Firedancer's semantics, NOT gossip network tip)
 pub fn getSlot(ctx: *const RpcContext, _: ?[]const u8, response: *ResponseBuilder) !void {
     const slot = if (ctx.ledger_db) |db| db.last_replayed_slot.load(.seq_cst) else ctx.current_slot;
     try response.appendInt(slot);

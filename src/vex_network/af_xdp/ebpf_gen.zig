@@ -103,7 +103,7 @@ const BPF_FUNC_redirect_map: u32 = 0x33; // 51
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Generate XDP program bytecode at runtime
-/// This is the Firedancer approach - no need for clang/LLVM!
+/// (the same approach Firedancer takes - no need for clang/LLVM!)
 ///
 /// The generated program:
 /// 1. Parses Ethernet/IP/UDP headers

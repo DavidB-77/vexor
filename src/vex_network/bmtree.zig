@@ -1,7 +1,8 @@
 //! Vexor Binary Merkle Tree
+//! @prov:net.bmtree-port
 //!
 //! SHA256-based Merkle tree for shred verification.
-//! Based on Firedancer: src/ballet/bmtree/fd_bmtree.h
+//! Ported from Firedancer: src/ballet/bmtree/fd_bmtree.h
 //!
 //! Used to verify the authenticity and integrity of shreds.
 //! The root of the Merkle tree is signed by the block producer.

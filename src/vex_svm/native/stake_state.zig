@@ -1,4 +1,5 @@
 //! Vexor Stake State Types and Bincode Serialization
+//! @prov:svm.stake-state-port
 //!
 //! Ported from Firedancer:
 //!   firedancer/src/flamenco/stakes/fd_stake_types.h

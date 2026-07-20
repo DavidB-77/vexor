@@ -108,6 +108,7 @@ pub fn g2Decompress(out: []u8, in: []const u8, big_endian: bool) bool {
 // Returns true (32-byte `out` written) / false (soft `return 1`) when:
 //   - a slice fails append (data ≥ modulus; sz>32; enforce && sz!=32; empty slice)
 //   - fini fails (cnt==0, i.e. vals_len==0 → matches Agave hashv([])→Ok(1))
+// @prov:crypto.poseidon
 pub fn poseidonHash(
     out: []u8,
     inputs: []const []const u8,

@@ -410,7 +410,7 @@ pub const TvuService = struct {
     last_diag_ns: u64,
     start_time_ns: u64,
 
-    /// Repair request dedup cache (Firedancer-style)
+    /// Repair request dedup cache (matches Firedancer's dedup design)
     /// Key: (slot << 32) | shred_idx, Value: timestamp_ns of last request
     /// Prevents re-requesting the same (slot, idx) within REPAIR_DEDUP_TIMEOUT_NS
     repair_dedup: std.AutoHashMap(u128, u64),
@@ -1331,7 +1331,7 @@ pub const TvuService = struct {
         self.using_accelerated_io = false;
 
         // ═══════════════════════════════════════════════════════════════
-        // FIX #92 (Path A — Firedancer-style multi-queue): Try SHARED XDP
+        // FIX #92 (Path A — multi-queue, as Firedancer does): Try SHARED XDP
         // first, which sets up AF_XDP zero-copy for BOTH shred (port 8003,
         // queue 0) AND repair (port 8002, queue 1). Uses pre-pinned BPF
         // program and maps at /sys/fs/bpf/vexor/{prog,xsks_map,port_filter}.

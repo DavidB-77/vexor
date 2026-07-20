@@ -1,7 +1,9 @@
 /// executor.zig — Firedancer fd_executor.c port for Vexor
+/// @prov:svm.executor-port
 ///
 /// Ported from:
-///   firedancer-reference/fd_executor.c (1651 lines)
+///   firedancer/src/flamenco/runtime/fd_executor.c (1651 lines)
+///   (originally worked from a local reference checkout, not shipped in this repo)
 ///
 /// Functions ported:
 ///   fd_execute_instr()           → executeInstruction()

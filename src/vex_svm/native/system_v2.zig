@@ -1,4 +1,5 @@
-/// system_fd.zig — Firedancer fd_system_program.c port for Vexor
+/// system_v2.zig — Firedancer fd_system_program.c port for Vexor
+/// @prov:svm.system-v2-port
 ///
 /// Ported from:
 ///   firedancer/src/flamenco/runtime/program/fd_system_program.c (841 lines)

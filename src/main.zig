@@ -1981,8 +1981,8 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
             // Native QUIC TPU vote client (step 1, 2026-06-18). Set only when the validator was
             // built with -Duse_native_quic_votes; null otherwise → vote path byte-identical to today.
             var tpu_client: ?*vex_network.tpu_client.TpuClient = null;
-            // FD-style vote fanout width: send each vote to the next N distinct upcoming leaders over
-            // UDP+QUIC. 7 rotations matches Firedancer; tunable live via VEX_VOTE_FANOUT_ROTATIONS.
+            // Vote fanout width: send each vote to the next N distinct upcoming leaders over
+            // UDP+QUIC. 7 rotations matches Firedancer's behavior; tunable live via VEX_VOTE_FANOUT_ROTATIONS.
             var fanout_rotations: u32 = 7;
             // 2026-07-06 dual-NIC vote-client source-IP fix (incident 21:48Z-ongoing, sibling of
             // fc85545's gossip_bind_addr fix): from config.quic_bind_addr (--quic-bind-addr).
@@ -2018,7 +2018,7 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 }
 
                 send_count += 1;
-                // FD-STYLE VOTE FANOUT (2026-06-28): send every vote to the next `fanout_rotations`
+                // VOTE FANOUT (2026-06-28): send every vote to the next `fanout_rotations`
                 // DISTINCT upcoming leaders over BOTH transports — UDP→tpu_vote (tag-9) AND QUIC→
                 // tpu_quic — matching Firedancer send_vote_to_leader (fd_txsend_tile.c: 7 rotations,
                 // dual UDP+QUIC). Replaces the old 5-consecutive-slot (~1-2 distinct leader) UDP leg +
@@ -2241,13 +2241,13 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         VoteSender.rpc_endpoint = rpc_url;
         VoteSender.bind_addr = config.quic_bind_addr; // dual-NIC source-IP fix (2026-07-06)
         result.replay_stage.sendVoteFn = &VoteSender.send;
-        // FD-style fanout width (next N distinct leaders per vote, UDP+QUIC). Default 7 (Firedancer).
+        // Fanout width (next N distinct leaders per vote, UDP+QUIC). Default 7, matching Firedancer's behavior.
         // Live-tunable: VEX_VOTE_FANOUT_ROTATIONS=<1..16>. Clamped to [1, MAX_FANOUT_LEADERS=16].
         if (std.posix.getenv("VEX_VOTE_FANOUT_ROTATIONS")) |v| {
             const parsed = std.fmt.parseInt(u32, v, 10) catch 7;
             VoteSender.fanout_rotations = std.math.clamp(parsed, 1, 16);
         }
-        std.log.warn("[MAIN] Vote sending ENABLED — FD-style fanout: {d} rotations (UDP tpu_vote + QUIC), RPC fallback\n", .{VoteSender.fanout_rotations});
+        std.log.warn("[MAIN] Vote sending ENABLED — leader fanout: {d} rotations (UDP tpu_vote + QUIC), RPC fallback\n", .{VoteSender.fanout_rotations});
 
         // ── Native QUIC TPU vote client (step 1, 2026-06-18; -Duse_native_quic_votes) ──────────
         // Build the identity-mTLS QUIC client + TpuClient, wire leader discovery (gossip + leader

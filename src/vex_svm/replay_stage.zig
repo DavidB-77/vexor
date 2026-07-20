@@ -5377,7 +5377,8 @@ pub const ReplayStage = struct {
         return Cache.on;
     }
 
-    /// TASK #3 ARMED canonical vote-selection (VEX_CANONICAL_VOTE). When set, submitVote selects the
+    /// TASK #3 ARMED canonical vote-selection (VEX_CANONICAL_VOTE). @prov:vote.select-reset
+    /// When set, submitVote selects the
     /// @prov:replay.select-vote-reset-forks target (heaviest-subtree leaf, or heaviest-on-same-voted-fork
     /// when a switch fails) INSTEAD of prop_retarget's backward ≥1/3 walk. REQUIRES VEX_SWITCH_PROOF
     /// armed (a cross-fork canonical target needs the switch authorization downstream). DORMANT by

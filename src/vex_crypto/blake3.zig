@@ -1,4 +1,5 @@
 //! Vexor BLAKE3 wrapper — pure-Zig stdlib BLAKE3.
+//! @prov:crypto.blake3
 //!
 //! ITEM K (2026-05-04): The load-bearing accountLtHash BLAKE3 hot path in
 //! src/vex_svm/bank.zig is routed through this wrapper, which is std.crypto's

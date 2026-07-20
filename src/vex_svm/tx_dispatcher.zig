@@ -1,4 +1,5 @@
 //! DAG Transaction Dispatcher — fd_rdisp port for Vexor (single-lane)
+//! @prov:svm.tx-dispatcher-port
 //!
 //! This file implements the core data structures for a dependency-tracking
 //! DAG scheduler, ported from Firedancer's fd_rdisp.c.  See the design spec:

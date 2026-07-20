@@ -364,7 +364,7 @@ pub const RpcServer = struct {
 
     fn handleGetSlot(self: *Self) RpcResult {
         if (self.ledger_db) |db| {
-            // Return last replayed slot (Firedancer-style), NOT gossip latest_slot
+            // Return last replayed slot (matches Firedancer's getSlot semantics), NOT gossip latest_slot
             const slot = db.last_replayed_slot.load(.seq_cst);
             var buf: [32]u8 = undefined;
             const s = std.fmt.bufPrint(&buf, "{d}", .{slot}) catch return .{ .err = .{ .code = -32603, .message = "Internal error" } };

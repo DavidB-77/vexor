@@ -1,7 +1,9 @@
 /// runtime.zig — Firedancer fd_runtime.c port for Vexor (freeze / fees / incinerator / commit / save)
+/// @prov:svm.runtime-port
 ///
 /// Ported from:
-///   firedancer-reference/fd_runtime.c (1994 lines)
+///   firedancer/src/flamenco/runtime/fd_runtime.c (1994 lines)
+///   (originally worked from a local reference checkout, not shipped in this repo)
 ///
 /// Functions ported:
 ///   fd_runtime_freeze()        → freeze()
