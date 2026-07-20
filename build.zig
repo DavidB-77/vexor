@@ -3764,7 +3764,7 @@ pub fn build(b: *std.Build) void {
     //
     // The exe is the CAPSTONE force-compile: main.zig calls into replay_stage
     // (main.zig:124/638/642 — the voting replay loop), tvu, bootstrap, so LINKING
-    // a `vex-fd` binary compiles the replay_stage METHOD BODIES (m72's @sizeOf gate
+    // a `vexor` binary compiles the replay_stage METHOD BODIES (m72's @sizeOf gate
     // only forced the field-LAYOUT). It reuses the SAME net_* exe module graph
     // minted at module 72 (fresh instances of the origin-tree:200-415 graph) — a module
     // instance may be imported by many targets; main.zig at src/ root is not
@@ -3774,7 +3774,7 @@ pub fn build(b: *std.Build) void {
     // dormant module, zero in-tree consumer) and main.zig never @imports it.
     // ═════════════════════════════════════════════════════════════════════════
     const vexfd_exe = b.addExecutable(.{
-        .name = "vex-fd",
+        .name = "vexor",
         .use_llvm = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -3792,7 +3792,7 @@ pub fn build(b: *std.Build) void {
         if (std.fs.cwd().access(jemalloc_path, .{})) |_| {
             vexfd_exe.root_module.addObjectFile(.{ .cwd_relative = jemalloc_path });
         } else |_| {
-            std.debug.print("[build] WARNING: jemalloc not found at {s} — building vex-fd on glibc malloc (RSS leak risk)\n", .{jemalloc_path});
+            std.debug.print("[build] WARNING: jemalloc not found at {s} — building vexor on glibc malloc (RSS leak risk)\n", .{jemalloc_path});
         }
     }
     // main.zig's exact named-module @import set (verified: no vex_bpf_vm, no
@@ -3813,7 +3813,7 @@ pub fn build(b: *std.Build) void {
     // FFI is linked (the Firedancer Ballet backend was removed 2026-07-12).
     const vexfd_install = b.addInstallArtifact(vexfd_exe, .{});
     b.getInstallStep().dependOn(&vexfd_install.step);
-    const vexfd_exe_step = b.step("vex-fd", "Build+install the rebuild `vex-fd` validator exe (§3.7; force-compiles replay_stage method bodies; arms the §3.8 golden-master gate)");
+    const vexfd_exe_step = b.step("vexor", "Build+install the rebuild `vexor` validator exe (§3.7; force-compiles replay_stage method bodies; arms the §3.8 golden-master gate)");
     vexfd_exe_step.dependOn(&vexfd_install.step);
 
     // ── §1.1 root-level regression KATs (origin-tree build.zig:2632-2724 / 2794) ──

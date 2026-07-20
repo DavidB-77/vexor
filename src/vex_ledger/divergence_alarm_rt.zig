@@ -245,7 +245,7 @@ pub const AlarmConfig = struct {
     /// Public testnet RPC oracle (CLUSTER ORACLE HARD RULE — never Vexor localhost/oracle-node).
     oracle_url: []const u8 = "https://api.testnet.solana.com",
     /// Bundle output root.
-    bundle_root: []const u8 = "/home/davidb/carrier-blackbox",
+    bundle_root: []const u8 = "./carrier-blackbox",
     /// The M1 wrapper the alarm spawns as a child process on an EXECUTION verdict.
     localize_script: []const u8 = "tools/divergence-localize.sh",
     /// Rooted-lag: only compare a slot once it is this many slots behind our tip.
