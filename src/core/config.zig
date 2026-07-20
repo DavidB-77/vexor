@@ -286,7 +286,7 @@ pub const Config = struct {
             } else if (std.mem.eql(u8, arg, "--testnet")) {
                 config.cluster = .testnet;
                 if (config.vote_account_path == null) {
-                    config.vote_account_path = "/home/sol/.secrets/qubetest/vote-account-keypair.json";
+                    config.vote_account_path = "/home/sol/.secrets/vexor/vote-account-keypair.json";
                 }
             } else if (std.mem.eql(u8, arg, "--mainnet-beta") or std.mem.eql(u8, arg, "--mainnet")) {
                 config.cluster = .mainnet_beta;

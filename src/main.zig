@@ -1972,7 +1972,7 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         rpc_server.full_rpc_api = config.full_rpc_api; // canonical tier: false ⇒ Minimal-12 only (voting node), true ⇒ full API (`vex-fd rpc` / --full-rpc-api)
         std.log.warn("[RPC] mode={s}{s}\n", .{
             if (config.full_rpc_api) "FULL-API" else "MINIMAL (12 methods)",
-            if (config.full_rpc_api) "" else " — Full/BankData/AccountsScan return -32601; run `vex-fd rpc` or pass --full-rpc-api for the complete API",
+            if (config.full_rpc_api) "" else " — Full/BankData/AccountsScan return -32601; run `vexor rpc` or pass --full-rpc-api for the complete API",
         });
         try rpc_server.start();
         std.log.debug("[MAIN] RPC server started on port {d}\n", .{config.rpc_port});
@@ -2988,7 +2988,7 @@ fn hasHelpFlag(extra: []const []const u8) bool {
 fn printUsage() void {
     const usage =
         \\
-        \\Usage: vex-fd <command> [options]
+        \\Usage: vexor <command> [options]
         \\
         \\Commands:
         \\  run, validator    Start the validator (consensus mode)
@@ -3025,18 +3025,18 @@ fn printUsage() void {
         \\  --bpf-stack=v2          Use vex_bpf2 stack (requires smoke pass)
         \\  --bpf-stack=shadow      V1 commits, V2 logs Stage-D diff lines
         \\  --bpf-stack-shadow-log=<path>  Override shadow log path
-        \\                          (default: /home/davidb/vex-fd-shadow.log)
+        \\                          (default: vexor-shadow.log)
         \\  --bpf-stack-trace={off,on-error,verbose}
         \\                          BPF2 trace verbosity (default: on-error)
         \\
         \\Examples:
-        \\  vex-fd validator --testnet \
+        \\  vexor validator --testnet \
         \\    --identity ~/keypair.json \
         \\    --vote-account ~/vote.json \
         \\    --ledger /mnt/ledger \
         \\    --bootstrap
         \\
-        \\  vex-fd rpc --testnet --ledger /mnt/ledger
+        \\  vexor rpc --testnet --ledger /mnt/ledger
         \\
     ;
     // Write directly to stdout — NOT std.log.debug, which is suppressed at normal log

@@ -30,7 +30,7 @@ pub const MIN_SNAPSHOT_DOWNLOAD_BYTES: u64 = 1 * 1024 * 1024;
 /// independently-operated validators on the same machine. This has happened
 /// before; that is why the rule exists. See CLAUDE.md RULE #1. We deny the
 /// HOST (all ports), which is stricter than the documented :8899/:8800 pair.
-pub const GOVNODE_DENY_HOSTS = [_][]const u8{
+pub const ORACLE_DENY_HOSTS = [_][]const u8{
     "38.92.24.174",
 };
 
@@ -57,13 +57,13 @@ pub fn extractHostFromAddr(addr: []const u8) []const u8 {
 /// "38.92.24.174".
 pub fn isDeniedSnapshotHost(addr: []const u8) bool {
     const host = extractHostFromAddr(addr);
-    for (GOVNODE_DENY_HOSTS) |denied| {
+    for (ORACLE_DENY_HOSTS) |denied| {
         if (std.mem.eql(u8, host, denied)) return true;
     }
     return false;
 }
 
-test "RULE#1 snapshot deny-list: govnode host blocked, substring trap allowed" {
+test "RULE#1 snapshot deny-list: oracle host blocked, substring trap allowed" {
     // Host extraction across every form a seed / getClusterNodes "rpc" can take.
     try std.testing.expectEqualStrings("api.testnet.solana.com", extractHostFromAddr("https://api.testnet.solana.com"));
     try std.testing.expectEqualStrings("1.2.3.4", extractHostFromAddr("http://1.2.3.4:8899/snapshot.tar.zst"));
@@ -82,7 +82,7 @@ test "RULE#1 snapshot deny-list: govnode host blocked, substring trap allowed" {
     try std.testing.expect(!isDeniedSnapshotHost("http://64.130.37.162:8899"));
 }
 
-test "RULE#1 deny-list filters govnode out of a getClusterNodes response (wiring)" {
+test "RULE#1 deny-list filters oracle out of a getClusterNodes response (wiring)" {
     // Exercises the EXACT extraction + skip the peer loops use
     // (discoverSnapshotPairFromCluster / findIncrementalAcrossPeers), over a
     // realistic payload: a null-rpc node (not matched by the pattern), the oracle-node
@@ -99,7 +99,7 @@ test "RULE#1 deny-list filters govnode out of a getClusterNodes response (wiring
     var kept = std.ArrayListUnmanaged([]const u8){};
     defer kept.deinit(std.testing.allocator);
     var pos: usize = 0;
-    var govnode_seen = false;
+    var oracle_seen = false;
     while (std.mem.indexOf(u8, response[pos..], "\"rpc\":\"")) |idx| {
         const start = pos + idx + 7;
         const end = std.mem.indexOf(u8, response[start..], "\"") orelse break;
@@ -107,12 +107,12 @@ test "RULE#1 deny-list filters govnode out of a getClusterNodes response (wiring
         pos = start + end; // advance BEFORE any skip — no infinite loop / mis-advance
         if (rpc_addr.len == 0 or std.mem.eql(u8, rpc_addr, "null")) continue;
         if (isDeniedSnapshotHost(rpc_addr)) {
-            govnode_seen = true;
+            oracle_seen = true;
             continue; // the peer-loop deny skip
         }
         try kept.append(std.testing.allocator, rpc_addr);
     }
-    try std.testing.expect(govnode_seen); // govnode WAS present in the blob…
+    try std.testing.expect(oracle_seen); // oracle WAS present in the blob…
     for (kept.items) |a| try std.testing.expect(!std.mem.eql(u8, a, "38.92.24.174:8899")); // …and filtered out
     try std.testing.expectEqual(@as(usize, 3), kept.items.len); // TRAP + P1 + P2 survive
     try std.testing.expectEqualStrings("138.92.24.174:8899", kept.items[0]); // substring-trap host kept
