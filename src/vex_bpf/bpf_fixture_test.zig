@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const fixture = @import("bpf_fixture.zig");
-const runner = @import("bpf_fixture_runner.zig");
+const runner  = @import("bpf_fixture_runner.zig");
 
 const FIXTURE_DIR = "tests/bpf_fixtures";
 
@@ -27,10 +27,10 @@ test "bpf-fixture: walk tests/bpf_fixtures/*.fix" {
     defer dir.close();
 
     var it = dir.iterate();
-    var n_total: usize = 0;
-    var n_passed: usize = 0;
+    var n_total:   usize = 0;
+    var n_passed:  usize = 0;
     var n_skipped: usize = 0;
-    var n_failed: usize = 0;
+    var n_failed:  usize = 0;
 
     while (try it.next()) |entry| {
         if (entry.kind != .file) continue;

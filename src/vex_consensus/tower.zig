@@ -203,7 +203,48 @@ pub const TowerBft = struct {
             self.buf[self.len] = .{ .slot = slot, .confirmation_count = 1 };
             self.len += 1;
         }
+
+        /// VOTE-THRESHOLD wiring (incident 423083743 companion fix, 2026-07-19):
+        /// the slot whose cluster-voted stake the depth-8 threshold check must
+        /// examine, for a candidate vote on `candidate`. Mirrors Agave
+        /// `check_vote_stake_threshold` (consensus.rs:1332-1369): simulate the
+        /// candidate vote on a COPY of the tower (pop expired / pop root / push —
+        /// the same simulation isLockedOut already does), then take
+        /// `nth_recent_lockout(VOTE_THRESHOLD_DEPTH)` = the lockout at index
+        /// `len - 1 - THRESHOLD_DEPTH` of the SIMULATED stack. Returns null when
+        /// the simulated tower is not deep enough (Agave: threshold trivially
+        /// PASSES — "a shallow first vote is permitted"); callers translate null
+        /// into the (0,0) stake pair that skips the check in `shouldVote`.
+        /// Pure + allocation-free (VoteState is a flat value type).
+        pub fn thresholdDepthSlot(self: *const VoteState, candidate: core.Slot) ?core.Slot {
+            var copy = self.*;
+            copy.recordVote(candidate);
+            if (copy.len <= THRESHOLD_DEPTH) return null;
+            return copy.buf[copy.len - 1 - THRESHOLD_DEPTH].slot;
+        }
     };
+
+    /// VOTE-THRESHOLD gate mode (VEX_VOTE_THRESHOLD, parsed at the replay_stage
+    /// call site): .off → check fully dormant (hot path computes nothing);
+    /// .shadow (DEFAULT) → real stakes are computed and the would-be verdict is
+    /// logged, but the values actually PASSED to shouldVote stay (0,0) — byte-
+    /// identical vote decisions to the pre-fix binary; .armed → the real stakes
+    /// are passed and the depth-8 threshold check enforces.
+    pub const ThresholdMode = enum { off, shadow, armed };
+
+    pub const ThresholdStakes = struct { voted: u64, total: u64 };
+
+    /// The SINGLE point deciding which stake pair reaches shouldVote. Shadow
+    /// mode can never alter the vote decision BY CONSTRUCTION: only .armed ever
+    /// forwards non-zero stakes, and (0,0) skips the threshold check entirely
+    /// (shouldVote's `total_stake > 0` guard) — KAT'd in
+    /// src/kat_vote_threshold_shadow.zig.
+    pub fn thresholdStakesForMode(mode: ThresholdMode, voted: u64, total: u64) ThresholdStakes {
+        return switch (mode) {
+            .armed => .{ .voted = voted, .total = total },
+            .off, .shadow => .{ .voted = 0, .total = 0 },
+        };
+    }
 
     /// CARRIER #7 (2026-06-10): production ancestry view for `isLockedOut`.
     /// The candidate bank's ancestor set =
@@ -267,9 +308,16 @@ pub const TowerBft = struct {
         // until that vote's lockout expires (and is popped by the simulation).
         if (self.vote_state.isLockedOut(slot, ancestors)) return false;
 
-        // Threshold check: cluster must have enough stake at our depth-8 slot
+        // Threshold check: cluster must have enough stake at our depth-8 slot.
+        // u128 widen (DIFF987 gate catch, 2026-07-20): real lamport-scale stakes
+        // overflow u64 at ×100 — testnet voted stake ≈2-3e17 lamports, ×100 ≈
+        // 2-3e19 > u64 max 1.84e19. Panicked the offline golden replay at the
+        // first deep-tower vote (shadow mode calls this with real stakes for
+        // its would-be verdict, so the overflow reaches production even
+        // before arming). Toy-stake KATs missed it; the mainnet-magnitude
+        // regression KAT in kat_vote_threshold_shadow.zig now pins it.
         if (total_stake > 0 and self.vote_state.len >= THRESHOLD_DEPTH) {
-            const pct = (cluster_voted_stake * 100) / total_stake;
+            const pct = (@as(u128, cluster_voted_stake) * 100) / total_stake;
             if (pct < THRESHOLD_PCT) return false;
         }
 
@@ -406,9 +454,7 @@ pub const TowerBft = struct {
         try file.writeAll(buf[0..off]);
 
         // Only log periodically (every 100 votes)
-        const TowerSaveDbg = struct {
-            var count: u64 = 0;
-        };
+        const TowerSaveDbg = struct { var count: u64 = 0; };
         TowerSaveDbg.count += 1;
         if (TowerSaveDbg.count <= 3 or TowerSaveDbg.count % 100 == 0) std.log.debug("[Tower] Saved: last_vote={d} root={?d} lockouts={d} [#{d}]\n", .{
             self.last_vote_slot, self.vote_state.root_slot, num, TowerSaveDbg.count,

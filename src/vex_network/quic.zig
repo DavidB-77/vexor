@@ -2640,7 +2640,7 @@ fn hashSocketAddr(addr: *const packet.SocketAddr) u64 {
     return h.final();
 }
 
-/// Resolve an EndpointConfig.bind_addr dotted-IPv4 string (e.g. "10.0.0.1") + port into a
+/// Resolve an EndpointConfig.bind_addr dotted-IPv4 string (e.g. "38.58.183.154") + port into a
 /// packet.SocketAddr. Empty string or an unparseable address both fall back to 0.0.0.0 (the exact
 /// prior hardcoded behavior) — a config typo can never prevent the endpoint from binding at all;
 /// Endpoint.bind() has its own second-layer fallback if the actual bind() syscall then fails.

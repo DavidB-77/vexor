@@ -86,6 +86,7 @@ fn defaultCtx() vi.ExecContext {
             .block_revenue_sharing = true,
             .vote_account_initialize_v2 = true,
         },
+        .alloc = std.testing.allocator,
     };
 }
 
@@ -918,4 +919,298 @@ test "STAGE5-KAT: discriminant routing tables — every discriminant 0-19 is han
     try testing.expect(vi.isKnownGapDiscriminant(19));
     try testing.expect(!vi.isKnownGapDiscriminant(1));
     try testing.expect(!vi.isKnownGapDiscriminant(14));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY V1_14_11 (tag 1) load-migrate + SIMD-0185 storeV4 grow — the coupled
+// bacc392 + ef4e978 fixes. Exercised through the real handler path
+// (`vi.authorize`), which is exactly `get_vote_state_handler_checked` →
+// `try_convert_to_vote_state_v4` → `set_vote_account_state` in Agave.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Build a valid V1_14_11 (tag 1) wire buffer of length `out_len` into a heap
+/// slice (allocator-backed so `storeV4`'s realloc-grow is well-defined). Votes
+/// are bare Lockouts (no per-vote latency byte). `out_len` must be >= the actual
+/// serialized length; trailing bytes are left as the legacy account's own tail.
+fn buildLegacyV1_14_11(
+    alloc: std.mem.Allocator,
+    total_len: usize,
+    node: [32]u8,
+    withdrawer: [32]u8,
+    commission: u8,
+    voter_epoch: u64,
+    voter: [32]u8,
+) ![]u8 {
+    const buf = try alloc.alloc(u8, total_len);
+    @memset(buf, 0);
+    var o: usize = 0;
+    std.mem.writeInt(u32, buf[o..][0..4], codec.VERSION_TAG_V1_14_11, .little);
+    o += 4;
+    @memcpy(buf[o..][0..32], &node);
+    o += 32;
+    @memcpy(buf[o..][0..32], &withdrawer);
+    o += 32;
+    buf[o] = commission;
+    o += 1;
+    std.mem.writeInt(u64, buf[o..][0..8], 0, .little); // votes len = 0
+    o += 8;
+    buf[o] = 0; // root_slot None
+    o += 1;
+    std.mem.writeInt(u64, buf[o..][0..8], 1, .little); // authorized_voters len = 1
+    o += 8;
+    std.mem.writeInt(u64, buf[o..][0..8], voter_epoch, .little);
+    o += 8;
+    @memcpy(buf[o..][0..32], &voter);
+    o += 32;
+    @memset(buf[o..][0..codec.PRIOR_VOTERS_BLOB_LEN], 0); // prior_voters opaque blob
+    o += codec.PRIOR_VOTERS_BLOB_LEN;
+    std.mem.writeInt(u64, buf[o..][0..8], 0, .little); // epoch_credits len = 0
+    o += 8;
+    std.mem.writeInt(u64, buf[o..][0..8], 0, .little); // last_timestamp.slot
+    o += 8;
+    std.mem.writeInt(u64, buf[o..][0..8], 0, .little); // last_timestamp.timestamp
+    o += 8;
+    std.debug.assert(o <= total_len);
+    return buf;
+}
+
+test "M-VOTE-1 INTEGRATION: legacy V1_14_11 (tag 1, <3762) + Authorize -> migrate to V4 AND grow to 3762 byte-exact (bacc392 + ef4e978 coupled)" {
+    const node = key(0x31);
+    const withdrawer = key(0x32);
+    const voter = key(0x33);
+    const new_withdrawer = key(0x34);
+    const legacy_len: usize = 1800; // < 3762, a real legacy account is ~3731; any <3762 grows
+
+    // Heap-backed so setDataLength's realloc is well-defined.
+    const data = try buildLegacyV1_14_11(testing.allocator, legacy_len, node, withdrawer, 0, 984, voter);
+    // Keep a pristine copy of the pre-store legacy bytes to build the expected
+    // grown buffer independently (proves the stale-tail contract byte-for-byte).
+    const legacy_copy = try testing.allocator.dupe(u8, data);
+    defer testing.allocator.free(legacy_copy);
+
+    var metas = [_]aio.AccountMeta{.{ .pubkey = VOTE_KEY, .is_signer = false, .is_writable = true }};
+    var records = [_]aio.AccountRecord{.{ .pubkey = VOTE_KEY, .lamports = 100_000_000, .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = data }};
+    var table = mkTable(&metas, &records);
+    var ctx = defaultCtx();
+
+    // Authorize(withdrawer -> new_withdrawer), signed by the current withdrawer.
+    try vi.authorize(&table, 0, &[_][32]u8{withdrawer}, new_withdrawer, .withdrawer, &ctx);
+
+    // The account grew to exactly VoteStateV4::size_of() and is now tag-3 V4.
+    const grown = records[0].data;
+    defer testing.allocator.free(grown); // free the FINAL (possibly reallocated) slice
+    try testing.expectEqual(@as(usize, vi.VOTE_ACCOUNT_DATA_LEN), grown.len);
+    try testing.expectEqual(@as(u32, codec.VERSION_TAG_V4), try codec.versionTag(grown));
+
+    const post = (try codec.VoteStateV4.parse(grown)).state;
+    try testing.expectEqualSlices(u8, &new_withdrawer, &post.authorized_withdrawer); // the mutation
+    try testing.expectEqualSlices(u8, &node, &post.node_pubkey); // migrated from legacy
+    try testing.expectEqualSlices(u8, &VOTE_KEY, &post.inflation_rewards_collector); // vote pubkey
+    try testing.expectEqualSlices(u8, &node, &post.block_revenue_collector); // node pubkey
+    try testing.expectEqual(@as(u16, 10_000), post.block_revenue_commission_bps);
+    try testing.expectEqual(@as(usize, 1), post.tail.authorized_voters_len);
+    try testing.expectEqual(@as(u64, 984), post.tail.authorized_voters[0].epoch);
+
+    // Byte-exact stale-tail proof: build the expected 3762-byte buffer the way
+    // Agave does — original legacy bytes extended with zeros to 3762, then the
+    // V4 prefix serialized over it — and require the live buffer to equal it.
+    var expected = try testing.allocator.alloc(u8, vi.VOTE_ACCOUNT_DATA_LEN);
+    defer testing.allocator.free(expected);
+    @memset(expected, 0);
+    @memcpy(expected[0..legacy_copy.len], legacy_copy);
+    _ = try post.serialize(expected);
+    try testing.expectEqualSlices(u8, expected, grown);
+}
+
+test "M-VOTE-2: SIMD-0185 grow-fail — under-sized account NOT rent-exempt at 3762 -> AccountNotRentExempt, size unchanged" {
+    const node = key(0x41);
+    const withdrawer = key(0x42);
+    const voter = key(0x43);
+    const legacy_len: usize = 1800;
+
+    const data = try buildLegacyV1_14_11(testing.allocator, legacy_len, node, withdrawer, 0, 984, voter);
+    defer testing.allocator.free(data); // never grows -> original slice is final
+
+    // 2614 lamports: rent-exempt at 1800 is also false, but the point is it is
+    // nowhere near rent-exempt at 3762 = (3762+128)*3480*2 = 27,074,400.
+    var metas = [_]aio.AccountMeta{.{ .pubkey = VOTE_KEY, .is_signer = false, .is_writable = true }};
+    var records = [_]aio.AccountRecord{.{ .pubkey = VOTE_KEY, .lamports = 2_614, .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = data }};
+    var table = mkTable(&metas, &records);
+    var ctx = defaultCtx();
+
+    try testing.expectError(error.AccountNotRentExempt, vi.authorize(&table, 0, &[_][32]u8{withdrawer}, key(0x44), .withdrawer, &ctx));
+    // Size unchanged (grow was rejected before any serialize).
+    try testing.expectEqual(legacy_len, records[0].data.len);
+    try testing.expectEqual(@as(u32, codec.VERSION_TAG_V1_14_11), try codec.versionTag(records[0].data));
+}
+
+test "M-VOTE-3: loadV4Checked tag semantics via authorize — tag 0 -> InvalidAccountData, empty-voter legacy -> UninitializedAccount" {
+    var ctx = defaultCtx();
+    // tag 0 (all-zero freshly-funded account) at a mutating call site: Agave's
+    // strict cursor VoteStateVersions::deserialize drops V0_23_5 -> InvalidAccountData
+    // (NOT UninitializedAccount, which is the generic-enum initialize semantics).
+    {
+        var buf: [3762]u8 = [_]u8{0} ** 3762; // tag = 0
+        var tab = oneAccountTable(&buf, false, true);
+        var table = mkTable(&tab.metas, &tab.records);
+        try testing.expectError(error.InvalidAccountData, vi.authorize(&table, 0, &[_][32]u8{key(2)}, key(5), .withdrawer, &ctx));
+    }
+    // A V1_14_11 with EMPTY authorized_voters is is_uninitialized -> UninitializedAccount
+    // (matches the real bb46e6a0 fixture's expected result).
+    {
+        const data = try testing.allocator.alloc(u8, 1800);
+        defer testing.allocator.free(data);
+        @memset(data, 0);
+        std.mem.writeInt(u32, data[0..4], codec.VERSION_TAG_V1_14_11, .little);
+        // node(32)+withdrawer(32)+commission(1)+votes_len(8)=0+root(1)=0 then
+        // authorized_voters_len(8)=0 at offset 4+32+32+1+8+1 = 78.
+        std.mem.writeInt(u64, data[78..86], 0, .little); // authorized_voters len = 0
+        var metas = [_]aio.AccountMeta{.{ .pubkey = VOTE_KEY, .is_signer = false, .is_writable = true }};
+        var records = [_]aio.AccountRecord{.{ .pubkey = VOTE_KEY, .lamports = 100_000_000, .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = data }};
+        var table = mkTable(&metas, &records);
+        try testing.expectError(error.UninitializedAccount, vi.authorize(&table, 0, &[_][32]u8{key(2)}, key(5), .withdrawer, &ctx));
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Authorize-family Clock-account identity check + fallible create_with_seed
+// (52a173e). Layout: [vote@0, clock@1, base_authority@2] for with-seed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const CLOCK = vi.SYSVAR_CLOCK_ID;
+
+/// [vote@0 (initialized V4, withdrawer set), sysvar@1, base@2 (signer)].
+/// `sysvar_pubkey` lets a test put a garbage pubkey at index 1.
+fn withSeedTable(
+    vote_data: []u8,
+    sysvar_pubkey: [32]u8,
+    base_pubkey: [32]u8,
+) struct { metas: [3]aio.AccountMeta, records: [3]aio.AccountRecord } {
+    return .{
+        .metas = [_]aio.AccountMeta{
+            .{ .pubkey = VOTE_KEY, .is_signer = false, .is_writable = true },
+            .{ .pubkey = sysvar_pubkey, .is_signer = false, .is_writable = false },
+            .{ .pubkey = base_pubkey, .is_signer = true, .is_writable = false },
+        },
+        .records = [_]aio.AccountRecord{
+            .{ .pubkey = VOTE_KEY, .lamports = 100_000_000, .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = vote_data },
+            .{ .pubkey = sysvar_pubkey, .lamports = 1, .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &[_]u8{} },
+            .{ .pubkey = base_pubkey, .lamports = 1, .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &[_]u8{} },
+        },
+    };
+}
+
+test "M-VOTE-4: AuthorizeWithSeed — garbage account at Clock index 1 -> InvalidArgument (check fires before any state load)" {
+    const withdrawer = key(2);
+    var s = emptyV4(key(1), withdrawer);
+    withAuthorizedVoter(&s, 8, key(3));
+    var buf: [3762]u8 = undefined;
+    serializeInto(&buf, &s);
+
+    var tab = withSeedTable(&buf, key(0xEE), key(9)); // index 1 is NOT the Clock sysvar
+    var table = mkTable(&tab.metas, &tab.records);
+    var ctx = defaultCtx();
+    try testing.expectError(error.InvalidArgument, vi.authorizeWithSeed(&table, 0, 2, .withdrawer, key(7), "seed", key(5), &ctx));
+}
+
+test "M-VOTE-5: AuthorizeWithSeed — owner arg ends in the PDA marker -> Custom(2) IllegalOwner (create_with_seed precondition)" {
+    const withdrawer = key(2);
+    var s = emptyV4(key(1), withdrawer);
+    withAuthorizedVoter(&s, 8, key(3));
+    var buf: [3762]u8 = undefined;
+    serializeInto(&buf, &s);
+
+    const base = key(9);
+    var tab = withSeedTable(&buf, CLOCK, base); // valid Clock at index 1, base signs
+    var table = mkTable(&tab.metas, &tab.records);
+    var ctx = defaultCtx();
+
+    var pda_owner = [_]u8{0xCC} ** 32;
+    @memcpy(pda_owner[11..32], "ProgramDerivedAddress");
+    try testing.expectError(error.Custom, vi.authorizeWithSeed(&table, 0, 2, .withdrawer, pda_owner, "seed", key(5), &ctx));
+    try testing.expectEqual(@as(?u32, 2), ctx.custom_error);
+}
+
+test "M-VOTE-6: AuthorizeWithSeed — seed longer than 32 bytes -> Custom(0) MaxSeedLengthExceeded" {
+    const withdrawer = key(2);
+    var s = emptyV4(key(1), withdrawer);
+    withAuthorizedVoter(&s, 8, key(3));
+    var buf: [3762]u8 = undefined;
+    serializeInto(&buf, &s);
+
+    const base = key(9);
+    var tab = withSeedTable(&buf, CLOCK, base);
+    var table = mkTable(&tab.metas, &tab.records);
+    var ctx = defaultCtx();
+
+    const long_seed = "x" ** 33; // > MAX_SEED_LEN (32)
+    try testing.expectError(error.Custom, vi.authorizeWithSeed(&table, 0, 2, .withdrawer, key(7), long_seed, key(5), &ctx));
+    try testing.expectEqual(@as(?u32, 0), ctx.custom_error);
+}
+
+test "M-VOTE-7: AuthorizeWithSeed — valid Clock + derived key == current withdrawer succeeds (happy path unchanged)" {
+    const base = key(9);
+    const owner = key(7);
+    const seed = "myseed";
+    // Derived authority = SHA256(base || seed || owner) — replicate to seed the
+    // vote account's authorized_withdrawer so verifyAuthorizedSigner passes.
+    var derived: [32]u8 = undefined;
+    {
+        var h = std.crypto.hash.sha2.Sha256.init(.{});
+        h.update(&base);
+        h.update(seed);
+        h.update(&owner);
+        h.final(&derived);
+    }
+    var s = emptyV4(key(1), derived); // withdrawer == derived key
+    withAuthorizedVoter(&s, 8, key(3));
+    var buf: [3762]u8 = undefined;
+    serializeInto(&buf, &s);
+
+    var tab = withSeedTable(&buf, CLOCK, base);
+    var table = mkTable(&tab.metas, &tab.records);
+    var ctx = defaultCtx();
+
+    const new_withdrawer = key(0x5A);
+    try vi.authorizeWithSeed(&table, 0, 2, .withdrawer, owner, seed, new_withdrawer, &ctx);
+    const post = (try codec.VoteStateV4.parse(&buf)).state;
+    try testing.expectEqualSlices(u8, &new_withdrawer, &post.authorized_withdrawer);
+}
+
+test "M-VOTE-8: SYSVAR_CLOCK_ID matches canonical SysvarC1ock bytes + AuthorizeChecked garbage-Clock -> InvalidArgument" {
+    // Pin the independently-declared Clock id to the canonical wire bytes of
+    // "SysvarC1ock11111111111111111111111111111111" (byte-identical to
+    // vex_bpf2/sysvar_cache.zig SYSVAR_CLOCK_ID).
+    const canonical_clock = [_]u8{
+        0x06, 0xa7, 0xd5, 0x17, 0x18, 0xc7, 0x74, 0xc9, 0x28, 0x56, 0x63, 0x98,
+        0x69, 0x1d, 0x5e, 0xb6, 0x8b, 0x5e, 0xb8, 0xa3, 0x9b, 0x4b, 0x6d, 0x5c,
+        0x73, 0x55, 0x5b, 0x21, 0x00, 0x00, 0x00, 0x00,
+    };
+    try testing.expectEqualSlices(u8, &canonical_clock, &vi.SYSVAR_CLOCK_ID);
+
+    // AuthorizeChecked: [vote@0, clock@1, current@2, new@3]. index-3 signs but
+    // index 1 is garbage -> Agave checks index-3 signer FIRST (passes) then the
+    // Clock account (fails) -> InvalidArgument.
+    const withdrawer = key(2);
+    var s = emptyV4(key(1), withdrawer);
+    withAuthorizedVoter(&s, 8, key(3));
+    var buf: [3762]u8 = undefined;
+    serializeInto(&buf, &s);
+
+    const new_auth = key(0x4B);
+    var metas = [_]aio.AccountMeta{
+        .{ .pubkey = VOTE_KEY, .is_signer = false, .is_writable = true },
+        .{ .pubkey = key(0xEE), .is_signer = false, .is_writable = false }, // garbage at Clock index
+        .{ .pubkey = withdrawer, .is_signer = true, .is_writable = false },
+        .{ .pubkey = new_auth, .is_signer = true, .is_writable = false },
+    };
+    var records = [_]aio.AccountRecord{
+        .{ .pubkey = VOTE_KEY, .lamports = 100_000_000, .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = &buf },
+        .{ .pubkey = key(0xEE), .lamports = 1, .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &[_]u8{} },
+        .{ .pubkey = withdrawer, .lamports = 1, .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &[_]u8{} },
+        .{ .pubkey = new_auth, .lamports = 1, .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &[_]u8{} },
+    };
+    var table = mkTable(&metas, &records);
+    var ctx = defaultCtx();
+    try testing.expectError(error.InvalidArgument, vi.authorizeChecked(&table, 0, 3, &[_][32]u8{ withdrawer, new_auth }, .withdrawer, &ctx));
 }

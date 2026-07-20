@@ -1370,11 +1370,10 @@ pub const Vm = struct {
                     } else |_| {}
                     // diag — print version/target-reg semantics for the abort
                     std.log.warn("[CALLX-DIAG] caller_pc={d} v={s} which_reg=r{d} target_addr=0x{x} program_vm_addr=0x{x} target_pc={d} text_len={d} insn.imm={d} insn.src=r{d} insn.dst=r{d}", .{
-                        self.reg[11],                 @tagName(v),
-                        which_reg_idx,                target_addr,
-                        self.program_vm_addr,         target_pc,
-                        self.program.len / INSN_SIZE, insn.imm,
-                        src,                          dst,
+                        self.reg[11], @tagName(v),
+                        which_reg_idx, target_addr, self.program_vm_addr,
+                        target_pc, self.program.len / INSN_SIZE,
+                        insn.imm, src, dst,
                     });
                     return InterpreterError.CallOutsideTextSegment;
                 }

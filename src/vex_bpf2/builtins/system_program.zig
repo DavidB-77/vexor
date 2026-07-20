@@ -90,6 +90,14 @@ pub const Error = error{
     // the failure surfaces auditable.
     M9_System_InvalidArgument,
     M9_System_InvalidAccountOwner,
+    // LANE-L-BACKPORT-AUDIT-2026-07-17 #4/#5: maps to Agave
+    // InstructionError::ModifiedProgramId, the error BorrowedAccount::
+    // set_owner() returns (transaction_context.rs) when any of its 3
+    // preconditions fail: the account isn't already owned by the currently
+    // executing program, isn't writable, or its data isn't all-zero. This is
+    // a generic low-level account-mutation guard (not System-specific in
+    // Agave) hit via Assign/AssignWithSeed's owner-reassignment path.
+    M9_System_ModifiedProgramId,
 };
 
 pub const MAX_PERMITTED_DATA_LENGTH: u64 = 10 * 1024 * 1024;
@@ -149,7 +157,17 @@ pub fn decode(ix_data: []const u8) Error!Instruction {
             if (body.len < 32 + 8) return error.M9_System_InvalidInstructionData;
             const base: Pubkey32 = body[0..32].*;
             const seed_len = std.mem.readInt(u64, body[32..40], .little);
-            if (body.len < 40 + seed_len + 8 + 8 + 32) return error.M9_System_InvalidInstructionData;
+            // FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #1, zbpf 0f0f493): seed_len
+            // is attacker-controlled (read straight off the wire, unbounded by
+            // body.len). Plain `+` traps as an unrecoverable ReleaseSafe panic
+            // (process abort) when seed_len is near u64::MAX, regardless of the
+            // real (small) body.len -- a validator-crash DoS on a routine System
+            // CPI variant. Agave's bincode deserializer never forms this sum at
+            // all (it walks the reader byte-by-byte and EOFs on a length prefix
+            // that overruns the remaining buffer), so there is no equivalent
+            // overflow surface upstream to match -- the fix is to make the
+            // bounds check itself overflow-safe instead of trap-unsafe.
+            if (body.len < 40 +| seed_len +| 8 +| 8 +| 32) return error.M9_System_InvalidInstructionData;
             const seed = body[40 .. 40 + seed_len];
             const rest = body[40 + seed_len ..];
             return .{ .create_account_with_seed = .{
@@ -182,7 +200,9 @@ pub fn decode(ix_data: []const u8) Error!Instruction {
             if (body.len < 32 + 8) return error.M9_System_InvalidInstructionData;
             const base: Pubkey32 = body[0..32].*;
             const seed_len = std.mem.readInt(u64, body[32..40], .little);
-            if (body.len < 40 + seed_len + 8 + 32) return error.M9_System_InvalidInstructionData;
+            // FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #1): same saturating-add
+            // fix as CreateAccountWithSeed above -- see that comment.
+            if (body.len < 40 +| seed_len +| 8 +| 32) return error.M9_System_InvalidInstructionData;
             const seed = body[40 .. 40 + seed_len];
             const rest = body[40 + seed_len ..];
             return .{ .allocate_with_seed = .{
@@ -197,7 +217,9 @@ pub fn decode(ix_data: []const u8) Error!Instruction {
             if (body.len < 32 + 8) return error.M9_System_InvalidInstructionData;
             const base: Pubkey32 = body[0..32].*;
             const seed_len = std.mem.readInt(u64, body[32..40], .little);
-            if (body.len < 40 + seed_len + 32) return error.M9_System_InvalidInstructionData;
+            // FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #1): same saturating-add
+            // fix as CreateAccountWithSeed above -- see that comment.
+            if (body.len < 40 +| seed_len +| 32) return error.M9_System_InvalidInstructionData;
             const seed = body[40 .. 40 + seed_len];
             const owner = body[40 + seed_len ..][0..32].*;
             return .{ .assign_with_seed = .{ .base = base, .seed = seed, .owner = owner } };
@@ -207,7 +229,9 @@ pub fn decode(ix_data: []const u8) Error!Instruction {
             if (body.len < 8 + 8) return error.M9_System_InvalidInstructionData;
             const lamports = std.mem.readInt(u64, body[0..8], .little);
             const seed_len = std.mem.readInt(u64, body[8..16], .little);
-            if (body.len < 16 + seed_len + 32) return error.M9_System_InvalidInstructionData;
+            // FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #1): same saturating-add
+            // fix as CreateAccountWithSeed above -- see that comment.
+            if (body.len < 16 +| seed_len +| 32) return error.M9_System_InvalidInstructionData;
             const seed = body[16 .. 16 + seed_len];
             const from_owner = body[16 + seed_len ..][0..32].*;
             return .{ .transfer_with_seed = .{
@@ -335,10 +359,20 @@ fn executeAssign(ctx: *InvokeContext, new_owner: Pubkey32) Error!void {
     // FIRST, so Assign(owner) on an account already owned by `owner` but NOT
     // signed returned MissingRequiredSignature where the cluster returns Ok —
     // a failed-tx-vs-success divergence. The differential KAT ("diff c") caught
-    // it. Agave's assign() does NOT check writability (the message processor /
-    // borrow enforces it); we mirror that to stay byte-identical to native.
+    // it.
+    //
+    // FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #4): the comment above used to
+    // claim "Agave's assign() does NOT check writability" and stop there —
+    // true only of assign()'s OWN function body (system_processor.rs:194-
+    // 228), which indeed has no explicit `if !writable` line. But assign()
+    // ends with `account.set_owner(owner.as_ref())?`, and set_owner() itself
+    // (transaction_context.rs) enforces 3 preconditions — owned-by-System,
+    // writable, AND zero-data — before allowing the mutation, returning
+    // ModifiedProgramId on any violation. See checkSetOwnerPreconditions()
+    // above for the full citation; this call was missing entirely.
     if (std.mem.eql(u8, &a.owner, &new_owner)) return; // no work to do
     if (!a.is_signer) return error.M9_System_MissingRequiredSignature;
+    try checkSetOwnerPreconditions(a);
     a.owner = new_owner;
 }
 
@@ -586,6 +620,30 @@ fn allocateAccountData(ctx: *InvokeContext, a: *AccountView, space: u64) Error!v
     }
 }
 
+/// FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #4/#5): mirrors Agave's
+/// BorrowedAccount::set_owner() 3-precondition guard (transaction_context.rs)
+/// — called internally by system_processor.rs assign()/assign_with_seed()
+/// via `account.set_owner(owner.as_ref())?` AFTER the no-op and signer
+/// checks pass, but BEFORE the mutation. All 3 preconditions map to the
+/// SAME error, ModifiedProgramId:
+///   1. the account must already be owned by the CURRENTLY EXECUTING program
+///      (System, since Assign/AssignWithSeed are System's own handlers) —
+///      i.e. Assign can only ever move ownership AWAY from System, never
+///      reassign an account some other program already owns;
+///   2. the account must be writable;
+///   3. the account's data must be all-zero.
+/// Neither executeAssign nor executeAssignWithSeed previously called this at
+/// all — a writable, correctly-signed, non-System-owned or non-zero-data
+/// account had its owner silently overwritten here where Agave hard-rejects
+/// with ModifiedProgramId and writes nothing. Must run AFTER the no-op/
+/// signer checks (matches Agave's call order) — do not hoist earlier, that
+/// was AssignWithSeed's other bug (see call site).
+fn checkSetOwnerPreconditions(a: *const AccountView) Error!void {
+    if (!std.mem.eql(u8, &a.owner, &SYSTEM_PROGRAM_ID)) return error.M9_System_ModifiedProgramId;
+    if (!a.is_writable) return error.M9_System_ModifiedProgramId;
+    if (!std.mem.allEqual(u8, a.data, 0)) return error.M9_System_ModifiedProgramId;
+}
+
 /// Shared assign primitive (mirrors system_v2.assign + executeAssign):
 /// no-op if already owned by `new_owner`, else set owner.
 fn assignAccountOwner(a: *AccountView, new_owner: *const Pubkey32) void {
@@ -693,19 +751,48 @@ fn executeAssignWithSeed(
     const a = &ctx.tx.accounts[idx];
 
     try verifySeedAddress(&a.pubkey, base, seed, &new_owner);
-    if (!a.is_writable) return error.M9_System_AccountNotWritable;
+    // FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #5): this used to check
+    // `!a.is_writable` here, BEFORE the no-op/signer checks below — wrong
+    // order vs. Agave. assign_with_seed() (system_processor.rs) checks the
+    // no-op case FIRST (`if account.get_owner() == owner { return Ok(()) }`,
+    // no writability involved at all for that branch), THEN the signer
+    // check, and only reaches set_owner()'s writable/owned-by-System/
+    // zero-data guard (see checkSetOwnerPreconditions) LAST, right before
+    // the mutation. The old order meant a non-writable account that was
+    // ALREADY owned by new_owner (an idempotent no-op on real Agave) failed
+    // here with AccountNotWritable instead of silently succeeding — a
+    // success-vs-fail divergence on top of the same silent-mutation gap #4
+    // has (owned-by-System + zero-data were never checked at all).
     // assign() is a no-op (no signer needed) if already owned by new_owner.
     if (std.mem.eql(u8, &a.owner, &new_owner)) return;
     if (!frameSignerPresent(ctx, frame, base)) return error.M9_System_MissingRequiredSignature;
+    try checkSetOwnerPreconditions(a);
     a.owner = new_owner;
 }
 
 // ── Handler: TransferWithSeed (variant 11) ─────────────────────────────────
 // Mirrors system_v2.execTransferWithSeed (fd_system_program.c:634-701).
 // Accounts: from(0), from_base(1), to(2). from must equal
-// SHA256(from_base|from_seed|from_owner|"ProgramDerivedAddress") — note this
-// variant DOES use the PDA marker (matches system_v2 + Agave/FD). from_base
-// must sign.
+// SHA256(from_base|from_seed|from_owner) — NO PDA marker.
+//
+// FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #3, zbpf 7388191): this handler used
+// to append PDA_MARKER ("ProgramDerivedAddress") to the hash, on the (wrong)
+// belief that TransferWithSeed derives differently from the other 3
+// with-seed variants. It does not: Agave's `Pubkey::create_with_seed` is one
+// generic function (solana-pubkey, no per-instruction special case) used
+// identically by CreateAccountWithSeed / AllocateWithSeed / AssignWithSeed /
+// TransferWithSeed alike — SHA256(base||seed||owner), no marker. The PDA
+// marker belongs ONLY to create_program_address/find_program_address (CPI
+// signer PDAs), an unrelated derivation. This is the exact same defect class
+// already root-caused and fixed for CreateAccountWithSeed as carrier #12
+// (@414674115, see verifySeedAddress below + native/system_v2.zig:202-244):
+// appending the marker means the derived address never matches a real
+// cluster-issued `from` pubkey, so every genuine TransferWithSeed
+// transaction fails M9_System_AddressWithSeedMismatch here while the
+// cluster executes it — a failed-vs-success divergence. Now routed through
+// the same shared verifySeedAddress() the other 3 with-seed variants use,
+// which also picks up the MAX_SEED_LEN and IllegalOwner guards this handler
+// was previously missing entirely. from_base must sign.
 fn executeTransferWithSeed(
     ctx: *InvokeContext,
     from_seed: []const u8,
@@ -726,15 +813,8 @@ fn executeTransferWithSeed(
     // base must sign.
     if (!base.is_signer) return error.M9_System_MissingRequiredSignature;
 
-    // derive address from base + seed + owner + PDA marker (this variant uses it).
-    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-    hasher.update(&base.pubkey);
-    hasher.update(from_seed);
-    hasher.update(from_owner);
-    hasher.update(PDA_MARKER);
-    var derived: Pubkey32 = undefined;
-    hasher.final(&derived);
-    if (!std.mem.eql(u8, &derived, &from.pubkey)) return error.M9_System_AddressWithSeedMismatch;
+    // derive address from base + seed + owner (NO PDA marker — see fix note above).
+    try verifySeedAddress(&from.pubkey, &base.pubkey, from_seed, from_owner);
 
     // transfer_verified: from must carry no data, sufficient funds.
     if (!from.is_writable) return error.M9_System_AccountNotWritable;
@@ -1151,4 +1231,221 @@ test "M9 system: CreateAccount (tag=0) transfers, allocates, assigns" {
     try t.expectEqual(@as(u8, 0x7e), h.ctx.tx.accounts[1].owner[0]);
     // Free the arena-style resize buffer (test harness uses gpa).
     h.ctx.allocator.free(h.ctx.tx.accounts[1].data);
+}
+
+// ── LANE-L-BACKPORT-AUDIT-2026-07-17 regression KATs ───────────────────────
+
+// FIX #1: seed_len is attacker-controlled and unbounded by the real (tiny)
+// body.len; plain `+` in the bounds-check guard trapped as an unrecoverable
+// ReleaseSafe panic (process abort) instead of a catchable decode error.
+// One regression test per with-seed variant (tags 3/9/10/11).
+test "M9 system: decode saturates seed_len near u64::MAX instead of trapping (CreateAccountWithSeed)" {
+    const t = std.testing;
+    var data: [4 + 32 + 8]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 3, .little);
+    @memset(data[4..36], 0);
+    std.mem.writeInt(u64, data[36..44], std.math.maxInt(u64) - 5, .little); // seed_len
+    try t.expectError(error.M9_System_InvalidInstructionData, decode(&data));
+}
+
+test "M9 system: decode saturates seed_len near u64::MAX instead of trapping (AllocateWithSeed)" {
+    const t = std.testing;
+    var data: [4 + 32 + 8]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 9, .little);
+    @memset(data[4..36], 0);
+    std.mem.writeInt(u64, data[36..44], std.math.maxInt(u64) - 5, .little); // seed_len
+    try t.expectError(error.M9_System_InvalidInstructionData, decode(&data));
+}
+
+test "M9 system: decode saturates seed_len near u64::MAX instead of trapping (AssignWithSeed)" {
+    const t = std.testing;
+    var data: [4 + 32 + 8]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 10, .little);
+    @memset(data[4..36], 0);
+    std.mem.writeInt(u64, data[36..44], std.math.maxInt(u64) - 5, .little); // seed_len
+    try t.expectError(error.M9_System_InvalidInstructionData, decode(&data));
+}
+
+test "M9 system: decode saturates seed_len near u64::MAX instead of trapping (TransferWithSeed)" {
+    const t = std.testing;
+    var data: [4 + 8 + 8]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 11, .little);
+    std.mem.writeInt(u64, data[4..12], 0, .little); // lamports
+    std.mem.writeInt(u64, data[12..20], std.math.maxInt(u64) - 5, .little); // seed_len
+    try t.expectError(error.M9_System_InvalidInstructionData, decode(&data));
+}
+
+// FIX #3: TransferWithSeed's address derivation must be SHA256(base||seed||
+// owner) with NO PDA marker, matching create_with_seed and the other 3
+// with-seed variants (verifySeedAddress). A real Agave-issued
+// TransferWithSeed's `from` pubkey is derived this way; the pre-fix handler
+// appended "ProgramDerivedAddress" and so rejected every genuine one.
+test "M9 system: TransferWithSeed derives address WITHOUT PDA marker (matches create_with_seed)" {
+    const t = std.testing;
+    var base_pk: Pubkey32 = std.mem.zeroes(Pubkey32);
+    base_pk[0] = 0x11;
+    const seed = "vault";
+    var from_owner: Pubkey32 = std.mem.zeroes(Pubkey32);
+    from_owner[0] = 0x22;
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(&base_pk);
+    hasher.update(seed);
+    hasher.update(&from_owner);
+    var derived: Pubkey32 = undefined;
+    hasher.final(&derived);
+
+    var h = try Harness.init(t.allocator, 1_000, &.{
+        .{ .pubkey = derived, .lamports = 100, .data_len = 0, .owner = SYSTEM_PROGRAM_ID, .is_writable = true, .is_signer = false },
+        .{ .pubkey = base_pk, .lamports = 0, .data_len = 0, .owner = SYSTEM_PROGRAM_ID, .is_writable = false, .is_signer = true },
+        .{ .lamports = 0, .data_len = 0, .owner = SYSTEM_PROGRAM_ID, .is_writable = true, .is_signer = false },
+    });
+    defer h.deinit();
+    try h.pushFrame(0, &.{ 0, 1, 2 });
+    defer h.popFrame();
+
+    var data: [4 + 8 + 8 + 5 + 32]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 11, .little);
+    std.mem.writeInt(u64, data[4..12], 30, .little); // lamports
+    std.mem.writeInt(u64, data[12..20], @as(u64, seed.len), .little);
+    @memcpy(data[20..25], seed);
+    @memcpy(data[25..57], &from_owner);
+    try execute(h.ctx, &data);
+    try t.expectEqual(@as(u64, 70), h.ctx.tx.accounts[0].lamports);
+    try t.expectEqual(@as(u64, 30), h.ctx.tx.accounts[2].lamports);
+}
+
+test "M9 system: TransferWithSeed REJECTS the old PDA-marker-included derivation (regression guard)" {
+    const t = std.testing;
+    var base_pk: Pubkey32 = std.mem.zeroes(Pubkey32);
+    base_pk[0] = 0x11;
+    const seed = "vault";
+    var from_owner: Pubkey32 = std.mem.zeroes(Pubkey32);
+    from_owner[0] = 0x22;
+
+    // The WRONG (pre-fix) derivation this handler used to require.
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(&base_pk);
+    hasher.update(seed);
+    hasher.update(&from_owner);
+    hasher.update("ProgramDerivedAddress");
+    var wrong_derived: Pubkey32 = undefined;
+    hasher.final(&wrong_derived);
+
+    var h = try Harness.init(t.allocator, 1_000, &.{
+        .{ .pubkey = wrong_derived, .lamports = 100, .data_len = 0, .owner = SYSTEM_PROGRAM_ID, .is_writable = true, .is_signer = false },
+        .{ .pubkey = base_pk, .lamports = 0, .data_len = 0, .owner = SYSTEM_PROGRAM_ID, .is_writable = false, .is_signer = true },
+        .{ .lamports = 0, .data_len = 0, .owner = SYSTEM_PROGRAM_ID, .is_writable = true, .is_signer = false },
+    });
+    defer h.deinit();
+    try h.pushFrame(0, &.{ 0, 1, 2 });
+    defer h.popFrame();
+
+    var data: [4 + 8 + 8 + 5 + 32]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 11, .little);
+    std.mem.writeInt(u64, data[4..12], 30, .little);
+    std.mem.writeInt(u64, data[12..20], @as(u64, seed.len), .little);
+    @memcpy(data[20..25], seed);
+    @memcpy(data[25..57], &from_owner);
+    try t.expectError(error.M9_System_AddressWithSeedMismatch, execute(h.ctx, &data));
+}
+
+// FIX #4: executeAssign must call the set_owner()-equivalent 3-precondition
+// guard (owned-by-System, writable, zero-data). A writable, signed account
+// that is NOT owned by System must be rejected (ModifiedProgramId), not
+// silently reassigned.
+test "M9 system: Assign REJECTS reassigning an account not owned by System (ModifiedProgramId)" {
+    const t = std.testing;
+    var foreign_owner: Pubkey32 = std.mem.zeroes(Pubkey32);
+    foreign_owner[0] = 0x99;
+    var new_owner: Pubkey32 = std.mem.zeroes(Pubkey32);
+    new_owner[0] = 0xab;
+    var h = try Harness.init(t.allocator, 1_000, &.{
+        .{ .lamports = 1, .data_len = 0, .owner = foreign_owner, .is_writable = true, .is_signer = true },
+    });
+    defer h.deinit();
+    try h.pushFrame(0, &.{0});
+    defer h.popFrame();
+
+    var data: [4 + 32]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 1, .little);
+    @memcpy(data[4..36], &new_owner);
+    try t.expectError(error.M9_System_ModifiedProgramId, execute(h.ctx, &data));
+    // Must NOT have mutated the owner.
+    try t.expectEqual(foreign_owner, h.ctx.tx.accounts[0].owner);
+}
+
+// FIX #5: executeAssignWithSeed's writable check must run AFTER the no-op
+// check (Agave order), not before — a non-writable account already owned by
+// new_owner is a legitimate no-op success on Agave, not AccountNotWritable.
+// Also: a foreign-owned account must reject with ModifiedProgramId (same gap
+// as #4), not silently reassign.
+test "M9 system: AssignWithSeed no-op succeeds even when account is non-writable (check-order fix)" {
+    const t = std.testing;
+    var base_pk: Pubkey32 = std.mem.zeroes(Pubkey32);
+    base_pk[0] = 0x33;
+    const seed = "vault2";
+    var owner: Pubkey32 = std.mem.zeroes(Pubkey32);
+    owner[0] = 0x44;
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(&base_pk);
+    hasher.update(seed);
+    hasher.update(&owner);
+    var derived: Pubkey32 = undefined;
+    hasher.final(&derived);
+
+    // Account already owned by `owner` (the target) AND non-writable: real
+    // Agave's assign_with_seed() hits the no-op branch before ever touching
+    // writability, so this must succeed as a no-op.
+    var h = try Harness.init(t.allocator, 1_000, &.{
+        .{ .pubkey = derived, .lamports = 1, .data_len = 0, .owner = owner, .is_writable = false, .is_signer = false },
+    });
+    defer h.deinit();
+    try h.pushFrame(0, &.{0});
+    defer h.popFrame();
+
+    var data: [4 + 32 + 8 + 6 + 32]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 10, .little);
+    @memcpy(data[4..36], &base_pk);
+    std.mem.writeInt(u64, data[36..44], @as(u64, seed.len), .little);
+    @memcpy(data[44..50], seed);
+    @memcpy(data[50..82], &owner);
+    try execute(h.ctx, &data); // must NOT error
+    try t.expectEqual(owner, h.ctx.tx.accounts[0].owner);
+}
+
+test "M9 system: AssignWithSeed REJECTS reassigning an account not owned by System (ModifiedProgramId)" {
+    const t = std.testing;
+    var base_pk: Pubkey32 = std.mem.zeroes(Pubkey32);
+    base_pk[0] = 0x55;
+    const seed = "vault3";
+    var foreign_owner: Pubkey32 = std.mem.zeroes(Pubkey32);
+    foreign_owner[0] = 0x66;
+    var new_owner: Pubkey32 = std.mem.zeroes(Pubkey32);
+    new_owner[0] = 0x77;
+
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    hasher.update(&base_pk);
+    hasher.update(seed);
+    hasher.update(&new_owner);
+    var derived: Pubkey32 = undefined;
+    hasher.final(&derived);
+
+    var h = try Harness.init(t.allocator, 1_000, &.{
+        .{ .pubkey = derived, .lamports = 1, .data_len = 0, .owner = foreign_owner, .is_writable = true, .is_signer = false },
+        .{ .pubkey = base_pk, .lamports = 0, .data_len = 0, .owner = SYSTEM_PROGRAM_ID, .is_writable = false, .is_signer = true },
+    });
+    defer h.deinit();
+    try h.pushFrame(0, &.{ 0, 1 });
+    defer h.popFrame();
+
+    var data: [4 + 32 + 8 + 6 + 32]u8 = undefined;
+    std.mem.writeInt(u32, data[0..4], 10, .little);
+    @memcpy(data[4..36], &base_pk);
+    std.mem.writeInt(u64, data[36..44], @as(u64, seed.len), .little);
+    @memcpy(data[44..50], seed);
+    @memcpy(data[50..82], &new_owner);
+    try t.expectError(error.M9_System_ModifiedProgramId, execute(h.ctx, &data));
+    try t.expectEqual(foreign_owner, h.ctx.tx.accounts[0].owner);
 }

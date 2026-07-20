@@ -138,15 +138,15 @@ pub const SerializeError = error{
 /// `src/vex_bpf/sbpf_executor.zig::AccountEntry` so callers can reuse existing
 /// types when wiring through the M8 invoke-context.
 pub const AccountInput = struct {
-    pubkey: [32]u8,
-    owner: [32]u8,
-    lamports: u64,
-    data: []const u8,
-    executable: bool,
+    pubkey:      [32]u8,
+    owner:       [32]u8,
+    lamports:    u64,
+    data:        []const u8,
+    executable:  bool,
     /// Stored on disk. NEVER serialized into the input region — always write
     /// `u64::MAX` instead (mask_out_rent_epoch_in_vm_serialization). @prov:bpf.serialize-map
-    rent_epoch: u64,
-    is_signer: bool,
+    rent_epoch:  u64,
+    is_signer:   bool,
     is_writable: bool,
 };
 
@@ -156,29 +156,29 @@ pub const AccountInput = struct {
 /// `serializeParametersAligned`.
 pub const AccountOutput = struct {
     /// New lamports value read from the input region.
-    lamports: u64,
+    lamports:  u64,
     /// New owner pubkey read from the input region.
-    owner: [32]u8,
+    owner:     [32]u8,
     /// New data length read from the input region (already validated against
     /// MAX_PERMITTED_DATA_INCREASE). May be < or > `original_data_len`.
-    data_len: usize,
+    data_len:  usize,
     /// Slice into the input buffer covering `data_len` bytes of post-exec data.
     /// The slice references `input_buf`, so it is valid only for the lifetime
     /// of the buffer the caller allocated for `serializeParametersAligned`.
-    data: []const u8,
+    data:      []const u8,
 };
 
 /// Per-account metadata returned by `serializeParametersAligned`. @prov:bpf.serialize-map
 /// so the M8 invoke-context can consume it directly without an adapter.
 pub const SerializedAccount = struct {
     /// VM virtual address of this account's pubkey (`key`).
-    vm_key_addr: u64,
+    vm_key_addr:      u64,
     /// VM virtual address of this account's owner pubkey.
-    vm_owner_addr: u64,
+    vm_owner_addr:    u64,
     /// VM virtual address of this account's u64 lamports field.
     vm_lamports_addr: u64,
     /// VM virtual address of the first data byte (after the u64 dlen prefix).
-    vm_data_addr: u64,
+    vm_data_addr:     u64,
     /// Original `data.len()` at serialization time — required by
     /// `deserializeReturn` to compute the post-data offset.
     original_data_len: usize,
@@ -186,13 +186,13 @@ pub const SerializedAccount = struct {
     /// `deserializeReturn`; exposed for diagnostics).
     host_lamports_offset: usize,
     /// Host buffer offset of the data slice's first byte.
-    host_data_offset: usize,
+    host_data_offset:     usize,
     /// Host buffer offset of the owner pubkey.
-    host_owner_offset: usize,
+    host_owner_offset:    usize,
     /// `true` if this slot was written as a duplicate-of-earlier-account
     /// (1-byte position + 7 zero bytes); duplicates carry no per-account data
     /// in the input region and `deserializeReturn` must skip them.
-    is_duplicate: bool,
+    is_duplicate:         bool,
 };
 
 /// Feature-gate config. Defaults match testnet (everything off). Future
@@ -291,8 +291,8 @@ const Inner = struct {
 
 fn precomputeSize(
     accounts: []const AccountInput,
-    ix_data: []const u8,
-    cfg: SerializeConfig,
+    ix_data:  []const u8,
+    cfg:      SerializeConfig,
 ) usize {
     // 1) leading u64 account count
     var size: usize = 8;
@@ -364,7 +364,7 @@ fn findDuplicate(accounts: []const AccountInput, i: usize) ?u8 {
 /// Result tuple returned by `serializeParametersAligned`.
 pub const SerializeResult = struct {
     /// Heap-owned input buffer, 16-byte aligned. Caller frees with `alloc`.
-    bytes: []u8,
+    bytes:           []u8,
     /// One entry per account in `accounts`, 1:1 ordered. Caller frees with `alloc`.
     account_layouts: []SerializedAccount,
     /// Host offset of the first byte of `ix_data` (after the u64 dlen prefix).
@@ -375,7 +375,7 @@ pub const SerializeResult = struct {
     /// populated, contains 2 regions per non-duplicate account (metadata,
     /// data+realloc) plus a trailing region (rent_epoch + ix_info + program_id).
     /// Caller frees with the same `alloc`.
-    input_regions: []mem.InputMemRegion = &.{},
+    input_regions:   []mem.InputMemRegion = &.{},
     /// PR-3 (SIMD-0460 vasa) — per-account-index metadata for CPI pointer-
     /// equality checks. Indexed by `accounts[i]` position. Duplicate accounts
     /// share the original's meta entry. Caller frees with `alloc`.
@@ -391,11 +391,11 @@ pub const SerializeResult = struct {
 /// On success, `bytes.ptr` is 16-byte aligned and `account_layouts.len ==
 /// accounts.len`. Both slices are heap-owned by `alloc`.
 pub fn serializeParametersAligned(
-    alloc: std.mem.Allocator,
+    alloc:      std.mem.Allocator,
     program_id: [32]u8,
-    ix_data: []const u8,
-    accounts: []const AccountInput,
-    cfg: SerializeConfig,
+    ix_data:    []const u8,
+    accounts:   []const AccountInput,
+    cfg:        SerializeConfig,
 ) SerializeError!SerializeResult {
     // PR-5 (SIMD-0257 ADDM): MODE 3 accepted when paired with vasa.
     // SIMD-0449 (direct_account_pointers) is a PURELY ADDITIVE trailer (N u64
@@ -510,15 +510,15 @@ pub fn serializeParametersAligned(
         vaddr_off += 8;
 
         layouts[i] = .{
-            .vm_key_addr = vm_key_addr,
-            .vm_owner_addr = vm_owner_addr,
+            .vm_key_addr      = vm_key_addr,
+            .vm_owner_addr    = vm_owner_addr,
             .vm_lamports_addr = vm_lam_addr,
-            .vm_data_addr = vm_data_addr,
-            .original_data_len = acct.data.len,
+            .vm_data_addr     = vm_data_addr,
+            .original_data_len    = acct.data.len,
             .host_lamports_offset = host_lam_off,
-            .host_data_offset = host_data_off,
-            .host_owner_offset = host_owner_off2,
-            .is_duplicate = false,
+            .host_data_offset     = host_data_off,
+            .host_owner_offset    = host_owner_off2,
+            .is_duplicate         = false,
         };
     }
 
@@ -724,8 +724,8 @@ pub fn serializeParametersAligned(
 /// input region.
 pub fn deserializeReturn(
     input_buf: []const u8,
-    accounts: []AccountOutput,
-    layouts: []const SerializedAccount,
+    accounts:  []AccountOutput,
+    layouts:   []const SerializedAccount,
     direct_mapping: bool,
 ) SerializeError!void {
     if (accounts.len != layouts.len) return SerializeError.InvalidArgument;
@@ -802,9 +802,9 @@ pub fn deserializeReturn(
 
         accounts[i] = .{
             .lamports = new_lamports,
-            .owner = owner,
+            .owner    = owner,
             .data_len = post_usize,
-            .data = data,
+            .data     = data,
         };
     }
 }

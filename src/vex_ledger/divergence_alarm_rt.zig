@@ -1,7 +1,7 @@
 //! P5 MOAT #2 — bank_hash Divergence ALARM: MILESTONE M2, the LIVE always-on alarm.
 //!
-//! (Design and M2 spec are tracked in this project's internal design-docs
-//! archive, not in this repo.)
+//! DESIGN:  vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
+//! M2 SPEC: vexor-research/design-docs/DIVERGENCE-ALARM-M2-SPEC-RECOVERED-2026-07-13.md
 //!
 //! WHAT THIS IS: the runtime wrapper around M1's pure `classify()` engine
 //! (src/vex_ledger/divergence_alarm.zig — the STABLE SEAM, imported unchanged). M2 adds
@@ -245,11 +245,9 @@ pub const AlarmConfig = struct {
     /// Public testnet RPC oracle (CLUSTER ORACLE HARD RULE — never Vexor localhost/oracle-node).
     oracle_url: []const u8 = "https://api.testnet.solana.com",
     /// Bundle output root.
-    bundle_root: []const u8 = "/tmp/vexor-divergence-bundles",
+    bundle_root: []const u8 = "/home/davidb/carrier-blackbox",
     /// The M1 wrapper the alarm spawns as a child process on an EXECUTION verdict.
-    /// Operators wire this up to their own local diagnostic tooling; none ships
-    /// in this repo by default.
-    localize_script: []const u8 = "",
+    localize_script: []const u8 = "tools/divergence-localize.sh",
     /// Rooted-lag: only compare a slot once it is this many slots behind our tip.
     rooted_lag: u64 = 32,
 
@@ -501,12 +499,13 @@ pub const DivergeAlarm = struct {
                 \\}}
                 \\
             , .{
-                slot,               v.class.asStr(),
-                slot,               our_hex,
-                cluster_hex,        matchStr(v.parent),
-                matchStr(v.poh),    matchStr(v.sigs),
-                matchStr(v.lthash), v.needs_account_diff,
-                v.reanchor_parent,  self.config.autoreplay,
+                slot,                    v.class.asStr(),
+                slot,                    our_hex,
+                cluster_hex,
+                matchStr(v.parent),      matchStr(v.poh),
+                matchStr(v.sigs),        matchStr(v.lthash),
+                v.needs_account_diff,    v.reanchor_parent,
+                self.config.autoreplay,
             });
             defer self.allocator.free(json);
             try writeFileInDir(dir, "verdict.json", json);
@@ -530,10 +529,10 @@ pub const DivergeAlarm = struct {
                 \\
             , .{
                 slot,               v.class.asStr(),
-                our_hex,            matchStr(v.parent),
-                matchStr(v.poh),    matchStr(v.sigs),
-                matchStr(v.lthash), v.needs_account_diff,
-                v.reanchor_parent,  slot,
+                our_hex,
+                matchStr(v.parent), matchStr(v.poh), matchStr(v.sigs), matchStr(v.lthash),
+                v.needs_account_diff, v.reanchor_parent,
+                slot,
             });
             defer self.allocator.free(md);
             try writeFileInDir(dir, "SUMMARY.md", md);
@@ -559,12 +558,14 @@ pub const DivergeAlarm = struct {
     /// Spawn tools/divergence-localize.sh as a detached child (never in-process). The child
     /// runs core-pinned + niced; its lifetime is independent of the validator.
     fn spawnLocalize(self: *Self, slot: u64, bundle: []const u8) void {
-        if (self.config.localize_script.len == 0) return; // no localize tool wired up
         var slot_buf: [24]u8 = undefined;
         const slot_str = std.fmt.bufPrint(&slot_buf, "{d}", .{slot}) catch return;
         const argv = [_][]const u8{
-            "nice",                      "-n",     "19",     "ionice",   "-c3",   "taskset", "-c", "28-31",
-            self.config.localize_script, "--slot", slot_str, "--oracle", "--out", bundle,
+            "nice",          "-n", "19", "ionice", "-c3", "taskset", "-c", "28-31",
+            self.config.localize_script,
+            "--slot",        slot_str,
+            "--oracle",
+            "--out",         bundle,
         };
         var child = std.process.Child.init(&argv, self.allocator);
         child.stdin_behavior = .Ignore;
@@ -642,8 +643,7 @@ pub const CurlOracle = struct {
         const self: *CurlOracle = @ptrCast(@alignCast(ctx.?));
         // transactionDetails="none": we only need .blockhash (the PoH input). commitment
         // "finalized" enforces the rooted-both-sides guard #1 (unfinalized/dropped forks 404).
-        const body = std.fmt.allocPrint(
-            self.allocator,
+        const body = std.fmt.allocPrint(self.allocator,
             "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getBlock\",\"params\":[{d}," ++
                 "{{\"commitment\":\"finalized\",\"transactionDetails\":\"none\"," ++
                 "\"rewards\":false,\"maxSupportedTransactionVersion\":0}}]}}",
@@ -652,8 +652,9 @@ pub const CurlOracle = struct {
         defer self.allocator.free(body);
 
         const argv = [_][]const u8{
-            "curl", "-s",                             "--max-time", "10", "-X",           "POST",
-            "-H",   "Content-Type: application/json", "-d",         body, cfg.oracle_url,
+            "curl", "-s", "--max-time", "10", "-X", "POST",
+            "-H",   "Content-Type: application/json",
+            "-d",   body, cfg.oracle_url,
         };
         var child = std.process.Child.init(&argv, self.allocator);
         child.stdin_behavior = .Ignore;

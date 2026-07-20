@@ -61,9 +61,14 @@ const ProofType = zkt.ProofType;
 ///     (bank.zig:826/869). It contains NO tx error code and NO CU consumed, so a FAILED zk tx
 ///     contributes only its fee deduction to the delta — identical to Agave's failure regardless of
 ///     the specific InstructionError. "Any error => tx fails => fee-only rollback" is byte-faithful.
-///   • C (feature gate) DISSOLVED: disable_zk_elgamal_proof_program AND reenable_* are BOTH active
-///     (340508256 / 406604256) and features are monotonic => `disabled = disable && !reenable` is
-///     permanently false => permanently ENABLED => "always verify" matches Agave forever.
+///   • C (feature gate) is WIRED (not dissolved): `executeReal` checks
+///     `ctx.disable_zk_elgamal_proof_program_active && !ctx.reenable_zk_elgamal_proof_program_active`
+///     at the very top, before any parsing/CU charge (see invoke_ctx.zig's doc comment on those two
+///     fields), threaded per-dispatch from the live FeatureSet in v2_dispatch.zig (same pattern as
+///     enable_bls12_381_syscall). Today's testnet state (both gates active, monotonic) makes the
+///     check a permanent no-op ("always verify" matches Agave) -- but historical replay of blocks
+///     from before `reenable_zk_elgamal_proof_program` activated (disable=true, reenable=false) now
+///     takes the disabled branch, matching Agave instead of silently executing.
 ///   • Direction confirmed ENABLED via read-only RPC (Check 1).
 /// Revert = set false + rebuild (the dispatch branch becomes comptime-dead again).
 /// Residual: the live dispatch->v2DispatchInternal->commitV2Mutations integration for zk is new
@@ -163,13 +168,20 @@ pub fn execute(ctx: *InvokeContext, ix_data: []const u8) Error!void {
 
 /// The real verifier (flip target). ALWAYS COMPILED; exercised by Harness e2e tests.
 pub fn executeReal(ctx: *InvokeContext, ix_data: []const u8) Error!void {
+    // Agave agave-4.2.0-beta.1-src/programs/zk-elgamal-proof/src/lib.rs:172-181 --
+    // the FIRST thing the entrypoint does, before fetching instruction_data,
+    // before any CU charge (declare_process_instruction!'s default charge is 0):
+    // `if disable_zk_elgamal_proof_program && !reenable_zk_elgamal_proof_program
+    // { return Err(InstructionError::InvalidInstructionData); }`. Must stay above
+    // every other check/charge in this function to match zero-CU-consumed.
+    if (ctx.disable_zk_elgamal_proof_program_active and !ctx.reenable_zk_elgamal_proof_program_active) {
+        return error.M9_ZkElGamalProof_InvalidInstructionData;
+    }
+
     if (ctx.currentFrame() == null) return error.M9_ZkElGamalProof_NoActiveFrame;
     if (ix_data.len < 1) return error.M9_ZkElGamalProof_InvalidInstructionData;
     const tag = ix_data[0];
     trace("M9.zk_elgamal_proof.executeReal (tag={d})", .{tag});
-
-    // NB: feature gate (disable/reenable_zk_elgamal_proof_program) is a FLIP-BLOCKER, not
-    // wired here — see header. The program is currently ENABLED on the cluster.
 
     switch (tag) {
         0 => {

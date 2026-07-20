@@ -216,6 +216,7 @@ fn defaultCtx() vi.ExecContext {
         .leader_schedule_epoch = 10,
         .epoch_schedule = .{ .slots_per_epoch = 432_000, .leader_schedule_slot_offset = 432_000, .warmup = false, .first_normal_epoch = 0, .first_normal_slot = 0 },
         .features = .{},
+        .alloc = std.testing.allocator,
     };
 }
 
@@ -335,11 +336,16 @@ test "dispatch: Stage-3 discriminant (Authorize, disc1) with valid payload execu
     _ = try s.serialize(&data);
 
     const withdrawer = [_]u8{2} ** 32;
+    // Authorize's account layout is [vote@0, clock_sysvar@1, authority@2]; the
+    // dispatch arm now certifies the Clock sysvar at index 1 (52a173e).
+    var clock_data: [0]u8 = .{};
     var metas = [_]aio.AccountMeta{
         .{ .pubkey = [_]u8{1} ** 32, .is_signer = false, .is_writable = true },
+        .{ .pubkey = vi.SYSVAR_CLOCK_ID, .is_signer = false, .is_writable = false },
     };
     var records = [_]aio.AccountRecord{
         .{ .pubkey = [_]u8{1} ** 32, .lamports = 100_000_000, .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = &data },
+        .{ .pubkey = vi.SYSVAR_CLOCK_ID, .lamports = 1, .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &clock_data },
     };
     var table = try aio.AccountTable.init(VOTE_PROGRAM_ID, &metas, &records);
     var ctx = defaultCtx();

@@ -171,9 +171,17 @@ pub const Rent = extern struct {
     burn_percent: u8,
 };
 
-/// In-memory EpochSchedule. The on-chain bincode form is 33 bytes:
-/// 4 × u64 (32 bytes) + 1 × bool (1 byte) — the warmup flag is bincode-encoded
-/// AS the FINAL byte (despite struct ordering). @prov:sysvar.wire-sizes
+/// In-memory EpochSchedule. The on-chain bincode form is 33 bytes and follows
+/// the struct's DECLARATION ORDER (plain `#[derive(Serialize, Deserialize)]`,
+/// no field reorder — serde `rename_all` only affects human-readable formats,
+/// not bincode's positional layout). Per solana-epoch-schedule/src/lib.rs:60-79:
+///   [0..8)  slots_per_epoch
+///   [8..16) leader_schedule_slot_offset
+///   [16]    warmup (bool, 1 byte)
+///   [17..25) first_normal_epoch
+///   [25..33) first_normal_slot
+/// (547b2e1: the prior layout mis-placed warmup at byte 32 and shifted
+/// first_normal_* into [16..32], the wrong byte range.) @prov:sysvar.wire-sizes
 pub const EpochSchedule = struct {
     slots_per_epoch: u64,
     leader_schedule_slot_offset: u64,
@@ -181,14 +189,14 @@ pub const EpochSchedule = struct {
     first_normal_epoch: u64,
     first_normal_slot: u64,
 
-    /// Serialise to canonical 33-byte bincode form.
+    /// Serialise to canonical 33-byte bincode (declaration-order) form.
     pub fn toBytes(self: EpochSchedule) [EPOCH_SCHEDULE_SIZE]u8 {
         var out: [EPOCH_SCHEDULE_SIZE]u8 = undefined;
         std.mem.writeInt(u64, out[0..8], self.slots_per_epoch, .little);
         std.mem.writeInt(u64, out[8..16], self.leader_schedule_slot_offset, .little);
-        std.mem.writeInt(u64, out[16..24], self.first_normal_epoch, .little);
-        std.mem.writeInt(u64, out[24..32], self.first_normal_slot, .little);
-        out[32] = if (self.warmup) 1 else 0;
+        out[16] = if (self.warmup) 1 else 0;
+        std.mem.writeInt(u64, out[17..25], self.first_normal_epoch, .little);
+        std.mem.writeInt(u64, out[25..33], self.first_normal_slot, .little);
         return out;
     }
 
@@ -197,9 +205,9 @@ pub const EpochSchedule = struct {
         return .{
             .slots_per_epoch = std.mem.readInt(u64, bytes[0..8], .little),
             .leader_schedule_slot_offset = std.mem.readInt(u64, bytes[8..16], .little),
-            .first_normal_epoch = std.mem.readInt(u64, bytes[16..24], .little),
-            .first_normal_slot = std.mem.readInt(u64, bytes[24..32], .little),
-            .warmup = bytes[32] != 0,
+            .warmup = bytes[16] != 0,
+            .first_normal_epoch = std.mem.readInt(u64, bytes[17..25], .little),
+            .first_normal_slot = std.mem.readInt(u64, bytes[25..33], .little),
         };
     }
 };
@@ -480,14 +488,36 @@ pub const SysvarCache = struct {
         return self.last_restart_slot_bytes orelse error.SysvarNotPopulated;
     }
 
-    /// SIMD-0127 generic accessor. Returns canonical bytes for any of the 8
-    /// sysvars by pubkey, or `error.SysvarNotPopulated` (never zero-fills).
+    /// SIMD-0127 generic accessor (`sol_get_sysvar`'s cache lookup). Returns
+    /// canonical bytes for any of the 7 sysvars this syscall actually
+    /// resolves, or `error.SysvarNotPopulated` (never zero-fills).
+    ///
+    /// conformance RC7 (2026-07-18, sol_get_sysvar/{46f967d1,94a24d0f,
+    /// bb0ec2aa}_369105.fix): this used to also match SYSVAR_SLOT_HISTORY_ID
+    /// (an 8th arm). Byte-verified via a temporary per-fixture id/bytes-len
+    /// dump in solGetSysvar: all 3 fixtures pass the EXACT
+    /// SYSVAR_SLOT_HISTORY_ID pubkey as `sysvar_id`, and Vexor matched it
+    /// (bytes.len=0 -- SlotHistory-not-yet-populated-but-Some) and returned
+    /// OFFSET_LENGTH_EXCEEDS_SYSVAR(1) on the resulting bounds check, while
+    /// Agave's own fixtures expect SYSVAR_NOT_FOUND(2) unconditionally for
+    /// this ID. Root cause: Agave's `SyscallGetSysvar::rust`
+    /// (agave-4.2.0-beta.1-src/syscalls/src/sysvar.rs:238-243) resolves the
+    /// cache via `SysvarCache::sysvar_id_to_buffer`
+    /// (program-runtime/src/sysvar_cache.rs:109-127), whose match arms cover
+    /// ONLY Clock/EpochSchedule/EpochRewards/Rent/SlotHashes/StakeHistory/
+    /// LastRestartSlot -- SEVEN sysvars, with no `SlotHistory::check_id` arm
+    /// at all -- so `sol_get_sysvar` on a SlotHistory pubkey ALWAYS falls to
+    /// `&None` -> SYSVAR_NOT_FOUND in Agave, regardless of whether
+    /// SlotHistory itself is populated elsewhere in the cache (it still is,
+    /// and remains reachable via the typed `getSlotHistory()`/
+    /// `getSlotHistoryBytes()` getters above -- e.g. the SlotHistory
+    /// builtin/native-program path -- this fix only removes it from THIS
+    /// syscall's generic-by-pubkey resolution, matching Agave's own scope).
     pub fn getBytesByPubkey(self: *const SysvarCache, pk: Pubkey32) error{SysvarNotPopulated}![]const u8 {
         if (std.mem.eql(u8, &pk, &SYSVAR_CLOCK_ID)) return self.getClockBytes();
         if (std.mem.eql(u8, &pk, &SYSVAR_RENT_ID)) return self.getRentBytes();
         if (std.mem.eql(u8, &pk, &SYSVAR_EPOCH_SCHEDULE_ID)) return self.getEpochScheduleBytes();
         if (std.mem.eql(u8, &pk, &SYSVAR_SLOT_HASHES_ID)) return self.getSlotHashesBytes();
-        if (std.mem.eql(u8, &pk, &SYSVAR_SLOT_HISTORY_ID)) return self.getSlotHistoryBytes();
         if (std.mem.eql(u8, &pk, &SYSVAR_STAKE_HISTORY_ID)) return self.getStakeHistoryBytes();
         if (std.mem.eql(u8, &pk, &SYSVAR_EPOCH_REWARDS_ID)) return self.getEpochRewardsBytes();
         if (std.mem.eql(u8, &pk, &SYSVAR_LAST_RESTART_SLOT_ID)) return self.getLastRestartSlotBytes();

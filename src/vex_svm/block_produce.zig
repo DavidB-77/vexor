@@ -97,15 +97,25 @@ pub fn produceEmptySlotBytes(
 // program / instruction-execution errors are TOLERATED and are NOT gated.
 //
 // ⚠️ WHY IT IS ONLY A PRE-FILTER (NOT a superset of fatal): the cluster executes a block
-// SEQUENTIALLY, but the pre-filter checks each tx against the parent state in isolation. A tx that
-// transfers away / closes a fee-payer EARLIER in the same block can make a LATER tx
-// InsufficientFundsForFee → NotLoaded → the cluster marks the WHOLE block dead. The pre-filter
-// cannot see that. The COMPLETE broadcast-safety boundary must be execution-based — either
+// SEQUENTIALLY, but the pre-filter used to check each tx against the parent state in ISOLATION. A tx
+// that transfers away / closes a fee-payer EARLIER in the same block could make a LATER tx
+// InsufficientFundsForFee → NotLoaded → the cluster marks the WHOLE block dead, and the pre-filter
+// could not see that (M1, 2026-07-16: proven reachable through the REAL gate, BOTH by an adversarial
+// drain and by ordinary same-payer burst traffic — kat_txbearing_exec.zig "M1 adversarial-drain" /
+// "M1 same-payer benign-burst"). M2 (2026-07-16) CLOSES this for `SeqGateState`'s SEQUENTIAL live gate
+// (`admitTxSeq`) for `System::Transfer` / `System::CreateAccount` when the lamport-mover's `from` is
+// the tx's own fee-payer — see `SeqGateState`/`applyLamportEffects` below for the mechanism and the
+// NAMED residual instruction classes / third-party-source shape that remain uncovered. `admitTx` (the
+// STATELESS single-tx variant, kept for direct KATs) is UNCHANGED and still checks parent state in
+// isolation only — it is not the live gate.
+// The COMPLETE broadcast-safety boundary is still, in the general case, execution-based — either
 // execute-during-pack (Agave's banking model) or loopback-replay-then-broadcast-only-if-not-dead
 // (which also needs Vexor's replay to actually detect the NotLoaded classes; it currently does not).
-// That mechanism is a FLIP-BLOCKER (task #25). Until it lands, a SAFETY INTERLOCK in replay_stage
-// forbids broadcasting tx-bearing bytes (tx-bearing + VEX_LEADER_BROADCAST ⇒ produce EMPTY + error),
-// so the pre-filter only ever runs for loopback validation.
+// That FULL mechanism remains a FLIP-BLOCKER (task #25) for the residual classes M2 does not cover.
+// Until it lands, a SAFETY INTERLOCK in replay_stage forbids broadcasting tx-bearing bytes (tx-bearing
+// + VEX_LEADER_BROADCAST ⇒ produce EMPTY + error) UNLESS the explicit VEX_TXBEARING_BROADCAST override
+// is set (see replay_stage.zig's own interlock comment) — the pre-filter otherwise only ever runs for
+// loopback validation.
 //
 // gate == null  ⇒ loopback/KAT-lenient path: byte-identical to the pre-gate behavior. The default
 //                 while VEX_TPU_INGEST is off, and (currently) also the tile path's loopback packing.
@@ -114,11 +124,12 @@ pub fn produceEmptySlotBytes(
 //                 and never voted, so an imperfect pre-filter can at worst waste our own slot.
 //
 // STILL DEFERRED before the broadcast flip (do NOT remove): (a) the execution-based completeness
-// mechanism above; (b) cost-model block-CU-limit packing (a separate BLOCK-FATAL class,
-// check_block_cost_limits); (c) CROSS-block AlreadyProcessed via a live status cache (Vexor's
-// TxnCache has no production wiring yet — only in-block dedup is covered here); (d) the tile's
-// thread-safe SNAPSHOT gate (the tile cannot deref the recycled live bank). All are flip-blockers,
-// tracked in task #25; none is reachable while the interlock holds / VEX_TPU_INGEST off.
+// mechanism above, for the residual instruction classes / third-party-source shape M2 does not cover
+// (see `applyLamportEffects`'s "EXPLICITLY UNCOVERED" doc); (b) cost-model block-CU-limit packing (a
+// separate BLOCK-FATAL class, check_block_cost_limits); (c) CROSS-block AlreadyProcessed via a live
+// status cache (Vexor's TxnCache has no production wiring yet — only in-block dedup is covered here);
+// (d) the tile's thread-safe SNAPSHOT gate (the tile cannot deref the recycled live bank). All are
+// flip-blockers, tracked in task #25; none is reachable while the interlock holds / VEX_TPU_INGEST off.
 
 /// Per-tx inclusion PRE-FILTER (see banner: necessary, NOT sufficient for broadcast). The caller
 /// (replay_stage, which holds the producing bank + accounts_db + fee machinery) supplies `admit`;
@@ -128,11 +139,32 @@ pub fn produceEmptySlotBytes(
 pub const InclusionGate = struct {
     ctx: *anyopaque,
     admit: *const fn (ctx: *anyopaque, tx_wire: []const u8) bool,
+
+    // ── PASS 3 (durable execute-once-and-record) executor hook ──────────────────────────────────────
+    // When `execute` is non-null, produceSlotBytes packs a tx IFF `execute(exec_ctx, tx_wire)` returns
+    // true (Agave `was_processed()`) — and the static `admit` pre-filter (whitelist/admitTxSeq) is
+    // BYPASSED, because the executor supersedes it: it EXECUTES AND COMMITS each candidate against a
+    // working child state so the next candidate sees the real post-state (inclusion == execution,
+    // consumer.rs/committer.rs). This structurally closes the [PRODUCE-PARITY-FAIL] dead-block class
+    // (block ⊆ was_processed) without the whitelist's throughput collapse — a tx the executor can fully
+    // process (System Transfer/CreateAccount today) is packed even if the static delta gate would have
+    // mishandled its cross-tx state dependency. `execute` is called AFTER the block-CU cost gate accepts
+    // the tx, so a cost-rejected tx is never executed ⇒ the executor's committed set == the packed set
+    // exactly (no produce≠replay divergence). null ⇒ legacy gate+whitelist path, byte-identical to pre-
+    // PASS-3 behaviour. Live: supplied by replay_stage.zig (accounts_db-backed executor). Offline:
+    // supplied by the KAT (in-memory block_executor.BlockExecutor). block_produce imports NO executor
+    // type (avoids the block_executor→block_produce module cycle) — the hook is a bare callback.
+    exec_ctx: ?*anyopaque = null,
+    execute: ?*const fn (ctx: *anyopaque, tx_wire: []const u8) bool = null,
 };
 
 /// Fee-payer account view, extracted from the producing bank by the caller (lamports/owner/data_len).
 /// `null` at the call site means the account is absent or has zero lamports (Agave AccountNotFound).
 pub const FeePayerView = struct { lamports: u64, owner: [32]u8, data_len: usize };
+
+/// The System Program's 32-byte id (all-zero pubkey). Hoisted to file scope so both
+/// `checkStaticAndOwner` and the M2 lamport-effect walk (`applyLamportEffects`) share one definition.
+const SYSTEM_PROGRAM_ID: [32]u8 = [_]u8{0} ** 32;
 
 /// Lamports a 0-data account must hold to be rent-exempt under default rent params
 /// (ACCOUNT_STORAGE_OVERHEAD 128 × lamports_per_byte_year 3480 × exemption_threshold 2). Used as a
@@ -449,7 +481,6 @@ fn checkStaticAndOwner(
     // (3) fee-payer kind — AccountNotFound / InvalidAccountForFee fatal. Conservatively require a plain
     //     system account (data_len 0); drops rare nonce-account fee payers — safe.
     const fp = fee_payer orelse return null; // absent or zero-lamports ⇒ AccountNotFound
-    const SYSTEM_PROGRAM_ID: [32]u8 = [_]u8{0} ** 32;
     if (!std.mem.eql(u8, &fp.owner, &SYSTEM_PROGRAM_ID)) return null; // InvalidAccountForFee
     if (fp.data_len != 0) return null; // plain system account only
     return fp;
@@ -469,23 +500,247 @@ pub fn admitTx(
     return true;
 }
 
-/// Per-block running state for the SEQUENTIAL inclusion gate. Matches Agave banking, which debits
-/// fees in pack order: `running_balances[fee_payer]` = the payer's lamports AFTER all prior fees this
-/// block. Reset/owned per produced block by the caller.
+/// Per-block running state for the SEQUENTIAL inclusion gate. Matches Agave banking, which executes
+/// against the LIVE, already-mutated Bank as it packs (`consumer.rs:190-254`
+/// `process_and_record_transactions_with_pre_results` → `prepare_sanitized_batch_with_results` locks
+/// on the live bank → `execute_and_commit_transactions_locked` executes+commits before the next batch
+/// is even considered — inclusion and execution are the SAME step, so a drained payer is always caught
+/// at admission time in Agave). Vexor's producer is a two-step pre-filter-then-execute-later pipeline
+/// (see file banner), so this struct is the bridge: it tracks the SIGNED LAMPORT DELTA (relative to
+/// the frozen-parent snapshot) accumulated by every ADMITTED tx's effects so far this block, for ANY
+/// account touched — not just fee-payers. `effective(key, parent_lamports)` = the caller-supplied
+/// frozen-parent balance (only ever needed/available at the moment `key` acts as a fee-payer) plus the
+/// tracked delta. This composes correctly even when `key` was earlier a pure TRANSFER
+/// destination/source that never itself paid a fee: the delta was recorded then, the parent-state base
+/// is supplied fresh whenever `key` is later looked up as a fee-payer. i128 avoids any accumulation-
+/// overflow concern for a block's bounded tx count (each delta is individually bounded by a u64 wire
+/// field). Reset/owned per produced block by the caller.
 pub const SeqGateState = struct {
-    running_balances: std.AutoHashMapUnmanaged([32]u8, u64) = .{},
+    deltas: std.AutoHashMapUnmanaged([32]u8, i128) = .{},
 
     pub fn deinit(self: *SeqGateState, allocator: std.mem.Allocator) void {
-        self.running_balances.deinit(allocator);
+        self.deltas.deinit(allocator);
+    }
+
+    /// Frozen-parent `parent_lamports` (as looked up by the caller for `key`, valid only when `key` is
+    /// being evaluated as a fee-payer right now) plus every delta recorded against `key` so far this
+    /// block, in produced-block order.
+    fn effective(self: *const SeqGateState, key: [32]u8, parent_lamports: u64) i128 {
+        const d = self.deltas.get(key) orelse 0;
+        return @as(i128, parent_lamports) + d;
+    }
+
+    /// Accumulate a signed lamport delta against `key` (fee debit, transfer debit/credit, …).
+    fn addDelta(self: *SeqGateState, allocator: std.mem.Allocator, key: [32]u8, delta: i128) !void {
+        const gop = try self.deltas.getOrPut(allocator, key);
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += delta;
     }
 };
 
+/// SystemInstruction discriminators (bincode u32-LE) this gate can statically derive a lamport effect
+/// for, matching `native/system.zig`'s `InstructionOpcodes` (a Firedancer `fd_sys_instr_idx_t` mirror;
+/// NOT imported here — importing the `system` module into block_produce.zig would require re-wiring
+/// every one of block_produce.zig's several build.zig module instantiations (test-block-produce,
+/// test-txbearing-exec, test-block-broadcast, the production net_block_produce, …), none of which
+/// currently register a "system" import; these are the SAME numeric values, kept in sync by citation).
+/// Transfer(2) is the M1-PROVEN case (kat_txbearing_exec.zig "M1 adversarial-drain" /
+/// "M1 same-payer benign-burst"). CreateAccount(0) shares Transfer's exact data layout for the
+/// lamports field — `disc(4) ‖ lamports(8) ‖ …` — and account-index shape (`[from, to]`), so it rides
+/// the same code path with no new risk class.
+const SYS_DISC_CREATE_ACCOUNT: u32 = 0; // native/system.zig:15 InstructionOpcodes.CreateAccount
+const SYS_DISC_TRANSFER: u32 = 2; // native/system.zig:17 InstructionOpcodes.Transfer
+
+/// EXPLICITLY UNCOVERED (residual, named per the M2 brief's "don't silently claim completeness"):
+///   - CreateAccountWithSeed(3) / TransferWithSeed(11): the seed field is a bincode-serialized String
+///     (u64 length prefix, NOT the compact-u16 encoding used elsewhere in this file) sitting BEFORE
+///     the lamports field in CreateAccountWithSeed's data layout — a materially different, higher-risk
+///     parse than the fixed-offset fields Transfer/CreateAccount use. Not attempted here to avoid
+///     introducing a MIS-parse (which could corrupt delta tracking for an unrelated account) for an
+///     instruction shape M1 never exercised.
+///   - WithdrawNonceAccount(5) / stake-program withdraw / vote-program withdraw: lamport-moving, but
+///     each needs its own program-specific account-layout verification (stake/vote are core-BPF
+///     migrated programs, not native System) not done in this milestone.
+///   - Any instruction whose program id, source, or destination resolves to an ALT-loaded (v0) account
+///     index (`idx >= parsed.num_keys`): not resolvable from the wire alone (same boundary class as
+///     `txCostSum`'s already-documented v0-ALT writable-account under-count, above).
+///   - A lamport-mover whose `from` account is NOT the tx's own fee-payer (e.g. TransferWithSeed's
+///     base-signs-for-a-derived-`from` pattern, or any multi-signer tx where signer_keys[0] isn't the
+///     instruction's `from`): the gate has no live parent-state balance for a third-party account, so
+///     the delta is applied OPTIMISTICALLY (assume the instruction succeeds) rather than verified —
+///     see `applyLamportEffects` doc. This is a narrower instance of the SAME "gate lacks a live
+///     account oracle" shape as the original bug, bounded to this uncommon shape only.
+/// Extract the lamports field for a covered discriminator, else null (uncovered / malformed — the
+/// caller's walk simply skips this instruction, same as always for TOLERATED, non-block-fatal cases).
+fn lamportMoveAmount(disc: u32, data: []const u8) ?u64 {
+    return switch (disc) {
+        SYS_DISC_TRANSFER => if (data.len == 12) std.mem.readInt(u64, data[4..12], .little) else null,
+        SYS_DISC_CREATE_ACCOUNT => if (data.len >= 52) std.mem.readInt(u64, data[4..12], .little) else null,
+        else => null,
+    };
+}
+
+/// Resolve instruction account index `idx` to a STATIC message key (i.e. NOT an ALT-loaded v0
+/// address — those live past `parsed.num_keys` and are not present in the wire's static key list).
+fn resolveStaticKey(tx_wire: []const u8, parsed: tx_ingest.ParsedTx, idx: u8) ?[32]u8 {
+    if (idx >= parsed.num_keys) return null; // ALT-loaded — not resolvable from wire (documented boundary)
+    const off = parsed.keys_offset + @as(usize, idx) * 32;
+    if (off + 32 > tx_wire.len) return null;
+    var out: [32]u8 = undefined;
+    @memcpy(&out, tx_wire[off..][0..32]);
+    return out;
+}
+
+/// Apply the lamport-moving effect of an ADMITTED tx's covered System-program instructions to `state`,
+/// so a LATER tx's admission check sees the TRUE post-execution balance for any account this tx
+/// touched — closing the transfer-drain residual `admitTxSeq` used to document (`block_produce.zig`,
+/// previously ":487-488"). `fp_key`/`fp_parent_lamports` are THIS tx's own fee-payer identity/
+/// frozen-parent-balance (already known to the caller — `admitTxSeq` just looked them up), used for
+/// the one case the gate can VERIFY rather than assume (see below).
+///
+/// WHOLE-TRANSACTION ATOMICITY: a tx's instructions do not commit independently — Solana transaction
+/// processing is atomic (excluding the fee, which is charged in a separate step before instruction
+/// execution begins and is never rolled back): if ANY instruction fails, EVERY account-state change
+/// from EVERY instruction in that SAME tx reverts together. So this walk buffers every covered
+/// instruction's delta in `pending` and commits the WHOLE batch to `state` in one pass only if every
+/// from==fp_key affordability check (the one case verifiable here) passes; the first such failure
+/// discards `pending` entirely (an early `return`) rather than keeping the earlier, already-"applied"
+/// instructions' deltas — otherwise an earlier instruction's delta could be committed even though the
+/// tx it belongs to never actually executes, a phantom effect in either direction (false admit OR
+/// false refusal for a later tx). `local_fp_delta` tracks fp_key's not-yet-committed running effect
+/// from EARLIER instructions in this SAME tx (both directions: a credit TO fp_key funds a LATER debit
+/// FROM fp_key within the same tx), on top of `state`'s already-committed cross-tx delta.
+///
+/// Best-effort on allocator failure: if buffering/committing cannot proceed, no further effect is
+/// tracked (degrades to pre-fix behavior for the untracked accounts — never a NEW failure mode, never
+/// retroactively un-admits the already-decided tx, which was decided by the caller before this runs).
+fn applyLamportEffects(
+    allocator: std.mem.Allocator,
+    state: *SeqGateState,
+    parsed: tx_ingest.ParsedTx,
+    tx_wire: []const u8,
+    fp_key: [32]u8,
+    fp_parent_lamports: u64,
+) void {
+    var pending: std.ArrayListUnmanaged(struct { key: [32]u8, delta: i128 }) = .{};
+    defer pending.deinit(allocator);
+    var local_fp_delta: i128 = 0;
+
+    var p = parsed.instructions_offset;
+    const num_ix = readCompactU16Wire(tx_wire, &p) orelse return;
+    var i: u16 = 0;
+    while (i < num_ix) : (i += 1) {
+        if (p >= tx_wire.len) return;
+        const program_id_index = tx_wire[p];
+        p += 1;
+        const num_accounts = readCompactU16Wire(tx_wire, &p) orelse return;
+        if (p + num_accounts > tx_wire.len) return;
+        const acct_idx_start = p;
+        p += num_accounts;
+        const data_len = readCompactU16Wire(tx_wire, &p) orelse return;
+        if (p + data_len > tx_wire.len) return;
+        const data = tx_wire[p..][0..data_len];
+        p += data_len;
+
+        // Program id must resolve to a STATIC key equal to the System Program — else skip (ALT-loaded
+        // program id, or simply not System: nothing statically derivable here).
+        const prog_key = resolveStaticKey(tx_wire, parsed, program_id_index) orelse continue;
+        if (!std.mem.eql(u8, &prog_key, &SYSTEM_PROGRAM_ID)) continue;
+        if (data_len < 4 or num_accounts < 2) continue; // both covered classes need [from, to] + ≥4B disc
+        const disc = std.mem.readInt(u32, data[0..4], .little);
+        const amount = lamportMoveAmount(disc, data) orelse continue;
+
+        const from_idx = tx_wire[acct_idx_start];
+        const to_idx = tx_wire[acct_idx_start + 1];
+        const from_key = resolveStaticKey(tx_wire, parsed, from_idx) orelse continue;
+        const to_key = resolveStaticKey(tx_wire, parsed, to_idx) orelse continue;
+
+        if (std.mem.eql(u8, &from_key, &fp_key)) {
+            // The reliable case (M1-proven; also the common single-signer-wallet shape): `from` IS
+            // this tx's own fee-payer, so we have a TRUE live balance (frozen-parent + every
+            // cross-tx-committed delta + this SAME tx's own earlier instruction effects via
+            // `local_fp_delta`). Mirror native/system.zig executeTransfer's atomic insufficient-funds
+            // semantics: if this instruction would fail, the WHOLE tx (bar the fee) never executes —
+            // discard everything buffered for this tx so far, not just this one instruction.
+            const live = state.effective(fp_key, fp_parent_lamports) + local_fp_delta;
+            if (live < @as(i128, amount)) return; // whole-tx rollback (atomicity) — commit NOTHING
+            local_fp_delta -= @as(i128, amount);
+        }
+        if (std.mem.eql(u8, &to_key, &fp_key)) local_fp_delta += @as(i128, amount);
+
+        // Either the fp_key case above passed, or `from`/`to` are third-party accounts we cannot
+        // verify (see the EXPLICITLY UNCOVERED note above) — buffer optimistically; committed only if
+        // the whole tx's covered instructions all pass their (verifiable) affordability checks.
+        pending.append(allocator, .{ .key = from_key, .delta = -@as(i128, amount) }) catch return;
+        pending.append(allocator, .{ .key = to_key, .delta = @as(i128, amount) }) catch return;
+    }
+    // No covered instruction failed its (verifiable) affordability check — commit the whole batch.
+    for (pending.items) |eff| state.addDelta(allocator, eff.key, eff.delta) catch return;
+}
+
+/// INTERIM PRODUCE-PARITY WHITELIST (2026-07-18, forensics/txbearing-produce-parity-rootcause.md §3
+/// interim item 1 — "conservatively REFUSE any tx shape the gate can't model correctly"). Root cause
+/// #1's residual (§2 D1b): `applyLamportEffects` models ONLY System `Transfer`/`CreateAccount`; a tx
+/// that drains a later tx's fee-payer via ANY other lamport-mover — an unmodeled System discriminator
+/// (`TransferWithSeed`/`WithdrawNonceAccount`/`Assign`…), a NON-System program (which can CPI-drain),
+/// or an account made writable via an ALT/v0 lookup the wire can't resolve — is admitted OPTIMISTICALLY
+/// and dies on the cluster's sequential replay (`[PRODUCE-PARITY-FAIL]`, a dead-block detector). This
+/// predicate is the STRUCTURAL fix for the WHOLE class (not a per-discriminator patch): a tx is
+/// "fully modelable" iff EVERY instruction is the System program with a discriminator whose lamport
+/// effect `applyLamportEffects` derives ({`Transfer`, `CreateAccount`}), EVERY account index (incl. the
+/// program-id index) is a STATIC key (`< num_keys`, i.e. NOT ALT-loaded), and the message is NOT
+/// versioned (v0 can carry ALT-loaded writable accounts absent from the static key list). Refusing
+/// everything else makes the produced block a SUBSET of the set the gate tracks exactly ⇒ inclusion ==
+/// execution for what it packs ⇒ the producer can only ever pack FEWER/EMPTY txs, NEVER a dead block.
+/// INTERIM COST (accepted, per the report): throughput collapses to System-transfer/create traffic
+/// until the durable produce-time execute-once-and-record executor lands. A zero-instruction tx is
+/// trivially modelable (no lamport effect to miss). Uses the SAME wire-walk shape as
+/// `applyLamportEffects` (readCompactU16Wire / resolveStaticKey) so the two stay in lockstep.
+fn txFullyModelable(parsed: tx_ingest.ParsedTx, tx_wire: []const u8) bool {
+    // v0 versioned message ⇒ may load extra writable accounts via address-table lookups that the
+    // static key list cannot resolve (same boundary class as txCostSum's v0-ALT under-count). Refuse.
+    if (parsed.is_versioned) return false;
+
+    var p = parsed.instructions_offset;
+    const num_ix = readCompactU16Wire(tx_wire, &p) orelse return false;
+    var i: u16 = 0;
+    while (i < num_ix) : (i += 1) {
+        if (p >= tx_wire.len) return false;
+        const program_id_index = tx_wire[p];
+        p += 1;
+        const num_accounts = readCompactU16Wire(tx_wire, &p) orelse return false;
+        if (p + num_accounts > tx_wire.len) return false;
+        const acct_idx_start = p;
+        p += num_accounts;
+        const data_len = readCompactU16Wire(tx_wire, &p) orelse return false;
+        if (p + data_len > tx_wire.len) return false;
+        const data = tx_wire[p..][0..data_len];
+        p += data_len;
+
+        // Program id must resolve to a STATIC key equal to the System Program.
+        const prog_key = resolveStaticKey(tx_wire, parsed, program_id_index) orelse return false;
+        if (!std.mem.eql(u8, &prog_key, &SYSTEM_PROGRAM_ID)) return false;
+        // Discriminator must be one applyLamportEffects can derive a lamport effect for.
+        if (data_len < 4) return false;
+        const disc = std.mem.readInt(u32, data[0..4], .little);
+        if (disc != SYS_DISC_TRANSFER and disc != SYS_DISC_CREATE_ACCOUNT) return false;
+        // Every account index must be a static (non-ALT) key — nothing loaded past the static list.
+        var k: u16 = 0;
+        while (k < num_accounts) : (k += 1) {
+            if (tx_wire[acct_idx_start + k] >= parsed.num_keys) return false;
+        }
+    }
+    return true;
+}
+
 /// SEQUENTIAL per-tx admit — the LIVE gate. Like admitTx, but the fee-payer must be able to pay from
-/// its RUNNING balance (parent lamports minus the fees of earlier txs by the same payer THIS block —
-/// the sequential fee-stacking drain that the frozen-parent-isolation pre-filter missed). On admit it
-/// advances the running balance. `fee_payer.lamports` seeds the running map on first use of a payer.
-/// CONSERVATIVE: a borderline tx is dropped (safe). Does NOT catch a fee-payer drained by an earlier
-/// tx's TRANSFER instruction (needs real execution — the loopback-gate residual, adversarial-only).
+/// its RUNNING balance: parent lamports, adjusted by the TRACKED DELTA of every earlier ADMITTED tx's
+/// effects this block against this SAME payer — both the fee-stacking drain (the sequential fee debit
+/// this gate has always tracked) AND, as of M2, the lamport-moving-instruction effects of
+/// `SYS_DISC_TRANSFER` / `SYS_DISC_CREATE_ACCOUNT` (see `applyLamportEffects`). `fee_payer.lamports`
+/// seeds the delta base on first use of a payer. CONSERVATIVE: a borderline tx is dropped (safe).
+/// Still uncovered: the instruction classes named in `lamportMoveAmount`'s doc comment, and any
+/// third-party-source lamport-mover (see `applyLamportEffects`'s doc).
 pub fn admitTxSeq(
     allocator: std.mem.Allocator,
     state: *SeqGateState,
@@ -495,13 +750,57 @@ pub fn admitTxSeq(
     fee_payer: ?FeePayerView,
 ) bool {
     const fp = checkStaticAndOwner(parsed, tx_wire, recent_blockhashes, fee_payer) orelse return false;
+    // INTERIM PRODUCE-PARITY WHITELIST: refuse any tx the gate cannot model exactly (unmodeled System
+    // discriminator / non-System program / ALT-loaded index / v0). The produced block then only ever
+    // contains fully-modeled txs whose sequential effects the gate tracks precisely — it can pack fewer
+    // txs, never a dead block. See txFullyModelable's doc + forensics/txbearing-produce-parity-rootcause.md.
+    if (!txFullyModelable(parsed, tx_wire)) return false;
     const fee = txFee(parsed, tx_wire);
     const fp_key = parsed.signer_keys[0];
-    const running = state.running_balances.get(fp_key) orelse fp.lamports;
-    if (running < RENT_EXEMPT_MIN_ZERO +| fee) return false; // sequential InsufficientFundsForFee
-    // Admit: commit this tx's fee debit to the running balance so a later tx by the same payer sees it.
-    state.running_balances.put(allocator, fp_key, running -| fee) catch return false;
+    const running = state.effective(fp_key, fp.lamports);
+    if (running < @as(i128, RENT_EXEMPT_MIN_ZERO) + @as(i128, fee)) return false; // sequential InsufficientFundsForFee
+    // Admit: commit this tx's fee debit to the tracked delta so a later tx by the same payer sees it —
+    // mirrors Agave's fee-debit-then-execute ordering (consumer.rs:256+).
+    state.addDelta(allocator, fp_key, -@as(i128, fee)) catch return false;
+    // M2: apply this tx's own lamport-moving-instruction effects (System::Transfer at minimum) in
+    // wire order, so any LATER tx touching an account THIS tx moved lamports for sees the true state.
+    applyLamportEffects(allocator, state, parsed, tx_wire, fp_key, fp.lamports);
     return true;
+}
+
+/// COMPLETE per-tx broadcast admit decision — the SINGLE TEST-ROOTABLE unit the live produce admit
+/// path (`replay_stage.zig` `bankAdmitTxForBroadcast`) delegates to. It composes, in the same order
+/// the cluster enforces:
+///   (1) CROSS-BLOCK AlreadyProcessed dedup — refuse a tx whose FIRST signature was committed within
+///       `RecentSigCache.MAX_RECENT_SLOTS` (=150) of `producing_slot`; the cluster's status cache
+///       marks our block dead (AlreadyProcessed) otherwise. This is the ONE dead-block channel the
+///       `txFullyModelable` whitelist does NOT close (a fully-modeled System transfer can still
+///       duplicate a recently-committed signature). See `RecentSigCache`.
+///   (2) the sequential load/fee gate (`admitTxSeq`).
+/// Dedup runs BEFORE `admitTxSeq` so a duplicate NEVER mutates `state` (the SeqGateState running
+/// balances) — a refused tx must leave zero trace, identical to any other refusal, and identical to
+/// the pre-refactor inline order in `bankAdmitTxForBroadcast` (dedup then admit). `recent_sigs`==null
+/// ⇒ dedup DORMANT: behaviourally IDENTICAL to calling `admitTxSeq` directly (the status-cache-off
+/// path). Extracting this here — rather than leaving the dedup inline in the non-test-rootable
+/// `replay_stage.zig` — is what makes the dedup refusal offline-KAT-provable
+/// (`tests/kat_txbearing_exec.zig`, "cross-block dedup"). The query key `parsed.signatures[0]` is the
+/// 64 bytes immediately after the wire's compact-u16 signature count — BYTE-IDENTICAL to the key the
+/// commit path records (`replay_stage.zig` `tx_data[first_sig_off..][0..64]`, `first_sig_off` = the
+/// same post-count offset), so a live record and this live query key the map on the same bytes.
+pub fn admitTxSeqBroadcast(
+    allocator: std.mem.Allocator,
+    state: *SeqGateState,
+    parsed: tx_ingest.ParsedTx,
+    tx_wire: []const u8,
+    recent_blockhashes: []const [32]u8,
+    fee_payer: ?FeePayerView,
+    recent_sigs: ?*const RecentSigCache,
+    producing_slot: u64,
+) bool {
+    if (recent_sigs) |rsc| {
+        if (rsc.isRecent(&parsed.signatures[0], producing_slot)) return false; // AlreadyProcessed
+    }
+    return admitTxSeq(allocator, state, parsed, tx_wire, recent_blockhashes, fee_payer);
 }
 
 /// Cross-block AlreadyProcessed dedup cache for tx-bearing block production (task #26). A tx whose
@@ -645,8 +944,13 @@ pub fn produceSlotBytes(
             //     the sig; a later admit-failure leaving it inserted is harmless (the tx is dropped).
             const gop = seen_sigs.getOrPut(allocator, parsed.signatures[0]) catch continue;
             if (gop.found_existing) continue;
-            // (b) sigverify + blockhash-age + fee-payer-can-pay, evaluated against the producing bank.
-            if (!g.admit(g.ctx, qt.data)) continue;
+            // (b) static load pre-filter (sigverify + blockhash-age + fee-payer-can-pay + whitelist),
+            //     evaluated against the FROZEN PARENT. BYPASSED when the execute-once-and-record hook
+            //     is active (PASS 3): the executor supersedes it, packing iff the tx was_processed
+            //     after real execution (see below, post-cost-gate). See InclusionGate's exec doc.
+            if (g.execute == null) {
+                if (!g.admit(g.ctx, qt.data)) continue;
+            }
         }
 
         // COST-MODEL block-CU gate (flip-blocker (b)): compute this tx's canonical estimated cost and
@@ -671,6 +975,20 @@ pub fn produceSlotBytes(
             .writable_accounts = writable_scratch[0..writable_count],
         };
         ct.tryAdd(tx_cost) catch break; // block (or sub-limit) full ⇒ stop packing here
+
+        // PASS 3 EXECUTE-ONCE-AND-RECORD: with the executor hook active, EXECUTE AND COMMIT this tx
+        // against the working child state NOW (after the cost gate accepted it, so a cost-rejected tx
+        // is never executed). Pack it IFF it was_processed (Agave committer.rs: fee-paid + loaded, incl.
+        // instruction-failed-but-fee-committed); a NotLoaded / unexecutable / AlreadyProcessed result
+        // commits NOTHING and is dropped here — so the executor's committed set == the packed set, and
+        // the next candidate sees this tx's real post-commit state (inclusion == execution). Runs AFTER
+        // ct.tryAdd: a dropped tx leaves the cost charged (safe over-count — never a dead block, at
+        // worst a throughput loss on the dropped shape). No-op when execute == null (legacy path).
+        if (gate) |g| {
+            if (g.execute) |exec_fn| {
+                if (!exec_fn(g.exec_ctx.?, qt.data)) continue;
+            }
+        }
 
         // Canonical mixin: hash_transactions over THIS entry's txs' flattened signatures. One tx per
         // entry → the flattened set is just this tx's signatures.
@@ -1049,6 +1367,404 @@ test "admitTxSeq: sequential fee-stacking drain — same payer, balance for one 
     try testing.expect(admitTxSeq(a, &state, parsed2, wire2, &known, parent));
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// M2 (TXBEARING-BLOCK-PRODUCTION-PLAN-2026-07-16.md §4 M2 / Path A): admitTxSeq now applies the
+// lamport effect of System::Transfer / System::CreateAccount in transaction order (see
+// `SeqGateState`/`applyLamportEffects` doc comments above). These KATs exercise the ORDERING battery
+// the M2 brief calls for, directly against `admitTxSeq` (same style as the pre-existing
+// "sequential fee-stacking drain" KAT above), plus the second covered instruction class and the
+// false-refusal-avoidance property. Run: zig build test-block-produce
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Build a signed legacy System::Transfer tx: 3 keys [payer(signer,writable), recipient(writable),
+/// System(readonly-unsigned)], matching kat_txbearing_exec.zig's buildTransferTx wire layout (kept as
+/// a SEPARATE local copy here — block_produce.zig and tests/kat_txbearing_exec.zig are different
+/// modules/roots; this file already has its own local tx builders, e.g. buildSignerTxWithBlockhash
+/// above and buildValidTx/buildCreateAccountTx elsewhere, following the same convention).
+fn buildTransferTxSigned(kp: std.crypto.sign.Ed25519.KeyPair, recipient: [32]u8, blockhash: [32]u8, amount: u64, out: []u8) []u8 {
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+    var mpos: usize = 1 + 64;
+    const msg_start = mpos;
+    out[mpos] = 1; // num_required_signatures
+    out[mpos + 1] = 0; // num_readonly_signed
+    out[mpos + 2] = 1; // num_readonly_unsigned (System program)
+    mpos += 3;
+    out[mpos] = 3; // 3 account keys
+    mpos += 1;
+    @memcpy(out[mpos..][0..32], &kp.public_key.bytes);
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &recipient);
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &SYSTEM);
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &blockhash);
+    mpos += 32;
+    out[mpos] = 1; // 1 instruction
+    mpos += 1;
+    out[mpos] = 2; // program_id_index = 2 (System)
+    mpos += 1;
+    out[mpos] = 2; // 2 account indices
+    mpos += 1;
+    out[mpos] = 0; // from = payer
+    out[mpos + 1] = 1; // to = recipient
+    mpos += 2;
+    out[mpos] = 12; // data_len: disc(4)+amount(8)
+    mpos += 1;
+    std.mem.writeInt(u32, out[mpos..][0..4], SYS_DISC_TRANSFER, .little);
+    mpos += 4;
+    std.mem.writeInt(u64, out[mpos..][0..8], amount, .little);
+    mpos += 8;
+    const message = out[msg_start..mpos];
+    const sig = kp.sign(message, null) catch unreachable;
+    out[0] = 1;
+    @memcpy(out[1..][0..64], &sig.toBytes());
+    return out[0..mpos];
+}
+
+/// Build a SIGNED legacy System::CreateAccount tx: 3 keys [payer(signer,writable),
+/// new_account(signer,writable), System(readonly-unsigned)] — matches buildCreateAccountTx's wire
+/// shape above but with a REAL signature (buildCreateAccountTx's dummy zero signature does not pass
+/// admitTxSeq's real sigverify check, `checkStaticAndOwner` -> `tx_ingest.verifySignatures`).
+fn buildCreateAccountTxSigned(kp: std.crypto.sign.Ed25519.KeyPair, new_account: [32]u8, lamports: u64, space: u64, blockhash: [32]u8, out: []u8) []u8 {
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+    var mpos: usize = 1 + 64;
+    const msg_start = mpos;
+    out[mpos] = 1;
+    out[mpos + 1] = 0;
+    out[mpos + 2] = 1;
+    mpos += 3;
+    out[mpos] = 3;
+    mpos += 1;
+    @memcpy(out[mpos..][0..32], &kp.public_key.bytes);
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &new_account);
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &SYSTEM);
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &blockhash);
+    mpos += 32;
+    out[mpos] = 1;
+    mpos += 1;
+    out[mpos] = 2; // program_id_index = 2 (System)
+    mpos += 1;
+    out[mpos] = 2;
+    mpos += 1;
+    out[mpos] = 0; // from = payer
+    out[mpos + 1] = 1; // to = new_account
+    mpos += 2;
+    out[mpos] = 4 + 8 + 8 + 32; // 52
+    mpos += 1;
+    std.mem.writeInt(u32, out[mpos..][0..4], SYS_DISC_CREATE_ACCOUNT, .little);
+    mpos += 4;
+    std.mem.writeInt(u64, out[mpos..][0..8], lamports, .little);
+    mpos += 8;
+    std.mem.writeInt(u64, out[mpos..][0..8], space, .little);
+    mpos += 8;
+    @memset(out[mpos..][0..32], 0xAB); // owner (arbitrary; not consulted by the delta walk)
+    mpos += 32;
+    const message = out[msg_start..mpos];
+    const sig = kp.sign(message, null) catch unreachable;
+    out[0] = 1;
+    @memcpy(out[1..][0..64], &sig.toBytes());
+    return out[0..mpos];
+}
+
+test "admitTxSeq ordering (transfer-then-fee): a drain-by-transfer is followed by a NO-INSTRUCTION fee-only tx, which is refused" {
+    const a = testing.allocator;
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x31} ** 32);
+    const recipient: [32]u8 = [_]u8{0x91} ** 32;
+    const bh: [32]u8 = [_]u8{0xD1} ** 32;
+    const known = [_][32]u8{bh};
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+
+    const parent_lamports: u64 = 2_000_000;
+    const parent = FeePayerView{ .lamports = parent_lamports, .owner = SYSTEM, .data_len = 0 };
+
+    // tx1: Transfer draining P down to 1,000 lamports after its own fee (below the fee floor).
+    var buf1: [256]u8 = undefined;
+    const amount1 = parent_lamports - LAMPORTS_PER_SIGNATURE - 1_000;
+    const wire1 = buildTransferTxSigned(kp, recipient, bh, amount1, &buf1);
+    var ssig1: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey1: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed1 = try tx_ingest.parse(wire1, &ssig1, &skey1);
+
+    // tx2: a bare fee-only tx (NO transfer instruction at all) by the SAME payer.
+    var buf2: [256]u8 = undefined;
+    const wire2 = buildSignerTxWithBlockhash(kp, bh, &buf2);
+    var ssig2: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey2: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed2 = try tx_ingest.parse(wire2, &ssig2, &skey2);
+
+    var state = SeqGateState{};
+    defer state.deinit(a);
+    try testing.expect(admitTxSeq(a, &state, parsed1, wire1, &known, parent)); // tx1 admitted
+    // tx2 has no transfer of its own — proves the refusal is driven by tx1's TRACKED EFFECT on P's
+    // balance, not by anything in tx2's own instruction shape.
+    try testing.expect(!admitTxSeq(a, &state, parsed2, wire2, &known, parent)); // tx2 REFUSED
+}
+
+test "admitTxSeq ordering (fee-then-transfer-then-fee): refusal fires only AFTER the drain, not before" {
+    const a = testing.allocator;
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x32} ** 32);
+    const recipient: [32]u8 = [_]u8{0x92} ** 32;
+    const bh: [32]u8 = [_]u8{0xD2} ** 32;
+    const known = [_][32]u8{bh};
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+
+    const parent_lamports: u64 = 2_010_000;
+    const parent = FeePayerView{ .lamports = parent_lamports, .owner = SYSTEM, .data_len = 0 };
+
+    var buf_fee1: [256]u8 = undefined;
+    const wire_fee1 = buildSignerTxWithBlockhash(kp, bh, &buf_fee1);
+    var ssig_fee1: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey_fee1: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed_fee1 = try tx_ingest.parse(wire_fee1, &ssig_fee1, &skey_fee1);
+
+    var buf_xfer: [256]u8 = undefined;
+    // After tx1's fee (5,000), P has 2,005,000. Drain to 1,000 (below the fee floor).
+    const amount = (parent_lamports - LAMPORTS_PER_SIGNATURE) - LAMPORTS_PER_SIGNATURE - 1_000;
+    const wire_xfer = buildTransferTxSigned(kp, recipient, bh, amount, &buf_xfer);
+    var ssig_xfer: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey_xfer: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed_xfer = try tx_ingest.parse(wire_xfer, &ssig_xfer, &skey_xfer);
+
+    var buf_fee2: [256]u8 = undefined;
+    const wire_fee2 = buildSignerTxWithBlockhash(kp, bh, &buf_fee2);
+    var ssig_fee2: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey_fee2: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed_fee2 = try tx_ingest.parse(wire_fee2, &ssig_fee2, &skey_fee2);
+
+    var state = SeqGateState{};
+    defer state.deinit(a);
+    try testing.expect(admitTxSeq(a, &state, parsed_fee1, wire_fee1, &known, parent)); // fee-only: admitted
+    try testing.expect(admitTxSeq(a, &state, parsed_xfer, wire_xfer, &known, parent)); // transfer: admitted (drains P)
+    try testing.expect(!admitTxSeq(a, &state, parsed_fee2, wire_fee2, &known, parent)); // 3rd tx: REFUSED
+}
+
+test "admitTxSeq: multiple interleaved payers — one payer's drain does not affect a different payer's admission" {
+    const a = testing.allocator;
+    const kp_p = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x41} ** 32);
+    const kp_q = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x42} ** 32);
+    const recipient: [32]u8 = [_]u8{0x93} ** 32;
+    const bh: [32]u8 = [_]u8{0xD3} ** 32;
+    const known = [_][32]u8{bh};
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+
+    const p_parent: u64 = 2_000_000;
+    const q_parent: u64 = 2_000_000; // comfortably affords several fees, never touched by a transfer
+    const parent_p = FeePayerView{ .lamports = p_parent, .owner = SYSTEM, .data_len = 0 };
+    const parent_q = FeePayerView{ .lamports = q_parent, .owner = SYSTEM, .data_len = 0 };
+
+    var buf_p_xfer: [256]u8 = undefined;
+    const amount_p = p_parent - LAMPORTS_PER_SIGNATURE - 1_000; // drains P below the fee floor
+    const wire_p_xfer = buildTransferTxSigned(kp_p, recipient, bh, amount_p, &buf_p_xfer);
+    var ssig1: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey1: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed_p_xfer = try tx_ingest.parse(wire_p_xfer, &ssig1, &skey1);
+
+    var buf_q1: [256]u8 = undefined;
+    const wire_q1 = buildSignerTxWithBlockhash(kp_q, bh, &buf_q1);
+    var ssig2: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey2: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed_q1 = try tx_ingest.parse(wire_q1, &ssig2, &skey2);
+
+    var buf_p_fee: [256]u8 = undefined;
+    const wire_p_fee = buildSignerTxWithBlockhash(kp_p, bh, &buf_p_fee);
+    var ssig3: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey3: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed_p_fee = try tx_ingest.parse(wire_p_fee, &ssig3, &skey3);
+
+    var buf_q2: [256]u8 = undefined;
+    const wire_q2 = buildSignerTxWithBlockhash(kp_q, bh, &buf_q2);
+    var ssig4: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey4: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed_q2 = try tx_ingest.parse(wire_q2, &ssig4, &skey4);
+
+    var state = SeqGateState{};
+    defer state.deinit(a);
+    // Interleaved order: P-transfer(drain), Q-fee, P-fee(should refuse), Q-fee(should still admit).
+    try testing.expect(admitTxSeq(a, &state, parsed_p_xfer, wire_p_xfer, &known, parent_p));
+    try testing.expect(admitTxSeq(a, &state, parsed_q1, wire_q1, &known, parent_q));
+    try testing.expect(!admitTxSeq(a, &state, parsed_p_fee, wire_p_fee, &known, parent_p)); // P: refused
+    try testing.expect(admitTxSeq(a, &state, parsed_q2, wire_q2, &known, parent_q)); // Q: unaffected by P's drain
+}
+
+test "admitTxSeq: System::CreateAccount drain — later fee-only tx by the same payer is refused (2nd covered class)" {
+    const a = testing.allocator;
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x51} ** 32);
+    const new_account: [32]u8 = [_]u8{0x94} ** 32;
+    const bh: [32]u8 = [_]u8{0xD4} ** 32;
+    const known = [_][32]u8{bh};
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+
+    const parent_lamports: u64 = 2_000_000;
+    const parent = FeePayerView{ .lamports = parent_lamports, .owner = SYSTEM, .data_len = 0 };
+
+    var buf1: [256]u8 = undefined;
+    const create_lamports = parent_lamports - LAMPORTS_PER_SIGNATURE - 1_000;
+    const wire1 = buildCreateAccountTxSigned(kp, new_account, create_lamports, 165, bh, &buf1);
+    var ssig1: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey1: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed1 = try tx_ingest.parse(wire1, &ssig1, &skey1);
+
+    var buf2: [256]u8 = undefined;
+    const wire2 = buildSignerTxWithBlockhash(kp, bh, &buf2);
+    var ssig2: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey2: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed2 = try tx_ingest.parse(wire2, &ssig2, &skey2);
+
+    var state = SeqGateState{};
+    defer state.deinit(a);
+    try testing.expect(admitTxSeq(a, &state, parsed1, wire1, &known, parent)); // CreateAccount: admitted
+    try testing.expect(!admitTxSeq(a, &state, parsed2, wire2, &known, parent)); // later fee-only: REFUSED
+}
+
+/// Build a signed legacy tx with TWO System::Transfer instructions from the SAME payer to two distinct
+/// recipients: 4 keys [payer(signer,writable), r1(writable), r2(writable), System(readonly-unsigned)].
+fn buildTwoTransferTxSigned(kp: std.crypto.sign.Ed25519.KeyPair, r1: [32]u8, r2: [32]u8, blockhash: [32]u8, amount1: u64, amount2: u64, out: []u8) []u8 {
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+    var mpos: usize = 1 + 64;
+    const msg_start = mpos;
+    out[mpos] = 1; // num_required_signatures
+    out[mpos + 1] = 0; // num_readonly_signed
+    out[mpos + 2] = 1; // num_readonly_unsigned (System program)
+    mpos += 3;
+    out[mpos] = 4; // 4 account keys
+    mpos += 1;
+    @memcpy(out[mpos..][0..32], &kp.public_key.bytes); // [0] payer
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &r1); // [1] recipient 1
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &r2); // [2] recipient 2
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &SYSTEM); // [3] System program
+    mpos += 32;
+    @memcpy(out[mpos..][0..32], &blockhash);
+    mpos += 32;
+    out[mpos] = 2; // 2 instructions
+    mpos += 1;
+    // ix0: payer -> r1, amount1
+    out[mpos] = 3; // program_id_index = 3 (System)
+    mpos += 1;
+    out[mpos] = 2; // 2 account indices
+    mpos += 1;
+    out[mpos] = 0; // from = payer
+    out[mpos + 1] = 1; // to = r1
+    mpos += 2;
+    out[mpos] = 12;
+    mpos += 1;
+    std.mem.writeInt(u32, out[mpos..][0..4], SYS_DISC_TRANSFER, .little);
+    mpos += 4;
+    std.mem.writeInt(u64, out[mpos..][0..8], amount1, .little);
+    mpos += 8;
+    // ix1: payer -> r2, amount2
+    out[mpos] = 3; // program_id_index = 3 (System)
+    mpos += 1;
+    out[mpos] = 2;
+    mpos += 1;
+    out[mpos] = 0; // from = payer
+    out[mpos + 1] = 2; // to = r2
+    mpos += 2;
+    out[mpos] = 12;
+    mpos += 1;
+    std.mem.writeInt(u32, out[mpos..][0..4], SYS_DISC_TRANSFER, .little);
+    mpos += 4;
+    std.mem.writeInt(u64, out[mpos..][0..8], amount2, .little);
+    mpos += 8;
+    const message = out[msg_start..mpos];
+    const sig = kp.sign(message, null) catch unreachable;
+    out[0] = 1;
+    @memcpy(out[1..][0..64], &sig.toBytes());
+    return out[0..mpos];
+}
+
+test "admitTxSeq: within-tx atomicity — a 2nd instruction's failure rolls back the 1st instruction's delta too (same tx)" {
+    // Real Solana tx execution is atomic (excluding the already-charged fee): if instruction 2 fails,
+    // instruction 1's effects in the SAME tx are ALSO rolled back, not just instruction 2's. Proves
+    // applyLamportEffects's `pending`-buffer-then-commit-as-one-batch design, not a naive per-
+    // instruction apply (which would wrongly keep instruction 1's delta committed).
+    const a = testing.allocator;
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x71} ** 32);
+    const r1: [32]u8 = [_]u8{0x96} ** 32;
+    const r2: [32]u8 = [_]u8{0x97} ** 32;
+    const bh: [32]u8 = [_]u8{0xD6} ** 32;
+    const known = [_][32]u8{bh};
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+
+    const parent_lamports: u64 = 1_000_000;
+    const parent = FeePayerView{ .lamports = parent_lamports, .owner = SYSTEM, .data_len = 0 };
+    // After this tx's own 5,000-lamport fee: P has 995,000. ix0 (400,000) is affordable alone. ix1
+    // (700,000) is NOT affordable after ix0 (995,000 - 400,000 = 595,000 < 700,000) — so the WHOLE tx's
+    // instruction effects roll back; only the fee is real.
+    const amount1: u64 = 400_000;
+    const amount2: u64 = 700_000;
+
+    var buf1: [512]u8 = undefined;
+    const wire1 = buildTwoTransferTxSigned(kp, r1, r2, bh, amount1, amount2, &buf1);
+    var ssig1: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey1: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed1 = try tx_ingest.parse(wire1, &ssig1, &skey1);
+
+    var buf2: [256]u8 = undefined;
+    const wire2 = buildSignerTxWithBlockhash(kp, bh, &buf2); // probe: bare fee-only tx, same payer
+    var ssig2: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey2: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed2 = try tx_ingest.parse(wire2, &ssig2, &skey2);
+
+    var state = SeqGateState{};
+    defer state.deinit(a);
+    // The 2-instruction tx is still ADMITTED (its own FEE is affordable at admit time — the pre-filter
+    // does not gate on instruction-level outcomes, only on the fee, per block_produce.zig's fatal-
+    // classification table).
+    try testing.expect(admitTxSeq(a, &state, parsed1, wire1, &known, parent));
+    // THE LOAD-BEARING ASSERTION: if ix0's 400,000 debit had wrongly stayed committed (the pre-fix-for-
+    // atomicity bug), P's effective balance would be 995,000-400,000=595,000 < the fee floor (895,880)
+    // and this probe would be wrongly REFUSED. With atomic rollback, P's ONLY real effect is the fee
+    // (995,000 >= 895,880), so the probe is correctly ADMITTED.
+    try testing.expect(admitTxSeq(a, &state, parsed2, wire2, &known, parent));
+}
+
+test "admitTxSeq: a transfer that would EXCEED the payer's true balance does NOT falsely drain bookkeeping (false-refusal avoidance)" {
+    // A gate that refuses valid transactions costs fee revenue and is its own bug (M2 brief). This
+    // proves the affordability check in applyLamportEffects (see its doc comment): when `from` IS the
+    // tx's own fee-payer, an over-large transfer amount is NOT applied to the tracked delta, because
+    // real execution would tolerate the inner-instruction failure (native/system.zig executeTransfer:
+    // no commit unless from.lamports >= amount) and never actually move any lamports.
+    const a = testing.allocator;
+    const kp = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x61} ** 32);
+    const recipient: [32]u8 = [_]u8{0x95} ** 32;
+    const bh: [32]u8 = [_]u8{0xD5} ** 32;
+    const known = [_][32]u8{bh};
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+
+    // P affords the FEE comfortably but the tx's own transfer amount is far more than P actually has.
+    const parent_lamports: u64 = RENT_EXEMPT_MIN_ZERO + 2 * LAMPORTS_PER_SIGNATURE;
+    const parent = FeePayerView{ .lamports = parent_lamports, .owner = SYSTEM, .data_len = 0 };
+
+    var buf1: [256]u8 = undefined;
+    const wire1 = buildTransferTxSigned(kp, recipient, bh, 50_000_000_000, &buf1); // far more than P has
+    var ssig1: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey1: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed1 = try tx_ingest.parse(wire1, &ssig1, &skey1);
+
+    var buf2: [256]u8 = undefined;
+    const wire2 = buildSignerTxWithBlockhash(kp, bh, &buf2);
+    var ssig2: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+    var skey2: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+    const parsed2 = try tx_ingest.parse(wire2, &ssig2, &skey2);
+
+    var state = SeqGateState{};
+    defer state.deinit(a);
+    // tx1's FEE is affordable, so it is admitted (its transfer amount is a per-instruction concern the
+    // pre-filter does not gate — TOLERATED per block_produce.zig's own fatal-classification table).
+    try testing.expect(admitTxSeq(a, &state, parsed1, wire1, &known, parent));
+    // tx2: if the fix naively applied the oversized transfer's delta unconditionally, P's tracked
+    // balance would be wrongly deep-negative and this SECOND fee-only tx would be wrongly refused.
+    // Because tx1's transfer would not actually succeed (P can't afford it), no delta was applied for
+    // it — only tx1's OWN fee debit was — so P still affords tx2's fee.
+    try testing.expect(admitTxSeq(a, &state, parsed2, wire2, &known, parent));
+}
+
 test "RecentSigCache: cross-block AlreadyProcessed window + prune" {
     const a = testing.allocator;
     var cache = RecentSigCache{};
@@ -1167,6 +1883,129 @@ test "produce-parity: full gate through produceSlotBytes admits exactly the vali
     // And they must be EXACTLY t1, t2, t3 in order (walk the record entries, match wire bytes).
     const expected = [_][]const u8{ t1, t2, t3 };
     var offset: usize = 8; // past the u64 count prefix
+    var records: usize = 0;
+    var i: u64 = 0;
+    while (i < count) : (i += 1) {
+        const h = try entry.readEntryHeader(bytes, offset);
+        if (h.num_txs > 0) {
+            try testing.expectEqual(@as(u64, 1), h.num_txs);
+            const blob = expected[records];
+            try testing.expectEqualSlices(u8, blob, bytes[h.txs_offset..][0..blob.len]);
+            records += 1;
+            offset = h.txs_offset + blob.len;
+        } else {
+            offset = h.txs_offset;
+        }
+    }
+    try testing.expectEqual(@as(usize, 3), records);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// M2b (produce-tile safe gating) — DECISION PARITY between the two `InclusionGate` adapters. Both
+// `bankAdmitTxForBroadcast` (inline, replay_stage.zig:1818, DB-view — mirrored by `Ctx` above) and
+// `tileAdmitTxForBroadcast` (tile, replay_stage.zig, snapshot-view) end in the SAME `admitTxSeq` call —
+// already covered by the KATs above — so the only NEW surface M2b adds is the ADAPTER: how
+// `FeePayerView`/`recent_blockhashes`/cross-block-dedup are located. This test is `Ctx` above's exact
+// twin with ONE difference: `TileCtx.admit` sources every input from bounded VALUE arrays (mirroring
+// `produce_ring.BecomeLeaderRecord`'s `fee_snapshot`/`recent_blockhashes`/`already_processed_sigs`,
+// built here directly from the SAME fixture the DB-view test uses) instead of the DB-backed
+// `accounts`/`known`/`recent` the map/cache above query live — proving the adapter rewrite is a pure
+// re-source, not a decision change. Run: zig build test-block-produce
+// ════════════════════════════════════════════════════════════════════════════
+test "produce-parity (TILE-SNAPSHOT VIEW): snapshot-sourced gate admits the IDENTICAL tx set as the DB-view gate" {
+    const a = testing.allocator;
+    const seed: Hash = [_]u8{0x5C} ** 32;
+    const hpt: u64 = 64;
+    const tps: u64 = 64;
+    const SYSTEM: [32]u8 = [_]u8{0} ** 32;
+
+    const kp1 = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x11} ** 32);
+    const kp2 = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x12} ** 32);
+    const kp3 = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x13} ** 32);
+    const kpx = try std.crypto.sign.Ed25519.KeyPair.generateDeterministic([_]u8{0x14} ** 32);
+
+    // The SAME "world" as the DB-view test above, expressed as a bounded snapshot ARRAY (what
+    // dispatchLeaderToProduceTile would have built from a peek + accounts_db lookups) instead of a
+    // live-queryable map. kp3 is simply ABSENT from the array (== a DB miss, same fpv=null collapse).
+    const FeeSnap = struct { pubkey: [32]u8, view: FeePayerView };
+    const fee_snapshot = [_]FeeSnap{
+        .{ .pubkey = kp1.public_key.bytes, .view = .{ .lamports = RENT_EXEMPT_MIN_ZERO + 2 * LAMPORTS_PER_SIGNATURE, .owner = SYSTEM, .data_len = 0 } },
+        .{ .pubkey = kp2.public_key.bytes, .view = .{ .lamports = RENT_EXEMPT_MIN_ZERO + 1 * LAMPORTS_PER_SIGNATURE, .owner = SYSTEM, .data_len = 0 } },
+        .{ .pubkey = kpx.public_key.bytes, .view = .{ .lamports = RENT_EXEMPT_MIN_ZERO + 1 * LAMPORTS_PER_SIGNATURE, .owner = SYSTEM, .data_len = 0 } },
+    };
+    const known = [_][32]u8{ [_]u8{1} ** 32, [_]u8{2} ** 32 };
+
+    var seq = SeqGateState{};
+    defer seq.deinit(a);
+
+    var b1: [256]u8 = undefined;
+    var b2: [256]u8 = undefined;
+    var b3: [256]u8 = undefined;
+    var b4: [256]u8 = undefined;
+    var b5: [256]u8 = undefined;
+    var b6: [256]u8 = undefined;
+    var b7: [256]u8 = undefined;
+    var b8: [256]u8 = undefined;
+    const t1 = buildValidTx(kp1, 1, &b1);
+    const t2 = buildValidTx(kp1, 2, &b2);
+    const t3 = buildValidTx(kp2, 1, &b3);
+    const t4 = buildValidTx(kp2, 2, &b4);
+    const t5 = buildValidTx(kp3, 1, &b5);
+    const t6 = buildValidTx(kp1, 9, &b6);
+    const t7 = buildValidTx(kp1, 1, &b7);
+    const t8 = buildValidTx(kpx, 1, &b8);
+    // t8's first signature is the ONE entry a dispatch-time peek would have flagged
+    // already-processed (recent.record(t8_sig, SLOT-10) in the DB-view test's fixture) — expressed
+    // directly as the bounded snapshot array tileAdmitTxForBroadcast walks.
+    const already_processed = [_][64]u8{t8[1..][0..64].*};
+
+    const TileCtx = struct {
+        fee_snapshot: []const FeeSnap,
+        known: []const [32]u8,
+        already_processed: []const [64]u8,
+        seq: *SeqGateState,
+        a: std.mem.Allocator,
+        fn admit(ctx: *anyopaque, wire: []const u8) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var ss: [tx_ingest.MAX_SIGNATURES][64]u8 = undefined;
+            var sk: [tx_ingest.MAX_SIGNATURES][32]u8 = undefined;
+            const parsed = tx_ingest.parse(wire, &ss, &sk) catch return false;
+            // Cross-block AlreadyProcessed, snapshot-sourced (mirrors tileAdmitTxForBroadcast).
+            for (self.already_processed) |flagged| {
+                if (std.mem.eql(u8, &flagged, &parsed.signatures[0])) return false;
+            }
+            // Fee-payer balance, snapshot-sourced (mirrors tileAdmitTxForBroadcast).
+            var fp: ?FeePayerView = null;
+            for (self.fee_snapshot) |snap| {
+                if (std.mem.eql(u8, &snap.pubkey, &parsed.signer_keys[0])) {
+                    fp = snap.view;
+                    break;
+                }
+            }
+            return admitTxSeq(self.a, self.seq, parsed, wire, self.known, fp);
+        }
+    };
+    var tctx = TileCtx{ .fee_snapshot = &fee_snapshot, .known = &known, .already_processed = &already_processed, .seq = &seq, .a = a };
+    const gate = InclusionGate{ .ctx = &tctx, .admit = TileCtx.admit };
+
+    var banking = banking_stage.BankingStage.init(a, .{});
+    defer banking.deinit();
+    for ([_][]const u8{ t1, t2, t3, t4, t5, t6, t7, t8 }, 0..) |tx, idx| {
+        try banking.queueTransaction(tx, @intCast(8 - idx), false, .tpu);
+    }
+
+    var blockhash: Hash = undefined;
+    const bytes = try produceSlotBytes(a, seed, hpt, tps, &banking, &blockhash, gate, MAX_BLOCK_UNITS);
+    defer a.free(bytes);
+
+    // IDENTICAL outcome to the DB-view "produce-parity" test above: exactly t1, t2, t3 admitted, same
+    // order (P1's 2 fees, P2's 1st fee, P2's 2nd drop-sequential, P3 absent, stale-BH drop, in-block
+    // dedup drop, cross-block AlreadyProcessed drop) — proving the snapshot adapter is decision-for-
+    // decision equivalent to the DB adapter, not just that admitTxSeq (already shared) is correct.
+    const count = try entry.readEntryCount(bytes);
+    try testing.expectEqual(@as(u64, tps + 3), count);
+    const expected = [_][]const u8{ t1, t2, t3 };
+    var offset: usize = 8;
     var records: usize = 0;
     var i: u64 = 0;
     while (i < count) : (i += 1) {
@@ -1453,3 +2292,4 @@ test "produceSlotBytes: cost-model block limit STOPS packing at the right tx; to
     // the next slot's mempool; this loopback producer drains the whole batch, so the mempool is empty.
     try testing.expectEqual(@as(usize, 0), banking.queueDepth());
 }
+

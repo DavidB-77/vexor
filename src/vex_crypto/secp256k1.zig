@@ -244,6 +244,16 @@ pub fn recoverPublicKey(
     const s_bytes: [32]u8 = sig_bytes[32..64].*;
     scalar.rejectNonCanonical(r_bytes, .big) catch return error.InvalidSignature;
     scalar.rejectNonCanonical(s_bytes, .big) catch return error.InvalidSignature;
+    // secp256k1 s=0 fix (conformance grind): `rejectNonCanonical` only
+    // rejects scalars >= the curve order n (i.e. checks the UPPER bound),
+    // not the SEC1/ECDSA lower bound `1 <= r,s < n` — a signature with
+    // s=0 (or r=0) passed both `rejectNonCanonical` calls above and
+    // proceeded to a bogus-but-"successful" recovery. Agave's real
+    // `libsecp256k1::Signature::parse_overflowing`+recovery path rejects
+    // s=0 (and r=0) as `Secp256k1RecoverError::InvalidSignature`. Checked
+    // explicitly here since `rejectNonCanonical` structurally cannot catch
+    // an all-zero scalar (zero is always canonical/in-range).
+    if (allZero(&r_bytes) or allZero(&s_bytes)) return error.InvalidSignature;
 
     // Reconstruct x-coordinate from r.
     // If recovery_id & 2: x = r + n; validate x < p first.
@@ -317,6 +327,12 @@ fn cmpBytes(a: *const [32]u8, b: *const [32]u8) i8 {
         if (ab > bb) return 1;
     }
     return 0;
+}
+
+/// True if every byte in `bytes` is zero.
+/// @prov:crypto.secp256k1
+fn allZero(bytes: *const [32]u8) bool {
+    return std.mem.allEqual(u8, bytes, 0);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

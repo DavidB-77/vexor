@@ -38,6 +38,21 @@
 //! final record in the ACTIVE segment (a crash mid-write) is treated as end-of-log
 //! and truncated; sealed/legacy segments are scanned read-only (a torn tail there
 //! just bounds the scan, never mutates the file).
+//!
+//! SCOPE BOUNDARY — pre-boot ancestry (Phase 2d,
+//! SCOPE-2-vexledger-repair-persist-2026-07-17.md §6.4, "leak C"): VexLedger
+//! only ever contains shreds this PROCESS ingested (turbine or repair) since it
+//! last booted, plus whatever survived on disk from a prior run within
+//! `VEX_LEDGER_KEEP_SLOTS`. It structurally CANNOT reconstruct ancestry it never
+//! received as shreds — a snapshot-base slot, or any slot rooted before this
+//! process's boot and since pruned/never seen, has no shred record here and
+//! never will, by design (this is not the burst-drop leak that Phase 2a/2b
+//! close; that leak is closable, this boundary is not). The realistic contract
+//! for offline-replay-from-VexLedger is: replay depth <= (slots since this
+//! process booted) AND within VEX_LEDGER_KEEP_SLOTS. A replay that needs to go
+//! deeper needs an external ancestry source (e.g. oracle-node's Agave rocksdb via
+//! the oracle-node->VexLedger import tool) for the pre-boot portion; VexLedger picks
+//! up cleanly from there forward. Not a bug — do not file it as one.
 
 const std = @import("std");
 pub const agave_wire = @import("agave_wire.zig");
@@ -468,6 +483,19 @@ pub const VexLedger = struct {
     /// A segment roll always syncs, so sealed segments stay durable regardless.
     fsync_every: u64 = 1,
     slots_since_fsync: u64 = 0,
+
+    /// Drop->gap reconciliation telemetry (SCOPE-2-vexledger-repair-persist-
+    /// 2026-07-17.md Phase 2b). At every finishSlot, compare the producer-derived
+    /// "expected" shred count (slot_meta.received, i.e. max_index+1 over the
+    /// contiguous set the assembler declared complete) against what actually
+    /// landed in `slot_shreds` for that slot. A gap here means SOME of this
+    /// slot's data-shred/FINISH enqueues were dropped upstream (ledger-tile ring
+    /// full, §1e) — measured, not inferred. Written only from finishSlot, which
+    /// always holds `lock` exclusive, so plain counters (no atomics) are safe —
+    /// same pattern as `slots_since_fsync`. Cheap: a single hashmap lookup + an
+    /// integer compare, no allocation, on the already-exclusive-locked path.
+    gap_slots_total: u64 = 0,
+    gap_shreds_total: u64 = 0,
 
     /// (slot, index) -> payload location (segment seq + offset + len).
     /// O(1) point lookup (getShred). NOTE: shred `index` is u32 because the
@@ -1075,6 +1103,32 @@ pub const VexLedger = struct {
         const loc = try self.appendRecord(KIND_META, slot, 0, payload);
 
         try self.storeMeta(slot, slot_meta, loc.seq);
+
+        // Drop->gap reconciliation (Phase 2b): `received` is the producer's
+        // expected count (max_index+1 over the contiguous set at completion);
+        // compare it to what's actually indexed for this slot right now. Data
+        // shreds for this slot enqueue-then-apply strictly before this FINISH on
+        // the single-consumer tile path, so any deficit here reflects a real
+        // upstream drop (ring-full), not a race. A cheap length check — no alloc,
+        // no sort (unlike getSlotShredIndices) — safe to run on every finishSlot.
+        const persisted_count: usize = if (self.slot_shreds.get(slot)) |list| list.items.len else 0;
+        const expected_count: usize = slot_meta.received;
+        if (persisted_count < expected_count) {
+            const gap = expected_count - persisted_count;
+            self.gap_slots_total += 1;
+            self.gap_shreds_total += gap;
+            // Rate-limited like enqueueDrop's modulo pattern (ledger_tile.zig) —
+            // a burst can produce many gap slots back-to-back; log the first and
+            // then every 100th to avoid stderr saturation. In the expected steady
+            // state (few/no gaps once Phase 2a's bigger ring is absorbing bursts)
+            // this logs every occurrence with its exact slot number; only a heavy
+            // burst samples 1-in-100, and the cumulative counters in every line
+            // still carry the full total for attribution even when a specific
+            // slot's line was skipped.
+            if (self.gap_slots_total % 100 == 1) {
+                std.log.warn("[LEDGER-GAP] slot={d} expected={d} persisted={d} gap={d} (upstream drop, cumulative gap_slots={d} gap_shreds={d})", .{ slot, expected_count, persisted_count, gap, self.gap_slots_total, self.gap_shreds_total });
+            }
+        }
 
         // fsync cadence (VEX_LEDGER_FSYNC_EVERY): flushes this slot's shred records
         // (already written via direct file.writeAll → kernel-resident + readable

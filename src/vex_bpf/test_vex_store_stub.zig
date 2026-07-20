@@ -18,8 +18,7 @@ pub const AccountView = struct {
 
 pub const AccountsDb = struct {
     pub fn getAccount(self: *@This(), pubkey: *const core.Pubkey) ?AccountView {
-        _ = self;
-        _ = pubkey;
+        _ = self; _ = pubkey;
         return null;
     }
 };
@@ -28,8 +27,7 @@ pub const AccountsDb = struct {
 pub const accounts = struct {
     pub const AccountsDb = struct {
         pub fn getAccount(self: *@This(), pubkey: *const core.Pubkey) ?AccountView {
-            _ = self;
-            _ = pubkey;
+            _ = self; _ = pubkey;
             return null;
         }
     };

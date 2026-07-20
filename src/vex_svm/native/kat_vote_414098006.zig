@@ -24,27 +24,14 @@ test "414098006: rejected TowerSync leaves vote-account bytes unchanged (Custom 
 
     // tx417: root=414097970 (cluster-SKIPPED, ≥earliest_slot_hash, ABSENT from SH) => Custom 17.
     var lk417: [31]vss.Lockout = undefined;
-    var n: usize = 0;
-    var s: u64 = 414097971;
-    while (s <= 414098001) : (s += 1) {
-        lk417[n] = .{ .slot = s, .confirmation_count = @intCast(31 - n) };
-        n += 1;
-    }
-    const sh_data: ?[]const u8 = null; // SEED: real SlotHashes (414097970/971 absent) — null = test is RED
-    var hash417 = [_]u8{0} ** 32; // SEED: real proposed hash
+    var n: usize = 0; var s: u64 = 414097971;
+    while (s <= 414098001) : (s += 1) { lk417[n] = .{ .slot = s, .confirmation_count = @intCast(31 - n) }; n += 1; }
+    const sh_data: ?[]const u8 = null;   // SEED: real SlotHashes (414097970/971 absent) — null = test is RED
+    var hash417 = [_]u8{0} ** 32;        // SEED: real proposed hash
     const ok417 = vss.replaceTowerStateCheckedWithFallbackTraced(
-        &data,
-        lk417[0..n],
-        414097970,
-        null,
-        414098006,
-        sh_data,
-        &hash417,
-        null,
-        null,
-        null,
+        &data, lk417[0..n], 414097970, null, 414098006, sh_data, &hash417, null, null, null,
     );
-    try std.testing.expectEqual(false, ok417); // REJECTED == cluster Custom 17
+    try std.testing.expectEqual(false, ok417);             // REJECTED == cluster Custom 17
     try std.testing.expectEqualSlices(u8, &before, &data); // bytes UNCHANGED — no phantom write
     // tx419 (root=414097971) identical pattern; tx421 (root=414097973, in SH) ACCEPTED —
     // assert post-bytes == BfX cluster bank_hash_details once seeded.

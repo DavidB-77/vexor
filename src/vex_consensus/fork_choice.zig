@@ -488,6 +488,29 @@ pub const HeaviestSubtreeForkChoice = struct {
     /// liveness pause), never produce a false SwitchProof. CONSERVATIVE and
     /// ONE-DIRECTIONAL by construction.
     ///
+    /// CORRECTION (2026-07-17, live wedge 422521275): `self.latest_votes`
+    /// (fed by the caller's per-bank vote-account scan, see
+    /// vex_svm/fork_choice_feed.zig) plays the role of Agave's PRIMARY,
+    /// bank-derived loop (consensus.rs:1119-1218) collapsed to one vote per
+    /// voter — NOT the secondary gossip loop, despite the "latest_votes"
+    /// name. The admission rule for this loop was, until this fix, a
+    /// strictly-newer-than-`last_voted_slot` filter — WRONG: confirmed
+    /// against Agave's real primary loop (`interval.end >= last_voted_slot`
+    /// then `!last_vote_ancestors.contains(start) && start > root`,
+    /// consensus.rs:1190-1206 — no comparison to `last_voted_slot` by
+    /// number) and Firedancer `fd_tower.c:550-555` (`!is_slot_descendant(...)
+    /// && interval_slot > root_slot`, same shape). The strictly-newer rule is
+    /// canonical ONLY for Agave's SECONDARY gossip loop (consensus.rs:1228,
+    /// which Firedancer's switch_check does not even have). Applying it to
+    /// this (primary-equivalent) loop silently excluded every voter whose
+    /// current, genuinely-different-fork vote happened to number below
+    /// `last_voted_slot` — exactly the case where our own dead fork raced
+    /// ahead of the canonical one before dying. Fixed to `cand_slot >
+    /// self.tree_root.slot` (newer than ROOT, matching Agave/FD) — fork
+    /// ancestry + GCA/switch_slot descent (`switchProofVoteCounts` below,
+    /// the ported `is_valid_switching_proof_vote`) does the real admission
+    /// work, exactly as it does in both canonical implementations.
+    ///
     /// ⚠ SAFETY: this is an ADDITIONAL liveness gate, NEVER a lockout override.
     /// Agave composes it as a pure AND — `!is_locked_out && switch.can_vote()`
     /// (fork_choice.rs:382-385); Firedancer states it in words (fd_tower.c:803
@@ -600,8 +623,27 @@ pub const HeaviestSubtreeForkChoice = struct {
         while (it.next()) |e| {
             const pk = e.key_ptr.*;
             const cand_slot = e.value_ptr.slot;
-            // Only votes strictly newer than ours (Agave consensus.rs:1228).
-            if (cand_slot <= last_voted_slot) continue;
+            // FIX (switch-proof gossip-arming wedge, 2026-07-17): NOT a
+            // strictly-newer-than-last-vote filter. Confirmed against Agave's
+            // REAL primary bank-derived loop (consensus.rs:1182-1204,
+            // `lockout_intervals.iter().filter(|interval| interval.end >=
+            // last_voted_slot)` then `!last_vote_ancestors.contains(start) &&
+            // start > root` — no comparison to `last_voted_slot` by number)
+            // and Firedancer's `switch_check` (fd_tower.c:550-555, identical
+            // shape: `!is_slot_descendant(interval_slot, vote_slot) &&
+            // interval_slot > root_slot`). The strictly-newer-than-last-vote
+            // rule is canonical ONLY for Agave's SECONDARY gossip loop
+            // (consensus.rs:1228) — see the gossip loop below, unchanged.
+            // Applying it here as well (the pre-fix rule) silently excludes
+            // every voter whose CURRENT, genuinely-different-fork vote
+            // happens to number below our last vote — exactly the case an
+            // escaping validator needs when its own dead fork raced ahead of
+            // the canonical one before dying. `switchProofVoteCounts` below
+            // (the ported `is_valid_switching_proof_vote`) already proves
+            // fork-ancestry + GCA/switch_slot descent; this newer-than-ROOT
+            // check is the one Agave/FD actually gate on (a candidate below
+            // our root is stale/pruned history, never a live escape route).
+            if (cand_slot <= self.tree_root.slot) continue;
             var verdict: ?bool = null;
             for (memo[0..memo_len]) |m| {
                 if (m.slot == cand_slot) {
@@ -643,11 +685,14 @@ pub const HeaviestSubtreeForkChoice = struct {
             //     consensus.rs:1224-1226): skip a voter whose stake the landed
             //     loop above ALREADY added. Recomputed via the shared memo
             //     instead of a heap set — exact, because the landed loop counts
-            //     pk iff (lv.slot > last_voted_slot) AND counts(lv.slot), and
-            //     reaching this loop means the landed loop ran to completion
-            //     (no early threshold return).
+            //     pk iff (lv.slot > root) AND counts(lv.slot) — the landed
+            //     loop's admission rule as of the 2026-07-17 fix (was `lv.slot
+            //     > last_voted_slot`, matching the landed loop's OLD, now-
+            //     removed, over-restrictive filter; see the landed loop above),
+            //     and reaching this loop means the landed loop ran to
+            //     completion (no early threshold return).
             if (self.latest_votes.get(gv.pubkey)) |lv| {
-                if (lv.slot > last_voted_slot) {
+                if (lv.slot > self.tree_root.slot) {
                     var lv_verdict: ?bool = null;
                     for (memo[0..memo_len]) |m| {
                         if (m.slot == lv.slot) {
@@ -733,6 +778,206 @@ pub const HeaviestSubtreeForkChoice = struct {
         //     unknown ancestry (null GCA) → don't count (unwrap_or false).
         const gca = self.gcaBySlot(cand_slot, last_voted_slot) orelse return false;
         return self.isAncestorBySlot(switch_slot, gca);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PER-VOTER SWITCH-PROOF INSTRUMENTATION (2026-07-17, wedge 422521275 /
+    // live sibling-race 422600922 follow-up)
+    //
+    // checkSwitchThresholdGossip (above) only returns an aggregate
+    // locked_out_stake — after the 2026-07-17 event, the log showed
+    // "locked_out=124281058237859446/325478908024556077 (38.18%)" with
+    // gossip_cnt=0/0 (the ENTIRE figure came from the landed loop) and no way
+    // to attribute it to specific voters/slots. This is a DIAGNOSTIC-ONLY,
+    // opt-in (VEX_SWITCH_PROOF_VOTER_DIAG) parallel walk — never called from
+    // the production checkSwitchThresholdGossip path, never affects the vote
+    // decision. It duplicates checkSwitchThresholdGossip's admission logic
+    // (kept in sync deliberately — same predicates, same order) but never
+    // early-returns on threshold-cross, so it can report the FULL breakdown:
+    // top contributing (pubkey-prefix, cand_slot, stake) entries plus a count
+    // of how many candidates were excluded at each predicate. This is what
+    // turns "38.18%, source unknown" into an attributable, next-event-ready
+    // trace — see fork_choice_feed.zig / replay_stage.zig switch_proof block
+    // for the call site (gated behind VEX_SWITCH_PROOF_VOTER_DIAG, off by
+    // default; only reached when VEX_SWITCH_PROOF is already shadow/armed AND
+    // a cross-fork evaluation is actually happening, i.e. already a rare
+    // path).
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// One admitted (or top-tracked) voter contribution.
+    pub const VoterContribution = struct {
+        pubkey: core.Pubkey,
+        cand_slot: core.Slot,
+        stake: u64,
+        source: enum { landed, gossip },
+    };
+
+    /// Fixed-size, allocation-free top-N tracker + exclusion counters.
+    /// `top` is kept sorted DESCENDING by stake (insertion-sort into a small
+    /// array — N is tiny (8), so this is O(N) per insert, negligible even
+    /// walked over every voter in the diagnostic path).
+    pub const SwitchThresholdBreakdown = struct {
+        pub const TOP_N = 8;
+        top: [TOP_N]VoterContribution = undefined,
+        top_len: usize = 0,
+
+        // Landed-loop (self.latest_votes) predicate funnel — matches the
+        // admission order in checkSwitchThresholdGossip's first loop:
+        landed_seen: u32 = 0, // total entries in self.latest_votes iterated
+        landed_excluded_root: u32 = 0, // cand_slot <= tree_root.slot
+        landed_excluded_no_gca: u32 = 0, // switchProofVoteCounts() == false (own-fork or unresolvable GCA)
+        landed_counted: u32 = 0,
+        landed_stake: u64 = 0,
+
+        // Gossip-loop (max_gossip_frozen_votes-equivalent) predicate funnel —
+        // matches checkSwitchThresholdGossip's second loop, predicates (a)-(d):
+        gossip_seen: u32 = 0, // total entries in the caller-supplied gossip_votes slice
+        gossip_excluded_not_newer: u32 = 0, // (a) cand_slot <= last_voted_slot
+        gossip_excluded_dup: u32 = 0, // (b) already counted via the landed loop
+        gossip_excluded_not_frozen: u32 = 0, // (c) (slot,hash) not in fork_infos
+        gossip_excluded_no_gca: u32 = 0, // (d) switchProofVoteCounts() == false
+        gossip_counted: u32 = 0,
+        gossip_stake: u64 = 0,
+
+        fn record(self: *SwitchThresholdBreakdown, contrib: VoterContribution) void {
+            // Find insertion point (descending by stake); drop if smaller
+            // than everything already held and the buffer is full.
+            if (self.top_len < TOP_N) {
+                var i = self.top_len;
+                while (i > 0 and self.top[i - 1].stake < contrib.stake) : (i -= 1) {
+                    self.top[i] = self.top[i - 1];
+                }
+                self.top[i] = contrib;
+                self.top_len += 1;
+            } else if (contrib.stake > self.top[TOP_N - 1].stake) {
+                var i: usize = TOP_N - 1;
+                while (i > 0 and self.top[i - 1].stake < contrib.stake) : (i -= 1) {
+                    self.top[i] = self.top[i - 1];
+                }
+                self.top[i] = contrib;
+            }
+        }
+    };
+
+    /// DIAGNOSTIC-ONLY per-voter breakdown for a switch-threshold evaluation.
+    /// Mirrors checkSwitchThresholdGossip's two admission loops exactly
+    /// (same predicates, same order — kept in sync deliberately) but never
+    /// early-returns on threshold-cross, so `out` always reflects the FULL
+    /// candidate set. Never called from the production vote-decision path;
+    /// callers gate this behind an explicit env/diag flag. Same complexity
+    /// class as checkSwitchThresholdGossip (O(voters) with the same memoized
+    /// per-slot verdict), so it is safe to call at the same cadence — just
+    /// intentionally not on by default given it's forensic-only output.
+    pub fn switchThresholdVoterBreakdown(
+        self: *const Self,
+        last_voted_slot: core.Slot,
+        switch_slot: core.Slot,
+        stake_lookup_ctx: anytype,
+        gossip_votes: []const PubkeyVote,
+        out: *SwitchThresholdBreakdown,
+    ) void {
+        out.* = .{};
+        // SameFork short-circuit — nothing to attribute (checkSwitchThresholdGossip:596).
+        if (switch_slot == last_voted_slot or self.isAncestorBySlot(switch_slot, last_voted_slot)) return;
+
+        const Memo = struct { slot: core.Slot, count: bool };
+        var memo: [64]Memo = undefined;
+        var memo_len: usize = 0;
+
+        // ── Landed loop (mirrors checkSwitchThresholdGossip's first loop) ──
+        var it = self.latest_votes.iterator();
+        while (it.next()) |e| {
+            out.landed_seen += 1;
+            const pk = e.key_ptr.*;
+            const cand_slot = e.value_ptr.slot;
+            if (cand_slot <= self.tree_root.slot) {
+                out.landed_excluded_root += 1;
+                continue;
+            }
+            var verdict: ?bool = null;
+            for (memo[0..memo_len]) |m| {
+                if (m.slot == cand_slot) {
+                    verdict = m.count;
+                    break;
+                }
+            }
+            const counts = verdict orelse blk: {
+                const c = self.switchProofVoteCounts(cand_slot, last_voted_slot, switch_slot);
+                if (memo_len < memo.len) {
+                    memo[memo_len] = .{ .slot = cand_slot, .count = c };
+                    memo_len += 1;
+                }
+                break :blk c;
+            };
+            if (!counts) {
+                out.landed_excluded_no_gca += 1;
+                continue;
+            }
+            const stake = stake_lookup_ctx.lookup(pk, cand_slot);
+            out.landed_counted += 1;
+            out.landed_stake +%= stake;
+            out.record(.{ .pubkey = pk, .cand_slot = cand_slot, .stake = stake, .source = .landed });
+        }
+
+        // ── Gossip loop (mirrors checkSwitchThresholdGossip's second loop) ──
+        for (gossip_votes) |gv| {
+            out.gossip_seen += 1;
+            const cand_slot = gv.slot_hash.slot;
+            if (cand_slot <= last_voted_slot) {
+                out.gossip_excluded_not_newer += 1;
+                continue;
+            }
+            if (self.latest_votes.get(gv.pubkey)) |lv| {
+                if (lv.slot > self.tree_root.slot) {
+                    var lv_verdict: ?bool = null;
+                    for (memo[0..memo_len]) |m| {
+                        if (m.slot == lv.slot) {
+                            lv_verdict = m.count;
+                            break;
+                        }
+                    }
+                    const landed_counted = lv_verdict orelse blk: {
+                        const c = self.switchProofVoteCounts(lv.slot, last_voted_slot, switch_slot);
+                        if (memo_len < memo.len) {
+                            memo[memo_len] = .{ .slot = lv.slot, .count = c };
+                            memo_len += 1;
+                        }
+                        break :blk c;
+                    };
+                    if (landed_counted) {
+                        out.gossip_excluded_dup += 1;
+                        continue;
+                    }
+                }
+            }
+            if (!self.fork_infos.containsContext(gv.slot_hash, Ctx)) {
+                out.gossip_excluded_not_frozen += 1;
+                continue;
+            }
+            var verdict: ?bool = null;
+            for (memo[0..memo_len]) |m| {
+                if (m.slot == cand_slot) {
+                    verdict = m.count;
+                    break;
+                }
+            }
+            const counts = verdict orelse blk: {
+                const c = self.switchProofVoteCounts(cand_slot, last_voted_slot, switch_slot);
+                if (memo_len < memo.len) {
+                    memo[memo_len] = .{ .slot = cand_slot, .count = c };
+                    memo_len += 1;
+                }
+                break :blk c;
+            };
+            if (!counts) {
+                out.gossip_excluded_no_gca += 1;
+                continue;
+            }
+            const stake = stake_lookup_ctx.lookup(gv.pubkey, cand_slot);
+            out.gossip_counted += 1;
+            out.gossip_stake +%= stake;
+            out.record(.{ .pubkey = gv.pubkey, .cand_slot = cand_slot, .stake = stake, .source = .gossip });
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2568,6 +2813,87 @@ test "KAT gossip switch-proof: same-fork + stale gossip votes NOT counted (predi
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// KAT — landed-loop filter fix (2026-07-17, fix/switchproof-gossip-arming).
+// Small tree modeling "our dead fork raced numerically AHEAD of the canonical
+// one before dying" — the exact scenario the pre-fix strictly-newer-than-
+// last-vote filter could never escape:
+//
+//   root(100) --dead(300) [OUR last vote, doomed fork, numerically high]
+//             \-canon_mid(250)--canon_tip(260) [REAL cluster fork, lower slot
+//                                                numbers than our dead tip]
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const AheadTree = struct {
+    root: SlotHashKey,
+    dead: SlotHashKey,
+    canon_mid: SlotHashKey,
+    canon_tip: SlotHashKey,
+    fn k(slot: u64, tag: u8) SlotHashKey {
+        return .{ .slot = slot, .hash = .{ .data = [_]u8{tag} ** 32 } };
+    }
+    fn build(fc: *HeaviestSubtreeForkChoice) !AheadTree {
+        const root = k(100, 0x10);
+        try fc.seedRoot(root);
+        const dead = k(300, 0xDE);
+        const canon_mid = k(250, 0xC1);
+        const canon_tip = k(260, 0xC2);
+        try fc.addNewLeafSlot(dead, root);
+        try fc.addNewLeafSlot(canon_mid, root);
+        try fc.addNewLeafSlot(canon_tip, canon_mid);
+        return .{ .root = root, .dead = dead, .canon_mid = canon_mid, .canon_tip = canon_tip };
+    }
+};
+
+test "KAT landed-filter fix: dead fork numerically AHEAD of canonical — lower-slot landed vote NOW counts" {
+    var fc = HeaviestSubtreeForkChoice.init(std.testing.allocator);
+    defer fc.deinit();
+    const t = try AheadTree.build(&fc);
+    const pk1 = core.Pubkey.fromBytes([_]u8{1} ** 32);
+    // Our last vote is 300 (the dead fork). This voter's landed vote is 260 —
+    // numerically LOWER than our last vote — but on the genuinely different,
+    // LIVE canonical fork. Pre-fix (`cand_slot <= last_voted_slot` filter):
+    // 260 <= 300 → silently excluded forever, no matter how much real stake
+    // sits here — this is the re-wedge scenario a "25k slots elapsed" argument
+    // does NOT cover. Post-fix: 260 > root(100) passes the new filter, and
+    // switchProofVoteCounts's ancestry+GCA walk correctly proves 260 is on a
+    // different fork from 300 whose GCA (100) is an ancestor of switch_slot.
+    try fc.latest_votes.put(fc.allocator, pk1, t.canon_tip);
+    const entries = [_]PubkeyStakeEntry{
+        .{ .pubkey = pk1, .stake = 500 }, // 50% > 38%
+    };
+    const stakes = PerPubkeyStakeLookup{ .entries = &entries };
+    const d = fc.checkSwitchThreshold(300, t.canon_tip.slot, 1000, stakes);
+    try std.testing.expect(!d.same_fork);
+    try std.testing.expect(d.would_switch); // THE fix: arms even though 260 < 300
+    try std.testing.expectEqual(@as(u64, 500), d.locked_out_stake);
+}
+
+test "KAT landed-filter fix both-directions safety: a vote that's an ancestor of OUR OWN last vote still does NOT count" {
+    var fc = HeaviestSubtreeForkChoice.init(std.testing.allocator);
+    defer fc.deinit();
+    const t = try AheadTree.build(&fc);
+    const pk1 = core.Pubkey.fromBytes([_]u8{1} ** 32);
+    const pk2 = core.Pubkey.fromBytes([_]u8{2} ** 32);
+    // pk1's landed vote is the ROOT itself (100) — an ancestor of BOTH forks,
+    // not evidence of the canonical side. Excluded by the new root filter
+    // (100 is not > root(100)).
+    try fc.latest_votes.put(fc.allocator, pk1, t.root);
+    // pk2's landed vote is 300 == our OWN last vote (dead fork) — on OUR
+    // fork, not a different one. switchProofVoteCounts's ancestry check
+    // (isAncestorBySlot(cand_slot, last_voted_slot)) must still exclude it:
+    // 300 descends from (equals) 300, so it never counts toward escaping 300.
+    try fc.latest_votes.put(fc.allocator, pk2, t.dead);
+    const entries = [_]PubkeyStakeEntry{
+        .{ .pubkey = pk1, .stake = 500 },
+        .{ .pubkey = pk2, .stake = 500 },
+    };
+    const stakes = PerPubkeyStakeLookup{ .entries = &entries };
+    const d = fc.checkSwitchThreshold(300, t.canon_tip.slot, 1000, stakes);
+    try std.testing.expect(!d.would_switch); // neither vote is valid switch evidence
+    try std.testing.expectEqual(@as(u64, 0), d.locked_out_stake);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TASK #3 — canonical vote-selection self-heal (advisor 2026-07-01, load-bearing).
 // The freeze-race orphan is voted BY DESIGN at the freeze instant (canonical —
 // Agave votes it too); orphan-safety is SELF-HEAL via the ARMED switch proof, NOT
@@ -2667,4 +2993,183 @@ test "TASK#3 heaviestSlotOnSameVotedFork: candidate->best_slot, invalid->deepest
 
     // Absent key → null (Agave's stray-vote None; we soft-fail, no panic).
     try std.testing.expect(fc.heaviestSlotOnSameVotedFork(hkey(999, 0xFF)) == null);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// LIVE EVENT 422600922 (2026-07-17) — "own-fork tip" fallback fed an
+// unvalidated cross-fork SIBLING into the switch-proof block.
+//
+// Sequence (vex-fd-dev_testnet.log lines 43970-44044): last_vote=422600919
+// was ALREADY CANONICAL (fork-choice's own heaviest pick, `best`, was still
+// 919 — nothing new had been voted heavier yet). A sibling 422600922 (SAME
+// PARENT 422600918, NOT a descendant of 919) froze moments later via a
+// normal freeze race. replay_stage.zig's VOTE-COVERAGE ".tip" fallback
+// (submitVote, ~line 6311) — designed to avoid silently withholding when a
+// propagation-confirmed retarget lands exactly on last_voted_slot — blindly
+// substituted the raw just-frozen bank_in (922) as the vote candidate
+// WITHOUT checking it was actually a descendant of last_voted_slot. That
+// unvalidated slot then got fed into the switch-proof block as `switch_slot`
+// — a category error: Agave only ever evaluates check_switch_threshold
+// against fork-choice's own heaviest_bank.slot(), never an arbitrary
+// just-replayed sibling (core/src/consensus/fork_choice.rs:434-445; see
+// AGAVE-SWITCHPROOF-CANONICAL-SPEC-2026-07-17.md §1.4). The switch-proof
+// stake math found 38.18% > 38% and authorized a vote onto 922, which then
+// got orphaned.
+//
+// The fix (replay_stage.zig .tip case) requires
+// `fc.isAncestorBySlot(bank_in.slot, last_voted_slot)` before accepting the
+// tip fallback — i.e. bank_in must genuinely be "our own fork's tip" (a
+// descendant of, or equal to, last_voted_slot), not merely "whatever froze
+// most recently". These two tests pin that exact predicate against the
+// exact incident topology: the sibling case (must reject) and the
+// legitimate same-fork-extension case the fallback exists for (must accept).
+
+test "LIVE EVENT 422600922 fix: sibling of last_voted_slot (same parent, freeze race) is NOT an own-fork tip" {
+    var fc = HeaviestSubtreeForkChoice.init(std.testing.allocator);
+    defer fc.deinit();
+    const root = hkey(422_600_800, 0x10);
+    const parent918 = hkey(422_600_918, 0x18);
+    const voted919 = hkey(422_600_919, 0x19); // our last vote — ALREADY canonical
+    const sibling922 = hkey(422_600_922, 0x22); // freeze-race sibling, SAME parent 918
+
+    try fc.seedRoot(root);
+    try fc.addNewLeafSlot(parent918, root);
+    try fc.addNewLeafSlot(voted919, parent918);
+    try fc.addNewLeafSlot(sibling922, parent918);
+
+    // This is EXACTLY the predicate replay_stage.zig's fixed .tip branch
+    // evaluates: `fc.isAncestorBySlot(bank_in.slot, last_voted)`. 922 is a
+    // sibling of 919 (both children of 918) — 919 is NOT an ancestor of 922.
+    try std.testing.expect(!fc.isAncestorBySlot(sibling922.slot, voted919.slot));
+
+    // Confirm the OTHER direction the incident depended on: fork-choice's
+    // own heaviest pick genuinely preferred 919 over the brand-new,
+    // zero-weight 922 (i.e. there was no legitimate reason to even consider
+    // switching at this tick — bestOverallSlot never nominated 922).
+    const pk = core.Pubkey.fromBytes([_]u8{0xB1} ** 32);
+    const stakes = PerPubkeyStakeLookup{ .entries = &[_]PubkeyStakeEntry{.{ .pubkey = pk, .stake = 100 }} };
+    const votes = [_]HeaviestSubtreeForkChoice.PubkeyVote{.{ .pubkey = pk, .slot_hash = voted919 }};
+    const best = try fc.addVotes(&votes, stakes);
+    try std.testing.expectEqual(voted919.slot, best.slot);
+    try std.testing.expectEqual(voted919.slot, fc.bestOverallSlot().slot);
+}
+
+test "LIVE EVENT 422600922 fix, contrast: a genuine descendant IS an own-fork tip (the fallback's actual intended case)" {
+    var fc = HeaviestSubtreeForkChoice.init(std.testing.allocator);
+    defer fc.deinit();
+    const root = hkey(422_600_800, 0x10);
+    const parent918 = hkey(422_600_918, 0x18);
+    const voted919 = hkey(422_600_919, 0x19); // our last vote
+    const tip920 = hkey(422_600_920, 0x20); // genuine extension of OUR OWN fork
+
+    try fc.seedRoot(root);
+    try fc.addNewLeafSlot(parent918, root);
+    try fc.addNewLeafSlot(voted919, parent918);
+    try fc.addNewLeafSlot(tip920, voted919);
+
+    // 920 descends from 919 → the fallback's own-fork-tip guard must ACCEPT
+    // it (this is the ~29%-coverage case the mechanism was built for: a
+    // propagated-ancestor retarget conservatively lands on 919 while the
+    // raw, already-frozen tip 920 is a perfectly safe same-fork extension).
+    try std.testing.expect(fc.isAncestorBySlot(tip920.slot, voted919.slot));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// switchThresholdVoterBreakdown — per-voter instrumentation KATs
+// (2026-07-17, wedge-422521275/422600922 follow-up). Proves the diagnostic
+// walk stays byte-for-byte IN SYNC with checkSwitchThresholdGossip's
+// aggregate (same admission predicates, same order) and correctly
+// attributes/excludes voters on the 422600918/919/922 topology.
+// ─────────────────────────────────────────────────────────────────────────
+
+test "switchThresholdVoterBreakdown: stays in sync with checkSwitchThresholdGossip's aggregate (landed + gossip, mixed exclusions)" {
+    var fc = HeaviestSubtreeForkChoice.init(std.testing.allocator);
+    defer fc.deinit();
+    const root = hkey(422_600_800, 0x10);
+    const parent918 = hkey(422_600_918, 0x18);
+    const voted919 = hkey(422_600_919, 0x19); // our last vote
+    const sibling922 = hkey(422_600_922, 0x22); // switch candidate (the incident's target)
+
+    try fc.seedRoot(root);
+    try fc.addNewLeafSlot(parent918, root);
+    try fc.addNewLeafSlot(voted919, parent918);
+    try fc.addNewLeafSlot(sibling922, parent918);
+
+    const pk_own_fork = core.Pubkey.fromBytes([_]u8{0xA1} ** 32); // latest vote = 919 (our fork) -> excluded
+    const pk_switch1 = core.Pubkey.fromBytes([_]u8{0xA2} ** 32); // latest vote = 922 (the switch fork) -> counted
+    const pk_switch2 = core.Pubkey.fromBytes([_]u8{0xA3} ** 32); // gossip vote = 922, no landed entry -> counted via gossip
+    const pk_dup = core.Pubkey.fromBytes([_]u8{0xA4} ** 32); // landed AND gossip both on 922 -> gossip must be deduped
+
+    const stakes = PerPubkeyStakeLookup{ .entries = &[_]PubkeyStakeEntry{
+        .{ .pubkey = pk_own_fork, .stake = 100 },
+        .{ .pubkey = pk_switch1, .stake = 150 },
+        .{ .pubkey = pk_switch2, .stake = 130 },
+        .{ .pubkey = pk_dup, .stake = 120 },
+    } };
+    const landed_votes = [_]HeaviestSubtreeForkChoice.PubkeyVote{
+        .{ .pubkey = pk_own_fork, .slot_hash = voted919 },
+        .{ .pubkey = pk_switch1, .slot_hash = sibling922 },
+        .{ .pubkey = pk_dup, .slot_hash = sibling922 },
+    };
+    _ = try fc.addVotes(&landed_votes, stakes);
+
+    const gossip_votes = [_]HeaviestSubtreeForkChoice.PubkeyVote{
+        .{ .pubkey = pk_switch2, .slot_hash = sibling922 }, // newer than last_voted, not yet landed -> counts
+        .{ .pubkey = pk_dup, .slot_hash = sibling922 }, // ALREADY counted via landed loop -> must dedup out
+    };
+
+    const dec = fc.checkSwitchThresholdGossip(voted919.slot, sibling922.slot, 1000, stakes, &gossip_votes);
+    var bd = HeaviestSubtreeForkChoice.SwitchThresholdBreakdown{};
+    fc.switchThresholdVoterBreakdown(voted919.slot, sibling922.slot, stakes, &gossip_votes, &bd);
+
+    // Landed loop: pk_own_fork's vote (919) is on OUR OWN fork -> excluded.
+    // pk_switch1 (150) AND pk_dup (120) both voted 922 (the switch fork,
+    // GCA=918 is an ancestor of switch_slot=922) -> BOTH count in the landed
+    // loop (dedup against gossip happens in the GOSSIP loop, not here).
+    try std.testing.expectEqual(@as(u32, 3), bd.landed_seen); // pk_own_fork, pk_switch1, pk_dup
+    try std.testing.expectEqual(@as(u32, 1), bd.landed_excluded_no_gca); // pk_own_fork
+    try std.testing.expectEqual(@as(u32, 2), bd.landed_counted); // pk_switch1, pk_dup
+    try std.testing.expectEqual(@as(u64, 270), bd.landed_stake); // 150 + 120
+
+    // Gossip loop: pk_switch2 has NO landed entry -> counts fresh. pk_dup DOES
+    // have a landed entry that already counted (922, not own-fork) -> the
+    // cross-source dedup (predicate b) excludes it from gossip, even though
+    // its raw gossip vote is otherwise well-formed.
+    try std.testing.expectEqual(@as(u32, 2), bd.gossip_seen); // pk_switch2, pk_dup
+    try std.testing.expectEqual(@as(u32, 1), bd.gossip_excluded_dup); // pk_dup
+    try std.testing.expectEqual(@as(u32, 1), bd.gossip_counted); // pk_switch2
+    try std.testing.expectEqual(@as(u64, 130), bd.gossip_stake); // pk_switch2 only
+
+    // The production aggregate's locked_out_stake (at whichever point it
+    // early-returns past the 38% threshold) equals the diagnostic walk's full
+    // landed+gossip sum here BECAUSE the only entry the full walk sees beyond
+    // the early-return point (pk_dup, in gossip) contributes ZERO additional
+    // stake (it's deduped) — i.e. this is not a general identity, but it DOES
+    // hold whenever (as here) nothing past the crossing point would have
+    // counted, which is exactly the property worth pinning: the diagnostic
+    // walk cannot UNDER-attribute stake the production path actually counted.
+    try std.testing.expectEqual(dec.locked_out_stake, bd.landed_stake + bd.gossip_stake);
+    try std.testing.expectEqual(@as(u64, 400), dec.locked_out_stake);
+
+    // Top-N contains exactly the two counted contributors, sorted descending.
+    try std.testing.expectEqual(@as(usize, 3), bd.top_len); // pk_switch1 (landed) + pk_dup (landed) + pk_switch2 (gossip)
+    try std.testing.expectEqual(@as(u64, 150), bd.top[0].stake);
+}
+
+test "switchThresholdVoterBreakdown: SameFork short-circuit reports zero attribution (nothing to attribute)" {
+    var fc = HeaviestSubtreeForkChoice.init(std.testing.allocator);
+    defer fc.deinit();
+    const root = hkey(100, 0x10);
+    const last = hkey(200, 0x20);
+    const child = hkey(210, 0x21); // descends from last -> SameFork
+    try fc.seedRoot(root);
+    try fc.addNewLeafSlot(last, root);
+    try fc.addNewLeafSlot(child, last);
+
+    const stakes = PerPubkeyStakeLookup{ .entries = &[_]PubkeyStakeEntry{} };
+    var bd = HeaviestSubtreeForkChoice.SwitchThresholdBreakdown{};
+    fc.switchThresholdVoterBreakdown(last.slot, child.slot, stakes, &[_]HeaviestSubtreeForkChoice.PubkeyVote{}, &bd);
+    try std.testing.expectEqual(@as(u32, 0), bd.landed_seen);
+    try std.testing.expectEqual(@as(u32, 0), bd.gossip_seen);
+    try std.testing.expectEqual(@as(usize, 0), bd.top_len);
 }

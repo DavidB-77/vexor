@@ -180,4 +180,45 @@ pub const BankingStage = struct {
         defer self.lock.unlock();
         return self.tx_queue.count() + self.vote_queue.count();
     }
+
+    /// 2026-07-17 (M2b, produce-tile safe gating): NON-DESTRUCTIVE peek, up to
+    /// `max` entries (vote_queue items first, then tx_queue items — mirrors
+    /// `drainBatch`'s own ordering, though NOT necessarily the same subset:
+    /// `.items` is heap-array order, not priority-sorted order; callers that
+    /// need a superset of what `drainBatch` might actually drain should pass a
+    /// `max` no smaller than `config.batch_size`). Calls `cb(ctx, tx_wire)`
+    /// once per peeked entry WHILE `self.lock` IS HELD, and does not remove
+    /// anything from either queue — `drainBatch` (above) remains the sole
+    /// DESTRUCTIVE consumer (the produce tile's, unchanged by this addition).
+    ///
+    /// CALLER CONTRACT: `cb` must not retain `tx_wire` past the call — the
+    /// bytes are queue-owned, and a concurrent `drainBatch` (on a different
+    /// thread; the tile is the sole such caller today) could free them the
+    /// instant `unlock()` returns. Copy anything needed into `cb`'s own VALUE
+    /// outputs before returning. `cb` should also avoid acquiring any other
+    /// lock — this method is called from the REPLAY thread (dispatching a
+    /// become-leader record) and the lock here is meant to be held only for
+    /// cheap, pure work (parsing a tx to extract a fee-payer pubkey / first
+    /// signature), not for a nested lookup against a second lock (e.g.
+    /// accounts_db) — do that AFTER this call returns.
+    ///
+    /// Kept intentionally std-only (no tx-parsing here) so this file stays the
+    /// ONE BankingStage module shared by vex_svm, block_produce,
+    /// quic_ingest_adapter, and vex_network (file banner) without pulling
+    /// tx_ingest into all of them.
+    pub fn peekEach(self: *BankingStage, max: usize, ctx: *anyopaque, cb: *const fn (ctx: *anyopaque, tx_wire: []const u8) void) void {
+        self.lock.lock();
+        defer self.lock.unlock();
+        var n: usize = 0;
+        for (self.vote_queue.items) |qt| {
+            if (n >= max) return;
+            cb(ctx, qt.data);
+            n += 1;
+        }
+        for (self.tx_queue.items) |qt| {
+            if (n >= max) return;
+            cb(ctx, qt.data);
+            n += 1;
+        }
+    }
 };

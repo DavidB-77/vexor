@@ -1,9 +1,17 @@
-//! Vexor BPF2 — Crypto syscall helpers (Wave 6C-2).
+//! Vexor BPF2 — Crypto syscall helpers.
 //!
 //! Shared primitives for the M6 curve syscall family. Edwards25519 and
-//! Ristretto255 are first-class via Zig 0.15.2 stdlib (`std.crypto.ecc`);
-//! BLS12-381 + BN254 + Poseidon are NOT implemented here — handlers return
-//! named `*RequiresBn254ImplPort` / `*RequiresBls12_381ImplPort` errors.
+//! Ristretto255 are first-class via Zig 0.15.2 stdlib (`std.crypto.ecc`) and
+//! live entirely in this file. BLS12-381, BN254, and Poseidon are NOT
+//! implemented in THIS file — they are real, pure-Zig, KAT-verified
+//! implementations that live in their own modules (`vex_crypto.bn254` /
+//! `vex_crypto.bn254.poseidonHash`, `vex_crypto.bls12_381_syscall`) and are
+//! imported separately by the syscall handlers in `syscalls.zig` (see the
+//! `bn254`/`bls12_381` imports there). The `M6_*RequiresBn254ImplPort` /
+//! `M6_*RequiresBls12_381ImplPort` error variants still exist in
+//! `syscalls.zig` for defensive completeness but their gating conditions are
+//! permanently false now that both backends are live — see the doc comments
+//! on those variants for the current wiring.
 //!
 //! @prov:syscall.curve-ops — cross-references (sig ecc.zig port, agave ABI)
 //! and CurveId numbering trail live in PROVENANCE.md.

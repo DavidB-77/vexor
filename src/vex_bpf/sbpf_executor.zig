@@ -17,15 +17,15 @@
 //! Future: when we have a full CPI stack, remove the CpiRequired path.
 
 const std = @import("std");
-const core = @import("core");
+const core    = @import("core");
 const storage = @import("vex_store");
-const bpf = @import("root.zig");
-const interp = @import("interpreter.zig");
+const bpf     = @import("root.zig");
+const interp  = @import("interpreter.zig");
 const syscalls = @import("syscalls.zig");
 
-const BpfVm = interp.BpfVm;
+const BpfVm    = interp.BpfVm;
 const VmContext = interp.VmContext;
-const VmError = interp.VmError;
+const VmError   = interp.VmError;
 
 // Max account data realloc allowed inside VM (10 KiB, matches Agave)
 const MAX_REALLOC: usize = 10 * 1024;
@@ -33,18 +33,18 @@ const MAX_REALLOC: usize = 10 * 1024;
 // ── Public types ──────────────────────────────────────────────────────────────
 
 pub const AccountEntry = struct {
-    pubkey: core.Pubkey,
-    owner: core.Pubkey,
-    lamports: u64,
-    data: []const u8,
-    executable: bool,
-    rent_epoch: u64,
-    is_signer: bool,
+    pubkey:      core.Pubkey,
+    owner:       core.Pubkey,
+    lamports:    u64,
+    data:        []const u8,
+    executable:  bool,
+    rent_epoch:  u64,
+    is_signer:   bool,
     is_writable: bool,
 };
 
 pub const AccountMutation = struct {
-    pubkey: core.Pubkey,
+    pubkey:       core.Pubkey,
     new_lamports: u64,
     /// vex-039 / core-r10-bpf-owner restored 2026-05-22: post-mutation owner
     /// bytes read by deserialise() from the BPF input region at the
@@ -54,13 +54,13 @@ pub const AccountMutation = struct {
     /// to system_program::Assign, owner-transfer ix, PDA creation) silently
     /// drop the owner change, desyncing the bank LtHash accumulator from
     /// Agave for every such slot.
-    owner: [32]u8,
-    data: []u8, // caller owns
+    owner:        [32]u8,
+    data:         []u8,  // caller owns
     /// Wave 5: optional owner-change (V2 path only). `null` ⇒ V2 didn't
     /// report a change. V2 dispatch sets this from M5 `AccountOutput.owner`
     /// when it differs from pre-state. V1 path reads `.owner` above, not
     /// this field (preserves vex-079 / vex-039 invariants).
-    new_owner: ?[32]u8 = null,
+    new_owner:    ?[32]u8 = null,
 };
 
 // ── Executor ──────────────────────────────────────────────────────────────────
@@ -132,10 +132,10 @@ pub const SbpfExecutor = struct {
     ///   - The program used CPI (sol_invoke_signed) — caller should use RPC shadow
     ///   - Any other benign execution failure
     pub fn execute(
-        self: *Self,
-        program: *const bpf.LoadedProgram,
-        accounts: []const AccountEntry,
-        ix_data: []const u8,
+        self:       *Self,
+        program:    *const bpf.LoadedProgram,
+        accounts:   []const AccountEntry,
+        ix_data:    []const u8,
         program_id: *const core.Pubkey,
     ) ![]AccountMutation {
         // PR-S4 Phase 2c-A: no bank context (fixture/test path) → bank_slot=0,
@@ -150,30 +150,30 @@ pub const SbpfExecutor = struct {
     /// nested CPI loads in cpiHandler use ancestor-aware reads (closes the
     /// last facade leak in the production tx-replay path).
     pub fn executeWithAccounts(
-        self: *Self,
-        program: *const bpf.LoadedProgram,
-        accounts: []const AccountEntry,
-        ix_data: []const u8,
-        program_id: *const core.Pubkey,
-        accounts_db: ?*storage.AccountsDb,
+        self:          *Self,
+        program:       *const bpf.LoadedProgram,
+        accounts:      []const AccountEntry,
+        ix_data:       []const u8,
+        program_id:    *const core.Pubkey,
+        accounts_db:   ?*storage.AccountsDb,
         program_cache: ?*bpf_program_cache.BpfProgramCache,
-        bank_slot: u64,
-        ancestors: []const u64,
+        bank_slot:     u64,
+        ancestors:     []const u64,
     ) ![]AccountMutation {
         return self.executeInner(program, accounts, ix_data, program_id, accounts_db, program_cache, 0, bank_slot, ancestors);
     }
 
     fn executeInner(
-        self: *Self,
-        program: *const bpf.LoadedProgram,
-        accounts: []const AccountEntry,
-        ix_data: []const u8,
-        program_id: *const core.Pubkey,
-        accounts_db: ?*storage.AccountsDb,
+        self:          *Self,
+        program:       *const bpf.LoadedProgram,
+        accounts:      []const AccountEntry,
+        ix_data:       []const u8,
+        program_id:    *const core.Pubkey,
+        accounts_db:   ?*storage.AccountsDb,
         program_cache: ?*bpf_program_cache.BpfProgramCache,
-        cpi_depth: u8,
-        bank_slot: u64,
-        ancestors: []const u64,
+        cpi_depth:     u8,
+        bank_slot:     u64,
+        ancestors:     []const u64,
     ) ![]AccountMutation {
         // r75-bug-class-b-2026-05-06: disable runtime safety at the PARENT
         // function level so the flag propagates to all inlined callees in the
@@ -191,7 +191,7 @@ pub const SbpfExecutor = struct {
         if (cpi_depth == 0) self.last_top_outcome = .ok;
 
         const pid4 = .{
-            program_id.data[0],  program_id.data[1],
+            program_id.data[0], program_id.data[1],
             program_id.data[30], program_id.data[31],
         };
 
@@ -209,9 +209,7 @@ pub const SbpfExecutor = struct {
         // ground-truth bytes for byte-level diff against Agave abiv1 reference.
         // Capped at 32 dumps to prevent log flood.
         if (pid4[0] == 0xe3 and pid4[1] == 0x4d and pid4[2] == 0x3f and pid4[3] == 0x98) {
-            const HexDumpC = struct {
-                var n: u32 = 0;
-            };
+            const HexDumpC = struct { var n: u32 = 0; };
             if (HexDumpC.n < 1) {
                 const dump_len = @min(input_buf.items.len, 256);
                 var hex_buf: [512 + 1]u8 = undefined;
@@ -222,7 +220,7 @@ pub const SbpfExecutor = struct {
                 }
                 hex_buf[dump_len * 2] = 0;
                 std.log.warn("[BPF-INPUT-DUMP] prog=GJHt total_len={d} accts={d} first_{d}={s}", .{
-                    input_buf.items.len, accounts.len, dump_len, hex_buf[0 .. dump_len * 2],
+                    input_buf.items.len, accounts.len, dump_len, hex_buf[0..dump_len * 2],
                 });
                 // Also dump per-account meta
                 for (meta_list.items, 0..) |m, mi| {
@@ -273,15 +271,15 @@ pub const SbpfExecutor = struct {
 
         // 4. Wire CPI handler so sol_invoke_signed works natively
         var cpi_state = CpiState{
-            .executor = self,
-            .accounts = accounts,
-            .accounts_db = accounts_db,
+            .executor      = self,
+            .accounts      = accounts,
+            .accounts_db   = accounts_db,
             .program_cache = program_cache,
-            .depth = cpi_depth,
-            .bank_slot = bank_slot,
-            .ancestors = ancestors,
+            .depth         = cpi_depth,
+            .bank_slot     = bank_slot,
+            .ancestors     = ancestors,
         };
-        ctx.cpi_ctx = @ptrCast(&cpi_state);
+        ctx.cpi_ctx     = @ptrCast(&cpi_state);
         ctx.cpi_handler = cpiHandler;
 
         // r71-fix-7e: thread the program's function registry into the VM so
@@ -294,7 +292,7 @@ pub const SbpfExecutor = struct {
 
         const exit_code: u64 = BpfVm.execute(&ctx, text, program.entry_pc) catch |err| blk: {
             switch (err) {
-                error.Halted => break :blk ctx.regs[0],
+                error.Halted      => break :blk ctx.regs[0],
                 error.CpiRequired => {
                     std.log.debug("[SBPF] CPI fallback — deferring to RPC shadow", .{});
                     // FIX-1a: Vexor deferral, the program reached no verdict
@@ -315,8 +313,8 @@ pub const SbpfExecutor = struct {
                     // effect): capture the EXACT faulting instruction + registers to
                     // localize the carrier (2026-06-18 PayEntry slot 416083630).
                     if (std.posix.getenv("VEX_VMFAULT_DEBUG") != null and cpi_depth == 0) {
-                        const fpc = ctx.pc; // instruction index
-                        const byte_off = fpc *% 8; // text is []u8; insn is 8 bytes at pc*8
+                        const fpc = ctx.pc;            // instruction index
+                        const byte_off = fpc *% 8;     // text is []u8; insn is 8 bytes at pc*8
                         if (byte_off + 8 <= text.len) {
                             const raw = std.mem.readInt(u64, text[byte_off..][0..8], .little);
                             const op: u8 = @truncate(raw);
@@ -400,11 +398,11 @@ pub const SbpfExecutor = struct {
 //     (13 bytes padding)
 
 const CpiState = struct {
-    executor: *SbpfExecutor,
-    accounts: []const AccountEntry,
-    accounts_db: ?*storage.AccountsDb,
+    executor:      *SbpfExecutor,
+    accounts:      []const AccountEntry,
+    accounts_db:   ?*storage.AccountsDb,
     program_cache: ?*bpf_program_cache.BpfProgramCache,
-    depth: u8,
+    depth:         u8,
     // PR-S4 Phase 2c-A (2026-05-15): fork-isolation context. When the BPF
     // execution comes from replay (`executeWithAccounts`), bank_slot is the
     // reading bank's slot and ancestors is the bank's ancestor chain. When
@@ -412,8 +410,8 @@ const CpiState = struct {
     // — getAccountInSlot falls through to `_getRooted` (legacy behavior).
     // The `ancestors` slice points into `bank.ancestors_buf` which lives
     // for the bank's full lifetime, exceeding any BPF execution.
-    bank_slot: u64,
-    ancestors: []const u64,
+    bank_slot:     u64,
+    ancestors:     []const u64,
 };
 
 const bpf_program_cache = @import("bpf_program_cache.zig");
@@ -430,10 +428,10 @@ const MAX_REALLOC_BUDGET_FOR_CPI: usize = 10 * 1024;
 /// SolAccountInfo entries from the outer VM, builds AccountSlice (write-
 /// through pointers into the input region), dispatches by u32 discriminator.
 fn dispatchSystemCpiInner(
-    vm_ctx: *VmContext,
-    ix_data: []const u8,
+    vm_ctx:   *VmContext,
+    ix_data:  []const u8,
     accts_vm: u64,
-    accts_n: u64,
+    accts_n:  u64,
 ) VmError!u64 {
     // Read instruction discriminator (first 4 bytes, little-endian u32).
     if (ix_data.len < 4) return system_cpi.ERR_INVALID_INSTRUCTION;
@@ -443,14 +441,14 @@ fn dispatchSystemCpiInner(
         fn one(vm: *VmContext, base: u64, idx: u64) ?system_cpi.AccountSlice {
             const off = base + idx * SOL_ACCT_INFO_STRIDE;
             const info_raw = vm.translateR(off, SOL_ACCT_INFO_STRIDE) catch return null;
-            const key_vm = std.mem.readInt(u64, info_raw[0..8], .little);
-            const lam_vm = std.mem.readInt(u64, info_raw[8..16], .little);
-            const dlen = std.mem.readInt(u64, info_raw[16..24], .little);
-            const data_vm = std.mem.readInt(u64, info_raw[24..32], .little);
+            const key_vm   = std.mem.readInt(u64, info_raw[0..8],   .little);
+            const lam_vm   = std.mem.readInt(u64, info_raw[8..16],  .little);
+            const dlen     = std.mem.readInt(u64, info_raw[16..24], .little);
+            const data_vm  = std.mem.readInt(u64, info_raw[24..32], .little);
             const owner_vm = std.mem.readInt(u64, info_raw[32..40], .little);
             const is_writable = info_raw[49] != 0;
 
-            const lam_slice = vm.translate(lam_vm, 8, true) catch return null;
+            const lam_slice   = vm.translate(lam_vm, 8, true) catch return null;
             const data_slice: []u8 = if (dlen > 0)
                 (vm.translate(data_vm, dlen, true) catch return null)
             else
@@ -478,9 +476,7 @@ fn dispatchSystemCpiInner(
         }
     }.one;
 
-    const SystemCpiLog = struct {
-        var n: u64 = 0;
-    };
+    const SystemCpiLog = struct { var n: u64 = 0; };
     const log_n_max: u64 = 32;
 
     switch (disc) {
@@ -488,7 +484,7 @@ fn dispatchSystemCpiInner(
             if (accts_n < 2 or ix_data.len < 12) return system_cpi.ERR_INVALID_INSTRUCTION;
             const lamports = std.mem.readInt(u64, ix_data[4..12], .little);
             const from = parse(vm_ctx, accts_vm, 0) orelse return system_cpi.ERR_INVALID_INSTRUCTION;
-            const to = parse(vm_ctx, accts_vm, 1) orelse return system_cpi.ERR_INVALID_INSTRUCTION;
+            const to   = parse(vm_ctx, accts_vm, 1) orelse return system_cpi.ERR_INVALID_INSTRUCTION;
             const rc = system_cpi.execTransfer(from, to, lamports);
             if (SystemCpiLog.n < log_n_max) {
                 SystemCpiLog.n += 1;
@@ -498,12 +494,12 @@ fn dispatchSystemCpiInner(
         },
         system_cpi.IX_CREATE_ACCOUNT => {
             if (accts_n < 2 or ix_data.len < 52) return system_cpi.ERR_INVALID_INSTRUCTION;
-            const lamports = std.mem.readInt(u64, ix_data[4..12], .little);
-            const space = std.mem.readInt(u64, ix_data[12..20], .little);
+            const lamports = std.mem.readInt(u64, ix_data[4..12],  .little);
+            const space    = std.mem.readInt(u64, ix_data[12..20], .little);
             var owner: [32]u8 = undefined;
             @memcpy(&owner, ix_data[20..52]);
             const from = parse(vm_ctx, accts_vm, 0) orelse return system_cpi.ERR_INVALID_INSTRUCTION;
-            const to = parse(vm_ctx, accts_vm, 1) orelse return system_cpi.ERR_INVALID_INSTRUCTION;
+            const to   = parse(vm_ctx, accts_vm, 1) orelse return system_cpi.ERR_INVALID_INSTRUCTION;
             const rc = system_cpi.execCreateAccount(from, to, lamports, space, owner);
             if (SystemCpiLog.n < log_n_max) {
                 SystemCpiLog.n += 1;
@@ -540,12 +536,12 @@ fn dispatchSystemCpiInner(
 
 fn cpiHandler(
     raw_cpi_ctx: *anyopaque,
-    vm_ctx: *VmContext,
-    r1: u64, // VM ptr → SolInstruction (40 bytes)
-    r2: u64, // VM ptr → SolAccountInfo array
-    _: u64, // account_infos_len
-    _: u64, // signers_seeds_ptr  (PDA verification — TODO)
-    _: u64, // signers_seeds_len
+    vm_ctx:      *VmContext,
+    r1: u64,   // VM ptr → SolInstruction (40 bytes)
+    r2: u64,   // VM ptr → SolAccountInfo array
+    _: u64,    // account_infos_len
+    _:  u64,   // signers_seeds_ptr  (PDA verification — TODO)
+    _:  u64,   // signers_seeds_len
 ) VmError!u64 {
     const cpi = @as(*CpiState, @ptrCast(@alignCast(raw_cpi_ctx)));
 
@@ -557,11 +553,11 @@ fn cpiHandler(
 
     // ── Step 1: Deserialise SolInstruction ───────────────────────────────────
     const ix_raw = vm_ctx.translateR(r1, 40) catch return 1;
-    const prog_id_ptr = std.mem.readInt(u64, ix_raw[0..8], .little);
-    _ = std.mem.readInt(u64, ix_raw[8..16], .little);
-    const accts_len = std.mem.readInt(u64, ix_raw[16..24], .little);
-    const data_ptr = std.mem.readInt(u64, ix_raw[24..32], .little);
-    const data_len = std.mem.readInt(u64, ix_raw[32..40], .little);
+    const prog_id_ptr = std.mem.readInt(u64, ix_raw[0..8],   .little);
+    _                 = std.mem.readInt(u64, ix_raw[8..16],  .little);
+    const accts_len   = std.mem.readInt(u64, ix_raw[16..24], .little);
+    const data_ptr    = std.mem.readInt(u64, ix_raw[24..32], .little);
+    const data_len    = std.mem.readInt(u64, ix_raw[32..40], .little);
 
     if (accts_len > 64 or data_len > 10 * 1024) return 1; // sanity bounds
 
@@ -571,8 +567,7 @@ fn cpiHandler(
 
     const ix_data_bytes = if (data_len > 0)
         (vm_ctx.translateR(data_ptr, data_len) catch return 1)
-    else
-        &[_]u8{};
+    else &[_]u8{};
 
     // r71-fix-6 (2026-04-28): System program inline CPI dispatch (vex-152-W3
     // ported into the production cpiHandler path). When inner program_id is
@@ -584,10 +579,7 @@ fn cpiHandler(
     // as a BPF ELF (line 363-407 below), failed, returned 1 → BPF program
     // saw CPI failure → mutations=0 → 12 PDAs at slot 484 never created.
     var sys_is_zeros: bool = true;
-    for (program_id.data) |b| if (b != 0) {
-        sys_is_zeros = false;
-        break;
-    };
+    for (program_id.data) |b| if (b != 0) { sys_is_zeros = false; break; };
     const cpi_dbg = std.posix.getenv("VEX_VMFAULT_DEBUG") != null;
     if (cpi_dbg) {
         std.log.warn("[CPI-IN] depth={d} sys={} prog={x:0>2}{x:0>2}..{x:0>2}{x:0>2} accts={d} data_len={d}", .{
@@ -610,22 +602,22 @@ fn cpiHandler(
 
     for (0..accts_len) |i| {
         const base = i * 64;
-        const key_ptr = std.mem.readInt(u64, acct_infos_raw[base..][0..8], .little);
-        const lamports_ptr = std.mem.readInt(u64, acct_infos_raw[base + 8 ..][0..8], .little);
-        const acct_data_len = std.mem.readInt(u64, acct_infos_raw[base + 16 ..][0..8], .little);
-        const acct_data_ptr = std.mem.readInt(u64, acct_infos_raw[base + 24 ..][0..8], .little);
-        const owner_ptr = std.mem.readInt(u64, acct_infos_raw[base + 32 ..][0..8], .little);
-        const rent_epoch = std.mem.readInt(u64, acct_infos_raw[base + 40 ..][0..8], .little);
-        const is_signer = acct_infos_raw[base + 48] != 0;
-        const is_writable = acct_infos_raw[base + 49] != 0;
-        const executable = acct_infos_raw[base + 50] != 0;
+        const key_ptr        = std.mem.readInt(u64, acct_infos_raw[base..][0..8],   .little);
+        const lamports_ptr   = std.mem.readInt(u64, acct_infos_raw[base+8..][0..8], .little);
+        const acct_data_len  = std.mem.readInt(u64, acct_infos_raw[base+16..][0..8],.little);
+        const acct_data_ptr  = std.mem.readInt(u64, acct_infos_raw[base+24..][0..8],.little);
+        const owner_ptr      = std.mem.readInt(u64, acct_infos_raw[base+32..][0..8],.little);
+        const rent_epoch     = std.mem.readInt(u64, acct_infos_raw[base+40..][0..8],.little);
+        const is_signer      = acct_infos_raw[base+48] != 0;
+        const is_writable    = acct_infos_raw[base+49] != 0;
+        const executable     = acct_infos_raw[base+50] != 0;
 
-        const key_bytes = vm_ctx.translateR(key_ptr, 32) catch continue;
-        const owner_bytes = vm_ctx.translateR(owner_ptr, 32) catch continue;
-        const lam_bytes = vm_ctx.translateR(lamports_ptr, 8) catch continue;
+        const key_bytes   = vm_ctx.translateR(key_ptr, 32)   catch continue;
+        const owner_bytes = vm_ctx.translateR(owner_ptr, 32)  catch continue;
+        const lam_bytes   = vm_ctx.translateR(lamports_ptr, 8) catch continue;
 
         var pubkey: core.Pubkey = undefined;
-        var owner: core.Pubkey = undefined;
+        var owner:  core.Pubkey = undefined;
         @memcpy(&pubkey.data, key_bytes);
         @memcpy(&owner.data, owner_bytes);
 
@@ -633,17 +625,16 @@ fn cpiHandler(
 
         const acct_data = if (acct_data_len > 0)
             (vm_ctx.translateR(acct_data_ptr, acct_data_len) catch &[_]u8{})
-        else
-            &[_]u8{};
+        else &[_]u8{};
 
         inner_accounts.append(alloc, .{
-            .pubkey = pubkey,
-            .owner = owner,
-            .lamports = lamports,
-            .data = acct_data,
-            .executable = executable,
-            .rent_epoch = rent_epoch,
-            .is_signer = is_signer,
+            .pubkey      = pubkey,
+            .owner       = owner,
+            .lamports    = lamports,
+            .data        = acct_data,
+            .executable  = executable,
+            .rent_epoch  = rent_epoch,
+            .is_signer   = is_signer,
             .is_writable = is_writable,
         }) catch continue;
     }
@@ -739,17 +730,17 @@ fn cpiHandler(
             // The pubkey starts at byte 8 of each account record.
             var scan: usize = 0;
             while (scan + 8 + 32 <= input.len) {
-                if (std.mem.eql(u8, input[scan + 8 .. scan + 40], &parent_acct.pubkey.data)) {
+                if (std.mem.eql(u8, input[scan+8..scan+40], &parent_acct.pubkey.data)) {
                     // Found! Update lamports at scan+8+32+32 = scan+72
                     if (scan + 72 + 8 <= input.len) {
-                        std.mem.writeInt(u64, input[scan + 72 ..][0..8], mut.new_lamports, .little);
+                        std.mem.writeInt(u64, input[scan+72..][0..8], mut.new_lamports, .little);
                     }
                     // Update data length and data at scan+72+8=scan+80
                     if (scan + 80 + 8 <= input.len) {
                         const new_dlen = @min(mut.data.len, parent_acct.data.len + MAX_REALLOC);
-                        std.mem.writeInt(u64, input[scan + 80 ..][0..8], @intCast(new_dlen), .little);
+                        std.mem.writeInt(u64, input[scan+80..][0..8], @intCast(new_dlen), .little);
                         if (scan + 88 + new_dlen <= input.len) {
-                            @memcpy(input[scan + 88 .. scan + 88 + new_dlen], mut.data[0..new_dlen]);
+                            @memcpy(input[scan+88..scan+88+new_dlen], mut.data[0..new_dlen]);
                         }
                     }
                     break;
@@ -768,7 +759,8 @@ fn cpiHandler(
         }
     }
 
-    std.log.debug("[CPI] Invoked {} with {} accounts, {} mutations applied", .{ program_id, accts_len, mutations.len });
+    std.log.debug("[CPI] Invoked {} with {} accounts, {} mutations applied",
+        .{ program_id, accts_len, mutations.len });
     return 0; // success
 }
 
@@ -795,26 +787,26 @@ fn cpiHandler(
 //     [32  program_id]
 
 const AccountMeta = struct {
-    is_writable: bool,
+    is_writable:     bool,
     /// vex-039 / core-r10-bpf-owner restored 2026-05-22: byte offset of the
     /// owner field within the serialized BPF input region. Default 0 keeps
     /// the is_dup branch's meta-append shape compatible (is_dup entries are
     /// skipped in deserialise() before any offset math, vex-033 invariant #4).
     /// Contract for non-dup entries: owner_offset == lamports_offset - 32.
-    owner_offset: usize = 0,
+    owner_offset:    usize = 0,
     lamports_offset: usize,
-    data_offset: usize,
-    data_len: usize,
-    pubkey_idx: usize,
+    data_offset:     usize,
+    data_len:        usize,
+    pubkey_idx:      usize,
 };
 
 fn serialise(
     allocator: std.mem.Allocator,
-    buf: *std.ArrayListUnmanaged(u8),
-    meta: *std.ArrayListUnmanaged(AccountMeta),
+    buf:      *std.ArrayListUnmanaged(u8),
+    meta:     *std.ArrayListUnmanaged(AccountMeta),
     accounts: []const AccountEntry,
-    ix_data: []const u8,
-    prog_id: *const core.Pubkey,
+    ix_data:  []const u8,
+    prog_id:  *const core.Pubkey,
 ) !void {
     const w = buf.writer(allocator);
 
@@ -847,10 +839,10 @@ fn serialise(
         } else {
             // Non-dup: full account record.
             try w.writeByte(0xFF); // NON_DUP_MARKER
-            try w.writeByte(if (acct.is_signer) 1 else 0);
-            try w.writeByte(if (acct.is_writable) 1 else 0);
-            try w.writeByte(if (acct.executable) 1 else 0);
-            try w.writeInt(u32, 0, .little); // 4-byte pad (`original_data_len` placeholder)
+            try w.writeByte(if (acct.is_signer)   1 else 0);
+            try w.writeByte(if (acct.is_writable)  1 else 0);
+            try w.writeByte(if (acct.executable)   1 else 0);
+            try w.writeInt(u32, 0, .little);       // 4-byte pad (`original_data_len` placeholder)
             try w.writeAll(&acct.pubkey.data);
             // vex-039 / core-r10-bpf-owner restored 2026-05-22: capture owner
             // offset for deserialise() to read post-mutation owner bytes.
@@ -864,7 +856,7 @@ fn serialise(
             try w.writeInt(u64, acct.data.len, .little);
             const dat_off = buf.items.len;
             try w.writeAll(acct.data);
-            try buf.appendNTimes(allocator, 0, MAX_REALLOC); // realloc gap
+            try buf.appendNTimes(allocator, 0, MAX_REALLOC);  // realloc gap
             // alignPad (BPF_ALIGN_OF_U128 = 16) — vex-079 + round6-beam-t2 (9baf82d).
             // Agave program-runtime/src/serialization.rs uses align_offset(BPF_ALIGN_OF_U128)
             // where BPF_ALIGN_OF_U128 = 16. data_len%8 was wrong; ANY data_len % 16 ∉ {0,8}
@@ -878,12 +870,12 @@ fn serialise(
             try w.writeInt(u64, std.math.maxInt(u64), .little);
 
             try meta.append(allocator, .{
-                .is_writable = acct.is_writable,
-                .owner_offset = own_off,
+                .is_writable     = acct.is_writable,
+                .owner_offset    = own_off,
                 .lamports_offset = lam_off,
-                .data_offset = dat_off,
-                .data_len = acct.data.len,
-                .pubkey_idx = i,
+                .data_offset     = dat_off,
+                .data_len        = acct.data.len,
+                .pubkey_idx      = i,
             });
         }
     }
@@ -896,9 +888,9 @@ fn serialise(
 
 fn deserialise(
     allocator: std.mem.Allocator,
-    buf: []const u8,
-    meta: []const AccountMeta,
-    accounts: []const AccountEntry,
+    buf:       []const u8,
+    meta:      []const AccountMeta,
+    accounts:  []const AccountEntry,
 ) ![]AccountMutation {
     // r75-bug-class-b-2026-05-06: BPF deserialise reads buffer values
     // that may contain wrapping/overflow-prone arithmetic. After the
@@ -951,7 +943,7 @@ fn deserialise(
         // Saturating add — defensive against degenerate meta entries
         const data_end = m.data_offset +| safe_dlen;
         const new_data = buf[m.data_offset..data_end];
-        const orig = &accounts[m.pubkey_idx];
+        const orig     = &accounts[m.pubkey_idx];
 
         if (probe_buf_diff and probe_buf_diff_count < 24) {
             const lam_eq = new_lam == orig.lamports;
@@ -961,9 +953,9 @@ fn deserialise(
             const head_post = if (new_data.len >= 8) std.mem.readInt(u64, new_data[0..8], .little) else 0;
             std.log.debug("[BPF-BUFDIFF] pk={x:0>2}{x:0>2}{x:0>2}{x:0>2} lam_off={d} lam_pre={d} lam_post={d} lam_eq={} dlen_pre={d} dlen_post={d} dlen_eq={} data_eq={} data_head_pre={x:0>16} data_head_post={x:0>16}\n", .{
                 orig.pubkey.data[0], orig.pubkey.data[1], orig.pubkey.data[2], orig.pubkey.data[3],
-                m.lamports_offset,   orig.lamports,       new_lam,             lam_eq,
-                m.data_len,          new_dlen,            dlen_eq,             data_eq,
-                head_pre,            head_post,
+                m.lamports_offset, orig.lamports, new_lam, lam_eq,
+                m.data_len, new_dlen, dlen_eq, data_eq,
+                head_pre, head_post,
             });
             probe_buf_diff_count += 1;
         }
@@ -971,14 +963,16 @@ fn deserialise(
         // Skip if nothing changed (lamports + data + owner) — vex-039 expanded
         // the change-detect from just (lamports, data) to include owner.
         const owner_changed = !std.mem.eql(u8, &new_owner_bytes, &orig.owner.data);
-        if (new_lam == orig.lamports and std.mem.eql(u8, new_data, orig.data) and !owner_changed) continue;
+        if (new_lam == orig.lamports
+            and std.mem.eql(u8, new_data, orig.data)
+            and !owner_changed) continue;
 
         const data_copy = try allocator.dupe(u8, new_data);
         try mutations.append(allocator, .{
-            .pubkey = orig.pubkey,
+            .pubkey       = orig.pubkey,
             .new_lamports = new_lam,
-            .owner = new_owner_bytes,
-            .data = data_copy,
+            .owner        = new_owner_bytes,
+            .data         = data_copy,
         });
     }
 

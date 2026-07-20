@@ -35,20 +35,19 @@ test "M5 fixture parity: 18 aligned non-DM FD goldens, byte-identical" {
         // the ix_accounts indirection — matches Agave's serialize_parameters
         // input shape (one entry per instruction-account, deduped externally).
         var entries = try std.ArrayListUnmanaged(ser.AccountInput).initCapacity(
-            alloc,
-            fx.ix_accounts.len,
+            alloc, fx.ix_accounts.len,
         );
         defer entries.deinit(alloc);
         for (fx.ix_accounts) |ixa| {
             const ta = &fx.tx_accounts[ixa.idx];
             entries.appendAssumeCapacity(.{
-                .pubkey = ta.pubkey,
-                .owner = ta.owner,
-                .lamports = ta.lamports,
-                .data = ta.data,
-                .executable = ta.executable,
-                .rent_epoch = ta.rent_epoch,
-                .is_signer = ixa.is_signer,
+                .pubkey      = ta.pubkey,
+                .owner       = ta.owner,
+                .lamports    = ta.lamports,
+                .data        = ta.data,
+                .executable  = ta.executable,
+                .rent_epoch  = ta.rent_epoch,
+                .is_signer   = ixa.is_signer,
                 .is_writable = ixa.is_writable,
             });
         }
@@ -74,17 +73,16 @@ test "M5 fixture parity: 18 aligned non-DM FD goldens, byte-identical" {
         if (!std.mem.eql(u8, result.bytes, exp)) {
             var first: usize = 0;
             while (first < result.bytes.len and first < exp.len and
-                result.bytes[first] == exp[first]) : (first += 1)
-            {}
-            const lo = if (first >= 8) first - 8 else 0;
+                result.bytes[first] == exp[first]) : (first += 1) {}
+            const lo  = if (first >= 8) first - 8 else 0;
             const ghi = @min(first + 16, result.bytes.len);
             const ehi = @min(first + 16, exp.len);
             std.log.debug(
                 "\n[FAIL] {s}: len got={d} exp={d} first_diff={d}\n  got[{d}..{d}]={x}\n  exp[{d}..{d}]={x}\n",
                 .{
-                    fx.name, result.bytes.len, exp.len,               first,
-                    lo,      ghi,              result.bytes[lo..ghi], lo,
-                    ehi,     exp[lo..ehi],
+                    fx.name, result.bytes.len, exp.len, first,
+                    lo, ghi, result.bytes[lo..ghi],
+                    lo, ehi, exp[lo..ehi],
                 },
             );
             return error.FixtureMismatch;
@@ -122,22 +120,22 @@ test "M5 fixture parity: 18 aligned non-DM FD goldens, byte-identical" {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ZERO_KEY: [32]u8 = @splat(0);
-const FF_KEY: [32]u8 = @splat(0xFF);
+const FF_KEY:   [32]u8 = @splat(0xFF);
 
 fn mkAccount(
     pubkey: [32]u8,
-    owner: [32]u8,
-    data: []const u8,
+    owner:  [32]u8,
+    data:   []const u8,
     is_writable: bool,
 ) ser.AccountInput {
     return .{
-        .pubkey = pubkey,
-        .owner = owner,
-        .lamports = 1234,
-        .data = data,
-        .executable = false,
-        .rent_epoch = 0,
-        .is_signer = false,
+        .pubkey      = pubkey,
+        .owner       = owner,
+        .lamports    = 1234,
+        .data        = data,
+        .executable  = false,
+        .rent_epoch  = 0,
+        .is_signer   = false,
         .is_writable = is_writable,
     };
 }
@@ -145,11 +143,7 @@ fn mkAccount(
 test "M5 edge: zero accounts, zero ix data" {
     const alloc = std.testing.allocator;
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &.{},
-        .{},
+        alloc, ZERO_KEY, &.{}, &.{}, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);
@@ -158,9 +152,11 @@ test "M5 edge: zero accounts, zero ix data" {
     try std.testing.expectEqual(@as(usize, 48), r.bytes.len);
     try std.testing.expectEqual(@as(usize, 0), r.account_layouts.len);
     // first 8 bytes = 0 (account count)
-    try std.testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, r.bytes[0..8], .little));
+    try std.testing.expectEqual(@as(u64, 0),
+        std.mem.readInt(u64, r.bytes[0..8], .little));
     // next 8 = 0 (ix dlen)
-    try std.testing.expectEqual(@as(u64, 0), std.mem.readInt(u64, r.bytes[8..16], .little));
+    try std.testing.expectEqual(@as(u64, 0),
+        std.mem.readInt(u64, r.bytes[8..16], .little));
     // program_id at bytes 16..48
     try std.testing.expectEqualSlices(u8, &ZERO_KEY, r.bytes[16..48]);
 }
@@ -171,11 +167,7 @@ test "M5 edge: single account with empty data has correct trailing slack" {
         mkAccount(ZERO_KEY, FF_KEY, &.{}, true),
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
-        .{},
+        alloc, ZERO_KEY, &.{}, &accts, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);
@@ -187,14 +179,16 @@ test "M5 edge: single account with empty data has correct trailing slack" {
 
     // First byte after count must be NON_DUP_MARKER (0xFF).
     try std.testing.expectEqual(@as(u8, 0xFF), r.bytes[8]);
-    try std.testing.expectEqual(@as(u8, 0), r.bytes[9]); // is_signer
+    try std.testing.expectEqual(@as(u8, 0), r.bytes[9]);  // is_signer
     try std.testing.expectEqual(@as(u8, 1), r.bytes[10]); // is_writable
     try std.testing.expectEqual(@as(u8, 0), r.bytes[11]); // executable
     // u32 zero-pad at bytes 12..16
-    try std.testing.expectEqual(@as(u32, 0), std.mem.readInt(u32, r.bytes[12..16], .little));
+    try std.testing.expectEqual(@as(u32, 0),
+        std.mem.readInt(u32, r.bytes[12..16], .little));
     // rent_epoch at end of account block = u64::MAX
     const rent_off = 8 + 1 + 7 + 32 + 32 + 8 + 8 + 0 + ser.MAX_REALLOC;
-    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), std.mem.readInt(u64, r.bytes[rent_off..][0..8], .little));
+    try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)),
+        std.mem.readInt(u64, r.bytes[rent_off..][0..8], .little));
 }
 
 test "M5 edge: alignment pad varies with data_len mod 8" {
@@ -223,11 +217,7 @@ test "M5 edge: alignment pad varies with data_len mod 8" {
             mkAccount(ZERO_KEY, FF_KEY, data, true),
         };
         const r = try ser.serializeParametersAligned(
-            alloc,
-            ZERO_KEY,
-            &.{},
-            &accts,
-            .{},
+            alloc, ZERO_KEY, &.{}, &accts, .{},
         );
         defer alloc.free(r.bytes);
         defer alloc.free(r.account_layouts);
@@ -246,7 +236,8 @@ test "M5 edge: alignment pad varies with data_len mod 8" {
         // like the alignment pad (zeros only — interior of MAX_REALLOC slack).
         const rent_off = r.bytes.len - 8 - 8 - 32;
         // Rent must be u64::MAX.
-        try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)), std.mem.readInt(u64, r.bytes[rent_off..][0..8], .little));
+        try std.testing.expectEqual(@as(u64, std.math.maxInt(u64)),
+            std.mem.readInt(u64, r.bytes[rent_off..][0..8], .little));
         // The realloc slack region (10240 + pad bytes) must all be zero.
         const data_end_host = r.account_layouts[0].host_data_offset + c.dlen;
         for (r.bytes[data_end_host .. data_end_host + ser.MAX_REALLOC + c.exp_pad]) |b| {
@@ -263,11 +254,7 @@ test "M5 edge: duplicate account collapses to 1+7 zero pad" {
         mkAccount(ZERO_KEY, FF_KEY, &data1, true), // dup of [0]
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
-        .{},
+        alloc, ZERO_KEY, &.{}, &accts, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);
@@ -304,11 +291,7 @@ test "M5 edge: dup of 2nd account (between)" {
         mkAccount(k1, FF_KEY, "bb", true), // dup of [1]
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
-        .{},
+        alloc, ZERO_KEY, &.{}, &accts, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);
@@ -317,7 +300,9 @@ test "M5 edge: dup of 2nd account (between)" {
     try std.testing.expect(!r.account_layouts[1].is_duplicate);
     try std.testing.expect(r.account_layouts[2].is_duplicate);
     // Dup slot's position byte must equal the index of the EARLIER occurrence.
-    const dup_off = 8 + @as(usize, @intCast(ser.accountSize(2))) + @as(usize, @intCast(ser.accountSize(2)));
+    const dup_off = 8
+        + @as(usize, @intCast(ser.accountSize(2)))
+        + @as(usize, @intCast(ser.accountSize(2)));
     try std.testing.expectEqual(@as(u8, 1), r.bytes[dup_off]);
 }
 
@@ -332,17 +317,13 @@ test "M5 edge: sentinel data values 0x00 and 0xFF survive byte-for-byte" {
         mkAccount(ZERO_KEY, FF_KEY, &data, true),
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
-        .{},
+        alloc, ZERO_KEY, &.{}, &accts, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);
 
     const data_off = r.account_layouts[0].host_data_offset;
-    try std.testing.expectEqualSlices(u8, &data, r.bytes[data_off .. data_off + 17]);
+    try std.testing.expectEqualSlices(u8, &data, r.bytes[data_off..data_off + 17]);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -357,31 +338,18 @@ test "PR-3 vasa-on: serializer emits per-account regions + meta entries" {
     //   trailing-region(writable).
     const accts = [_]ser.AccountInput{
         .{
-            .pubkey = .{1} ** 32,
-            .owner = .{2} ** 32,
-            .lamports = 100,
-            .data = "hello, vasa!",
-            .executable = false,
-            .rent_epoch = 0,
-            .is_signer = true,
-            .is_writable = true,
+            .pubkey = .{1} ** 32, .owner = .{2} ** 32, .lamports = 100,
+            .data = "hello, vasa!", .executable = false, .rent_epoch = 0,
+            .is_signer = true, .is_writable = true,
         },
         .{
-            .pubkey = .{3} ** 32,
-            .owner = .{4} ** 32,
-            .lamports = 200,
-            .data = "ro acct",
-            .executable = false,
-            .rent_epoch = 0,
-            .is_signer = false,
-            .is_writable = false,
+            .pubkey = .{3} ** 32, .owner = .{4} ** 32, .lamports = 200,
+            .data = "ro acct", .executable = false, .rent_epoch = 0,
+            .is_signer = false, .is_writable = false,
         },
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{ 0xAA, 0xBB },
-        &accts,
+        alloc, ZERO_KEY, &.{ 0xAA, 0xBB }, &accts,
         .{ .virtual_address_space_adjustments = true },
     );
     defer alloc.free(r.bytes);
@@ -421,21 +389,13 @@ test "PR-3 vasa-on: data region's address_space_reserved is exactly dlen + MAX_P
     const data = "x" ** 13; // dlen=13 → align pad = 3 bytes (to reach 16-align).
     const accts = [_]ser.AccountInput{
         .{
-            .pubkey = .{1} ** 32,
-            .owner = .{2} ** 32,
-            .lamports = 100,
-            .data = data,
-            .executable = false,
-            .rent_epoch = 0,
-            .is_signer = true,
-            .is_writable = true,
+            .pubkey = .{1} ** 32, .owner = .{2} ** 32, .lamports = 100,
+            .data = data, .executable = false, .rent_epoch = 0,
+            .is_signer = true, .is_writable = true,
         },
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
+        alloc, ZERO_KEY, &.{}, &accts,
         .{ .virtual_address_space_adjustments = true },
     );
     defer alloc.free(r.bytes);
@@ -458,10 +418,7 @@ test "PR-3 vasa-on: data region's address_space_reserved is exactly dlen + MAX_P
 test "PR-3 vasa-off: input_regions stays empty (MODE 1)" {
     const alloc = std.testing.allocator;
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &.{},
+        alloc, ZERO_KEY, &.{}, &.{},
         .{}, // all flags default-off
     );
     defer alloc.free(r.bytes);
@@ -475,10 +432,7 @@ test "M5 NotImplemented: account_data_direct_mapping" {
     try std.testing.expectError(
         ser.SerializeError.NotImplemented,
         ser.serializeParametersAligned(
-            alloc,
-            ZERO_KEY,
-            &.{},
-            &.{},
+            alloc, ZERO_KEY, &.{}, &.{},
             .{ .account_data_direct_mapping = true },
         ),
     );
@@ -677,11 +631,7 @@ test "M5 deserialize round-trip: untouched buffer reads back originals" {
         mkAccount(k, own, &data, true),
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
-        .{},
+        alloc, ZERO_KEY, &.{}, &accts, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);
@@ -703,11 +653,7 @@ test "M5 deserialize round-trip: in-place mutation is visible on return" {
         mkAccount(k, FF_KEY, &data, true),
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
-        .{},
+        alloc, ZERO_KEY, &.{}, &accts, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);
@@ -740,11 +686,7 @@ test "M5 deserialize: oversized post_len is rejected" {
         mkAccount(k, FF_KEY, &data, true),
     };
     const r = try ser.serializeParametersAligned(
-        alloc,
-        ZERO_KEY,
-        &.{},
-        &accts,
-        .{},
+        alloc, ZERO_KEY, &.{}, &accts, .{},
     );
     defer alloc.free(r.bytes);
     defer alloc.free(r.account_layouts);

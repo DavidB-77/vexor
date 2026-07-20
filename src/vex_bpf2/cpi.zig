@@ -78,7 +78,7 @@ pub const MAX_CPI_ACCOUNT_INFOS: usize = 64;
 pub const MAX_CPI_ACCOUNT_INFOS_SIMD_0339: usize = 255;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// P0 CU-parity fix (2026-07-12): Agave's cpi_common charges
+// P0 CU-parity fix (2026-07-12, forensics/cu-fix/): Agave's cpi_common charges
 // TWO CU costs this file never charged, both unconditional (no feature gate):
 // @prov:cpi.invoke-units — INVOKE_UNITS flat per-CPI-call fee, charged FIRST,
 // before any translation, PLUS the per-CPI instruction-translation byte cost
@@ -209,17 +209,17 @@ pub const Abi = enum { c, rust };
 /// @prov:cpi.abi-layouts
 pub const SolInstructionC = extern struct {
     program_id_addr: u64,
-    accounts_addr: u64,
-    accounts_len: u64,
-    data_addr: u64,
-    data_len: u64,
+    accounts_addr:   u64,
+    accounts_len:    u64,
+    data_addr:       u64,
+    data_len:        u64,
 };
 
 /// @prov:cpi.abi-layouts
 pub const SolAccountMetaC = extern struct {
     pubkey_addr: u64,
     is_writable: u8,
-    is_signer: u8,
+    is_signer:   u8,
     // Rust bool is u8 here; the C struct has 6 bytes of trailing pad to align
     // up to 8 — agave reads via repr(C), Zig does the same with extern struct.
     _pad: [6]u8 = .{0} ** 6,
@@ -227,26 +227,26 @@ pub const SolAccountMetaC = extern struct {
 
 /// @prov:cpi.abi-layouts
 pub const SolAccountInfoC = extern struct {
-    key_addr: u64,
+    key_addr:      u64,
     lamports_addr: u64,
-    data_len: u64,
-    data_addr: u64,
-    owner_addr: u64,
-    rent_epoch: u64,
-    is_signer: u8,
-    is_writable: u8,
-    executable: u8,
-    _pad: [5]u8 = .{0} ** 5,
+    data_len:      u64,
+    data_addr:     u64,
+    owner_addr:    u64,
+    rent_epoch:    u64,
+    is_signer:     u8,
+    is_writable:   u8,
+    executable:    u8,
+    _pad:          [5]u8 = .{0} ** 5,
 };
 
 /// @prov:cpi.abi-layouts
 pub const SolSignerSeedC = extern struct {
     addr: u64,
-    len: u64,
+    len:  u64,
 };
 pub const SolSignerSeedsC = extern struct {
     addr: u64,
-    len: u64,
+    len:  u64,
 };
 
 /// Rust-flavour StableInstruction layout. @prov:cpi.abi-layouts
@@ -256,19 +256,19 @@ pub const SolSignerSeedsC = extern struct {
 /// through the same VmValue indirection sig uses (vm_addr → translateType).
 pub const StableInstructionRust = extern struct {
     accounts_addr: u64,
-    accounts_cap: u64,
-    accounts_len: u64,
-    data_addr: u64,
-    data_cap: u64,
-    data_len: u64,
-    program_id: [32]u8,
+    accounts_cap:  u64,
+    accounts_len:  u64,
+    data_addr:     u64,
+    data_cap:      u64,
+    data_len:      u64,
+    program_id:    [32]u8,
 };
 
 /// @prov:cpi.abi-layouts
 /// 32 + 1 + 1 = 34 bytes (Rust packs the bools tight; we mirror).
 pub const AccountMetaRust = extern struct {
-    pubkey: [32]u8,
-    is_signer: u8,
+    pubkey:      [32]u8,
+    is_signer:   u8,
     is_writable: u8,
 };
 
@@ -279,15 +279,15 @@ pub const AccountMetaRust = extern struct {
 /// 16 within it. Same for data (RcBox<RefCell<&mut[u8]>>) where the Vec start
 /// sits 16 + 8 (RefCell.borrow) + 8 (slice ptr) = 32 bytes in.
 pub const AccountInfoRust = extern struct {
-    key_addr: u64,
-    lamports_box_addr: u64,
-    data_box_addr: u64,
-    owner_addr: u64,
-    rent_epoch: u64,
-    is_signer: u8,
-    is_writable: u8,
-    executable: u8,
-    _pad: [5]u8 = .{0} ** 5,
+    key_addr:           u64,
+    lamports_box_addr:  u64,
+    data_box_addr:      u64,
+    owner_addr:         u64,
+    rent_epoch:         u64,
+    is_signer:          u8,
+    is_writable:        u8,
+    executable:         u8,
+    _pad:               [5]u8 = .{0} ** 5,
 };
 
 const RC_VALUE_OFFSET: u64 = @sizeOf(usize) * 2; // strong + weak
@@ -304,28 +304,28 @@ const RC_VALUE_OFFSET: u64 = @sizeOf(usize) * 2; // strong + weak
 // stake, config, compute_budget, address_lookup_table, zk_elgamal_proof_program).
 // BPFLoader v1/v2/v3/deprecated — for ProgramNotSupported routing.
 
-const SYSTEM_PROGRAM_ID: Pubkey32 = .{0} ** 32;
+const SYSTEM_PROGRAM_ID:      Pubkey32 = .{0} ** 32;
 
 // `Vote111111111111111111111111111111111111111` (base58) — first 32 of the program-id.
-const VOTE_PROGRAM_ID: Pubkey32 = .{
+const VOTE_PROGRAM_ID:        Pubkey32 = .{
     0x07, 0x61, 0x48, 0x1d, 0x35, 0x74, 0x74, 0xbb, 0x7c, 0x4d, 0x76, 0x24, 0xeb, 0xd3, 0xbd, 0xb3,
     0xd8, 0x35, 0x5e, 0x73, 0xd1, 0x10, 0x43, 0xfc, 0x0d, 0xa3, 0x53, 0x80, 0x00, 0x00, 0x00, 0x00,
 };
 
 // `Stake11111111111111111111111111111111111111`
-const STAKE_PROGRAM_ID: Pubkey32 = .{
+const STAKE_PROGRAM_ID:       Pubkey32 = .{
     0x06, 0xa1, 0xd8, 0x17, 0x91, 0x37, 0x54, 0x2a, 0x98, 0x34, 0x37, 0xbd, 0xfe, 0x2a, 0x7a, 0xb2,
     0x55, 0x7f, 0x53, 0x5c, 0x8a, 0x78, 0x72, 0x2b, 0x68, 0xa4, 0x9d, 0xc0, 0x00, 0x00, 0x00, 0x00,
 };
 
 // `Config1111111111111111111111111111111111111`
-const CONFIG_PROGRAM_ID: Pubkey32 = .{
+const CONFIG_PROGRAM_ID:      Pubkey32 = .{
     0x03, 0x06, 0x4a, 0xa3, 0x00, 0x2f, 0x74, 0xdc, 0xc5, 0x6e, 0x59, 0x42, 0xff, 0x71, 0xeb, 0xfb,
     0x65, 0x76, 0xb4, 0x6e, 0x90, 0x4d, 0xc8, 0x5e, 0x8c, 0xf2, 0x90, 0x40, 0x00, 0x00, 0x00, 0x00,
 };
 
 // `ComputeBudget111111111111111111111111111111`
-const COMPUTE_BUDGET_ID: Pubkey32 = .{
+const COMPUTE_BUDGET_ID:      Pubkey32 = .{
     0x03, 0x06, 0x46, 0x6f, 0xe5, 0x21, 0x17, 0x32, 0xff, 0xec, 0xad, 0xba, 0x72, 0xc3, 0x9b, 0xe7,
     0xbc, 0x8c, 0xe5, 0xbb, 0xc5, 0xf7, 0x12, 0x6b, 0x2c, 0x43, 0x9b, 0x3a, 0x40, 0x00, 0x00, 0x00,
 };
@@ -337,30 +337,30 @@ const ADDRESS_LOOKUP_TABLE_ID: Pubkey32 = .{
 };
 
 // `ZkE1Gama1Proof11111111111111111111111111111`
-const ZK_ELGAMAL_PROOF_ID: Pubkey32 = .{
+const ZK_ELGAMAL_PROOF_ID:    Pubkey32 = .{
     0x10, 0x18, 0x4e, 0xfa, 0x16, 0x05, 0x73, 0x06, 0x14, 0xfb, 0x69, 0x95, 0xa6, 0x55, 0xa6, 0xb7,
     0x70, 0xff, 0x40, 0x80, 0x6f, 0x4b, 0x69, 0x99, 0x46, 0x69, 0x70, 0xc0, 0x00, 0x00, 0x00, 0x00,
 };
 
 // Loader pubkeys (from agave-v4.0.0-beta.7/sdk-ids/src/lib.rs) — used for
 // loader-blacklist ProgramNotSupported, NOT routed through builtin handler.
-const NATIVE_LOADER_ID: Pubkey32 = .{
+const NATIVE_LOADER_ID:       Pubkey32 = .{
     0x05, 0x4a, 0x53, 0x5a, 0x99, 0x29, 0x21, 0x06, 0x4d, 0x24, 0xe8, 0x71, 0x60, 0xda, 0x38, 0x7c,
     0x7c, 0x35, 0xb5, 0xdd, 0xbc, 0x92, 0xbb, 0x81, 0xe4, 0x1f, 0xa8, 0x40, 0x41, 0x05, 0x44, 0x8d,
 };
-const BPF_LOADER_DEPRECATED: Pubkey32 = .{
+const BPF_LOADER_DEPRECATED:  Pubkey32 = .{
     0x02, 0xc4, 0x57, 0x21, 0x9b, 0x6c, 0xa8, 0xab, 0x52, 0x09, 0xb4, 0x80, 0x3b, 0x09, 0xe2, 0x65,
     0x95, 0xa6, 0xfe, 0xc1, 0xa1, 0x5b, 0xa1, 0x80, 0x6f, 0x6e, 0x4f, 0xc0, 0x00, 0x00, 0x00, 0x00,
 };
-const BPF_LOADER_V2: Pubkey32 = .{
+const BPF_LOADER_V2:          Pubkey32 = .{
     0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0xb0, 0xe2, 0x10, 0x15, 0x3e, 0xf7, 0x63, 0xae, 0x2b,
     0x00, 0xc2, 0xb9, 0x3d, 0x16, 0xc1, 0x24, 0xd2, 0xc0, 0x53, 0x7a, 0x10, 0x04, 0x80, 0x00, 0x01, // v2
 };
 
 /// Phase-1 Core-BPF Stake (2026-06-16): the `migrate_stake_program_to_core_bpf`
 /// feature pubkey (SIMD-0196, base58 `6M4oQ6eXneVhtLoiAr4yRYQY43eVLjrKbiDZDJc892yk`),
-/// decoded via the canonical comptime base58 decoder (never hand-type pubkey
-/// bytes). Used in the CPI dispatch gate at handleSolInvokeSigned
+/// decoded via the canonical comptime base58 decoder (CLAUDE.md pitfall #3 — NEVER
+/// hand-type pubkey bytes). Used in the CPI dispatch gate at handleSolInvokeSigned
 /// so a stake CPI falls to the recursive .so path when VEX_STAKE_BPF AND the
 /// feature is active. Mirrors `features.zig` MIGRATE_STAKE_PROGRAM_TO_CORE_BPF;
 /// cpi.zig cannot import vex_svm/features.zig (cycle), hence the local decode.
@@ -393,31 +393,31 @@ pub fn isLoaderBlacklisted(pid: Pubkey32) bool {
 /// Caches host slices for lamports/owner/data so we can read+write without
 /// re-vmap on every step.
 pub const CallerAccount = struct {
-    pubkey: Pubkey32,
+    pubkey:             Pubkey32,
     /// Host slice covering the lamports u64. Length 8.
-    lamports_host: []u8,
+    lamports_host:      []u8,
     /// Host slice covering the owner pubkey. Length 32.
-    owner_host: []u8,
+    owner_host:         []u8,
     /// Host slice covering the serialized data area (post-realloc-slack).
-    data_host: []u8,
+    data_host:          []u8,
     /// Original data length at translate-time (pre-execution).
-    original_data_len: usize,
+    original_data_len:  usize,
     /// VM addr of the data buffer's first byte (used by writeback to find
     /// the u64 dlen prefix at vm_data_addr - 8).
-    vm_data_addr: u64,
+    vm_data_addr:       u64,
     /// VM addr of the lamports field.
-    vm_lamports_addr: u64,
+    vm_lamports_addr:   u64,
     /// VM addr of the owner pubkey.
-    vm_owner_addr: u64,
+    vm_owner_addr:      u64,
     /// Rust ABI only: VM addr of the Rc<RefCell<&mut [u8]>>'s slice header
     /// (ptr at +0, len at +8). On data growth/shrink we must rewrite the
     /// len so the program's AccountInfo.data slice reflects post-CPI state.
     /// 0 for C ABI (which uses the dlen-prefix at vm_data_addr-8 instead).
-    vm_slice_hdr_addr: u64,
+    vm_slice_hdr_addr:  u64,
     /// Resolved index into the caller's TransactionContext.accounts.
-    index_in_caller: u16,
-    is_signer: bool,
-    is_writable: bool,
+    index_in_caller:    u16,
+    is_signer:          bool,
+    is_writable:        bool,
 };
 
 /// Result of translateInstruction — the caller-supplied target instruction in
@@ -425,13 +425,13 @@ pub const CallerAccount = struct {
 pub const TranslatedInstruction = struct {
     program_id: Pubkey32,
     /// Caller-allocated; freed by handleSolInvokeSigned on exit.
-    accounts: []TranslatedAccountMeta,
-    data: []u8,
+    accounts:   []TranslatedAccountMeta,
+    data:       []u8,
 };
 
 pub const TranslatedAccountMeta = struct {
-    pubkey: Pubkey32,
-    is_signer: bool,
+    pubkey:      Pubkey32,
+    is_signer:   bool,
     is_writable: bool,
 };
 
@@ -468,7 +468,7 @@ pub const TranslatedAccount = struct {
     /// Index into the caller's TransactionContext.accounts (== caller_account.index_in_caller).
     index_in_caller: u16,
     /// Host-side translated view (lamports/owner/data slices + vm addrs).
-    caller_account: CallerAccount,
+    caller_account:  CallerAccount,
     /// Whether to call `updateCallerAccount` on this account at CPI exit.
     /// Default = caller-side `is_writable`. May be flipped to true mid-CPI
     /// when inner-frame writeback detects ownership change.
@@ -762,9 +762,9 @@ pub fn handleSolInvokeSigned(
     // narrow to `M6_CpiHandlerNotReady` and the trace line carries the detail.
     //
     // We keep using `builtins_mod.isBuiltin` (comptime base58 decode) instead
-    // of cpi.zig's local hand-typed table — the local table violated the
-    // never-hand-type-pubkey-bytes rule; the comptime path is the single
-    // source of truth.
+    // of cpi.zig's local hand-typed table — CLAUDE.md pitfall #3 ("NEVER
+    // hand-type pubkey bytes") was violated by the local table; the comptime
+    // path is the single source of truth.
     // ── Phase-1 Core-BPF Stake CPI seam (feature-gated, env DEFAULT-OFF) ──
     // When VEX_STAKE_BPF is ON *and* the migrate feature is active, EXCLUDE
     // stake from the builtin branch so it falls to the `resolver`
@@ -915,15 +915,11 @@ pub fn handleSolInvokeSigned(
         // Captures inner_pid_first, IX variant (first 4 bytes of data as u32),
         // and outer program context to identify which CPI variant fires for
         // HJT-6009 CopyIsBamConnected → the "63 missing writes" carrier.
-        const BuiltinProbe = struct {
-            var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
-        };
+        const BuiltinProbe = struct { var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0); };
         const bn = BuiltinProbe.count.fetchAdd(1, .monotonic);
         if (bn < 40) {
             const variant_tag: u32 = if (tix.data.len >= 4)
-                std.mem.readInt(u32, tix.data[0..4], .little)
-            else
-                0;
+                std.mem.readInt(u32, tix.data[0..4], .little) else 0;
             const outer_pid_first: u8 = if (ctx.currentProgramId()) |pid| pid[0] else 0;
             std.log.warn(
                 "[PR5AF-BUILTIN-PROBE n={d}] outer_pid_first=0x{x} inner_pid_first=0x{x} variant=0x{x} data_len={d} accts={d}",
@@ -941,9 +937,7 @@ pub fn handleSolInvokeSigned(
             // MM region → subsequent BPF reads/writes hit a stale buffer and
             // silently no-op the writeback. Matches Carrier J "63 missing
             // accounts" shape per per-pk diff.
-            const PtrDiffProbe = struct {
-                var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
-            };
+            const PtrDiffProbe = struct { var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0); };
             for (callers) |t| {
                 if (!t.caller_account.is_writable) continue;
                 const idx = t.caller_account.index_in_caller;
@@ -957,17 +951,15 @@ pub fn handleSolInvokeSigned(
                     if (pn < 40) {
                         const outer_pid_first: u8 = if (ctx.currentProgramId()) |pid| pid[0] else 0;
                         const variant_tag: u32 = if (tix.data.len >= 4)
-                            std.mem.readInt(u32, tix.data[0..4], .little)
-                        else
-                            0;
+                            std.mem.readInt(u32, tix.data[0..4], .little) else 0;
                         const pk_short = std.fmt.bytesToHex(ctx.tx.accounts[idx].pubkey[0..8], .lower);
                         std.log.warn(
                             "[PR5AJ-PTRDIFF n={d}] outer=0x{x} inner=0x{x} variant=0x{x} idx={d} pk={s} caller_ptr=0x{x} callee_ptr=0x{x} caller_len={d} callee_len={d}",
                             .{
-                                pn,              outer_pid_first, tix.program_id[0],
-                                variant_tag,     idx,             &pk_short,
-                                caller_ptr,      callee_ptr,      caller_data.len,
-                                callee_data.len,
+                                pn, outer_pid_first, tix.program_id[0],
+                                variant_tag, idx, &pk_short,
+                                caller_ptr, callee_ptr,
+                                caller_data.len, callee_data.len,
                             },
                         );
                     }
@@ -2001,9 +1993,7 @@ fn updateCallerAccount(
     const pre = ca.original_data_len;
     if (post_len > pre + MAX_PERMITTED_DATA_INCREASE) {
         // PR-5af-probe (2026-05-19): Carrier J — log realloc bound rejections.
-        const ReallocProbe = struct {
-            var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
-        };
+        const ReallocProbe = struct { var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0); };
         const rn = ReallocProbe.count.fetchAdd(1, .monotonic);
         if (rn < 10) {
             const pk_short = std.fmt.bytesToHex(callee.pubkey[0..8], .lower);

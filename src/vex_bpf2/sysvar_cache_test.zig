@@ -61,12 +61,14 @@ fn buildBank(alloc: std.mem.Allocator) !MockBank {
     b.rent[16] = 50;
 
     // EpochSchedule: slots=432000, leader_off=432000, first_normal_epoch=14,
-    // first_normal_slot=524256, warmup=true.
+    // first_normal_slot=524256, warmup=true. Canonical declaration-order bincode
+    // layout (547b2e1): warmup@[16], first_normal_epoch@[17..25],
+    // first_normal_slot@[25..33].
     std.mem.writeInt(u64, b.epoch_schedule[0..8], 432000, .little);
     std.mem.writeInt(u64, b.epoch_schedule[8..16], 432000, .little);
-    std.mem.writeInt(u64, b.epoch_schedule[16..24], 14, .little);
-    std.mem.writeInt(u64, b.epoch_schedule[24..32], 524256, .little);
-    b.epoch_schedule[32] = 1;
+    b.epoch_schedule[16] = 1; // warmup
+    std.mem.writeInt(u64, b.epoch_schedule[17..25], 14, .little);
+    std.mem.writeInt(u64, b.epoch_schedule[25..33], 524256, .little);
 
     // SlotHashes: 2 entries.
     const sh = try alloc.alloc(u8, 8 + 2 * 40);
@@ -170,6 +172,30 @@ test "populated EpochSchedule respects warmup=true (vex-058 fix shape)" {
     try std.testing.expectEqual(es.first_normal_epoch, back.first_normal_epoch);
 }
 
+test "EpochSchedule.toBytes/fromBytes canonical declaration-order byte layout (547b2e1)" {
+    const es = sc.EpochSchedule{
+        .slots_per_epoch = 432000,
+        .leader_schedule_slot_offset = 432000,
+        .warmup = true,
+        .first_normal_epoch = 14,
+        .first_normal_slot = 524256,
+    };
+    const bytes = es.toBytes();
+    // warmup is byte [16], NOT the final byte [32]; first_normal_* follow it.
+    try std.testing.expectEqual(@as(u64, 432000), std.mem.readInt(u64, bytes[0..8], .little));
+    try std.testing.expectEqual(@as(u64, 432000), std.mem.readInt(u64, bytes[8..16], .little));
+    try std.testing.expectEqual(@as(u8, 1), bytes[16]);
+    try std.testing.expectEqual(@as(u64, 14), std.mem.readInt(u64, bytes[17..25], .little));
+    try std.testing.expectEqual(@as(u64, 524256), std.mem.readInt(u64, bytes[25..33], .little));
+
+    const back = try sc.EpochSchedule.fromBytes(&bytes);
+    try std.testing.expectEqual(es.slots_per_epoch, back.slots_per_epoch);
+    try std.testing.expectEqual(es.leader_schedule_slot_offset, back.leader_schedule_slot_offset);
+    try std.testing.expectEqual(es.warmup, back.warmup);
+    try std.testing.expectEqual(es.first_normal_epoch, back.first_normal_epoch);
+    try std.testing.expectEqual(es.first_normal_slot, back.first_normal_slot);
+}
+
 test "populated SlotHashes decodes both entries" {
     const alloc = std.testing.allocator;
     var bank = try buildBank(alloc);
@@ -236,7 +262,7 @@ test "populated Rent + LastRestartSlot + EpochRewards decode" {
     try std.testing.expectEqual(false, er.active);
 }
 
-test "SIMD-0127 generic getBytesByPubkey covers all 8 sysvars" {
+test "SIMD-0127 generic getBytesByPubkey covers all 7 sysvars (SlotHistory excluded, matches Agave's sysvar_id_to_buffer)" {
     const alloc = std.testing.allocator;
     var bank = try buildBank(alloc);
     defer freeBank(alloc, bank);
@@ -250,7 +276,6 @@ test "SIMD-0127 generic getBytesByPubkey covers all 8 sysvars" {
         sc.SYSVAR_RENT_ID,
         sc.SYSVAR_EPOCH_SCHEDULE_ID,
         sc.SYSVAR_SLOT_HASHES_ID,
-        sc.SYSVAR_SLOT_HISTORY_ID,
         sc.SYSVAR_STAKE_HISTORY_ID,
         sc.SYSVAR_EPOCH_REWARDS_ID,
         sc.SYSVAR_LAST_RESTART_SLOT_ID,
@@ -259,4 +284,12 @@ test "SIMD-0127 generic getBytesByPubkey covers all 8 sysvars" {
         const bytes = try cache.getBytesByPubkey(pk);
         try std.testing.expect(bytes.len > 0);
     }
+
+    // conformance RC7 (2026-07-18): SlotHistory is NOT resolved through the
+    // generic by-pubkey path — Agave's sysvar_id_to_buffer has no SlotHistory
+    // arm (program-runtime/src/sysvar_cache.rs:109-127), so sol_get_sysvar on
+    // this pubkey always falls through to SYSVAR_NOT_FOUND, even though the
+    // typed getSlotHistoryBytes() getter still resolves it fine.
+    try std.testing.expectError(error.SysvarNotPopulated, cache.getBytesByPubkey(sc.SYSVAR_SLOT_HISTORY_ID));
+    _ = try cache.getSlotHistoryBytes();
 }

@@ -453,9 +453,7 @@ pub inline fn isPr5pEnabled() bool {
 /// the write-tap/lthash backstop. Upgraded to full-data per advisor so a
 /// data-only stale read is catchable in the recorder diff, not just lamports).
 /// Returns 0 if data is empty/null. Called inline before any lock release so
-/// mmap-backed slices stay valid (mmap-backed memory is read-only; dupe
-/// before use rather than holding a raw slice across an operation that can
-/// free or remap it).
+/// mmap-backed slices stay valid (CLAUDE.md Pitfall #5).
 fn sha8Of(data: ?[]const u8) u64 {
     const d = data orelse return 0;
     if (d.len == 0) return 0;
@@ -509,46 +507,25 @@ fn shutdown(reason: []const u8) void {
     defer files_mutex.unlock();
     if (files_initialized) {
         var rit = read_files.iterator();
-        while (rit.next()) |e| {
-            e.value_ptr.sync() catch {};
-            e.value_ptr.close();
-        }
+        while (rit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
         read_files.deinit();
         var wit = write_files.iterator();
-        while (wit.next()) |e| {
-            e.value_ptr.sync() catch {};
-            e.value_ptr.close();
-        }
+        while (wit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
         write_files.deinit();
         var mit = meta_files.iterator();
-        while (mit.next()) |e| {
-            e.value_ptr.sync() catch {};
-            e.value_ptr.close();
-        }
+        while (mit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
         meta_files.deinit();
         var vmit = vote_mismatch_files.iterator();
-        while (vmit.next()) |e| {
-            e.value_ptr.sync() catch {};
-            e.value_ptr.close();
-        }
+        while (vmit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
         vote_mismatch_files.deinit();
         var deit = dead_event_files.iterator();
-        while (deit.next()) |e| {
-            e.value_ptr.sync() catch {};
-            e.value_ptr.close();
-        }
+        while (deit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
         dead_event_files.deinit();
         var txit = tx_result_files.iterator();
-        while (txit.next()) |e| {
-            e.value_ptr.sync() catch {};
-            e.value_ptr.close();
-        }
+        while (txit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
         tx_result_files.deinit();
         var ltit = lthash_contrib_files.iterator();
-        while (ltit.next()) |e| {
-            e.value_ptr.sync() catch {};
-            e.value_ptr.close();
-        }
+        while (ltit.next()) |e| { e.value_ptr.sync() catch {}; e.value_ptr.close(); }
         lthash_contrib_files.deinit();
         files_initialized = false;
     }

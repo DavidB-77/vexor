@@ -37,25 +37,25 @@
 
 const std = @import("std");
 
-pub const elf_loader = @import("elf_loader.zig");
-pub const interpreter = @import("interpreter.zig");
-pub const syscalls = @import("syscalls.zig");
+pub const elf_loader    = @import("elf_loader.zig");
+pub const interpreter   = @import("interpreter.zig");
+pub const syscalls      = @import("syscalls.zig");
 pub const sbpf_executor = @import("sbpf_executor.zig");
 
 // New sBPF VM modules (V0–V3 full implementation)
-pub const vm_sbpf = @import("vm_sbpf.zig");
-pub const vm_memory = @import("vm_memory.zig");
-pub const vm_executable = @import("vm_executable.zig");
+pub const vm_sbpf        = @import("vm_sbpf.zig");
+pub const vm_memory      = @import("vm_memory.zig");
+pub const vm_executable  = @import("vm_executable.zig");
 pub const vm_interpreter = @import("vm_interpreter.zig");
-pub const vm_syscalls = @import("vm_syscalls.zig");
+pub const vm_syscalls    = @import("vm_syscalls.zig");
 
-pub const ElfLoader = elf_loader.ElfLoader;
-pub const LoadedProgram = elf_loader.LoadedProgram;
-pub const BpfVm = interpreter.BpfVm;
-pub const VmContext = interpreter.VmContext;
-pub const VmError = interpreter.VmError;
-pub const SbpfExecutor = sbpf_executor.SbpfExecutor;
-pub const AccountEntry = sbpf_executor.AccountEntry;
+pub const ElfLoader      = elf_loader.ElfLoader;
+pub const LoadedProgram  = elf_loader.LoadedProgram;
+pub const BpfVm          = interpreter.BpfVm;
+pub const VmContext      = interpreter.VmContext;
+pub const VmError        = interpreter.VmError;
+pub const SbpfExecutor   = sbpf_executor.SbpfExecutor;
+pub const AccountEntry   = sbpf_executor.AccountEntry;
 pub const AccountMutation = sbpf_executor.AccountMutation;
 // FIX-1a (2026-06-10, task #65): top-level run classification (genuine
 // program error vs Vexor plumbing) read by replay_stage.executeBpfProgramCore.
@@ -66,11 +66,11 @@ pub const TopLevelRunOutcome = sbpf_executor.TopLevelRunOutcome;
 /// without depending on a specific executor implementation.
 pub const ComputeBudget = struct {
     pub const DEFAULT_UNITS: u64 = 200_000;
-    pub const MAX_UNITS: u64 = 1_400_000;
+    pub const MAX_UNITS:     u64 = 1_400_000;
     pub const CPI_BASE_COST: u64 = 1_000;
-    pub const SHA256_BASE_COST: u64 = 85;
-    pub const SHA256_BYTE_COST: u64 = 1;
+    pub const SHA256_BASE_COST:    u64 = 85;
+    pub const SHA256_BYTE_COST:    u64 = 1;
     pub const KECCAK256_BASE_COST: u64 = 36;
     pub const KECCAK256_BYTE_COST: u64 = 1;
-    pub const SECP256K1_COST: u64 = 25_000;
+    pub const SECP256K1_COST:      u64 = 25_000;
 };

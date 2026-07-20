@@ -507,11 +507,13 @@ fn katBuildAndCheck(
 test "get_nodes KAT: equal-stake pubkey tiebreak (DESC pubkey)" {
     // self=0x11, peers 0x22/0x33, all stake 50. DESC stake then DESC pubkey: 33,22,11.
     const peers = [_]gossip.ContactInfo{ katPeer(0x22), katPeer(0x33) };
-    try katBuildAndCheck(0x11, &peers, &.{ .{ .k = 0x11, .v = 50 }, .{ .k = 0x22, .v = 50 }, .{ .k = 0x33, .v = 50 } }, &.{
-        .{ .pk = 0x33, .stake = 50, .has_tvu = true },
-        .{ .pk = 0x22, .stake = 50, .has_tvu = true },
-        .{ .pk = 0x11, .stake = 50, .has_tvu = false }, // self: tvu=null
-    });
+    try katBuildAndCheck(0x11, &peers,
+        &.{ .{ .k = 0x11, .v = 50 }, .{ .k = 0x22, .v = 50 }, .{ .k = 0x33, .v = 50 } },
+        &.{
+            .{ .pk = 0x33, .stake = 50, .has_tvu = true },
+            .{ .pk = 0x22, .stake = 50, .has_tvu = true },
+            .{ .pk = 0x11, .stake = 50, .has_tvu = false }, // self: tvu=null
+        });
 }
 
 test "get_nodes KAT: contactless staked node is a member (DESC stake)" {
@@ -519,31 +521,37 @@ test "get_nodes KAT: contactless staked node is a member (DESC stake)" {
     // @prov:turbine.get-nodes-kat — contactless staked node included. DESC stake: 44(1000),22(100),11(10).
     // 0x44 has_tvu=false → if first() lands on it getBroadcastPeer→null→shred dropped (== Agave).
     const peers = [_]gossip.ContactInfo{katPeer(0x22)};
-    try katBuildAndCheck(0x11, &peers, &.{ .{ .k = 0x11, .v = 10 }, .{ .k = 0x22, .v = 100 }, .{ .k = 0x44, .v = 1000 } }, &.{
-        .{ .pk = 0x44, .stake = 1000, .has_tvu = false },
-        .{ .pk = 0x22, .stake = 100, .has_tvu = true },
-        .{ .pk = 0x11, .stake = 10, .has_tvu = false },
-    });
+    try katBuildAndCheck(0x11, &peers,
+        &.{ .{ .k = 0x11, .v = 10 }, .{ .k = 0x22, .v = 100 }, .{ .k = 0x44, .v = 1000 } },
+        &.{
+            .{ .pk = 0x44, .stake = 1000, .has_tvu = false },
+            .{ .pk = 0x22, .stake = 100, .has_tvu = true },
+            .{ .pk = 0x11, .stake = 10, .has_tvu = false },
+        });
 }
 
 test "get_nodes KAT: zero-stake gossip peer kept, ordered after staked (zeros lemma)" {
     // self=0x11 stake 100; peer 0x55 NOT in staked map → stake 0. Agave keeps it (has TVU)
     // but weight 0 → zeros tail, invisible to first(). Order: 11(100) then 55(0).
     const peers = [_]gossip.ContactInfo{katPeer(0x55)};
-    try katBuildAndCheck(0x11, &peers, &.{.{ .k = 0x11, .v = 100 }}, &.{
-        .{ .pk = 0x11, .stake = 100, .has_tvu = false },
-        .{ .pk = 0x55, .stake = 0, .has_tvu = true },
-    });
+    try katBuildAndCheck(0x11, &peers,
+        &.{.{ .k = 0x11, .v = 100 }},
+        &.{
+            .{ .pk = 0x11, .stake = 100, .has_tvu = false },
+            .{ .pk = 0x55, .stake = 0, .has_tvu = true },
+        });
 }
 
 test "get_nodes KAT: peer+staked dedup keeps one node with contact-info" {
     // 0x22 is BOTH a gossip peer AND in the staked map → must appear once, WITH tvu
     // (the peer-loop adds it first with tvu + real stake; contactless loop skips seen).
     const peers = [_]gossip.ContactInfo{katPeer(0x22)};
-    try katBuildAndCheck(0x11, &peers, &.{ .{ .k = 0x11, .v = 5 }, .{ .k = 0x22, .v = 77 } }, &.{
-        .{ .pk = 0x22, .stake = 77, .has_tvu = true },
-        .{ .pk = 0x11, .stake = 5, .has_tvu = false },
-    });
+    try katBuildAndCheck(0x11, &peers,
+        &.{ .{ .k = 0x11, .v = 5 }, .{ .k = 0x22, .v = 77 } },
+        &.{
+            .{ .pk = 0x22, .stake = 77, .has_tvu = true },
+            .{ .pk = 0x11, .stake = 5, .has_tvu = false },
+        });
 }
 
 // ── getRetransmitChildren REVIVAL KATs (2026-06-21, -Dturbine_retransmit) ─────

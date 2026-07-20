@@ -151,25 +151,38 @@ pub const SyscallError = error{
     M6_CurveInvalidScalar,
     /// Multiscalar mul rejected (count > 512 — agave SyscallError::InvalidLength).
     M6_CurveMsmTooManyPoints,
-    /// `curve_decompress` requires BLS12-381 G1/G2 — out of scope this wave.
-    /// PORT: sig/src/crypto/bls12_381/lib.zig + `T.decompress`.
+    /// BLS12-381 G1/G2 decompress is implemented (`solCurveDecompress` below
+    /// calls `bls12_381.g1Decompress`/`g2Decompress`) and never returns this
+    /// variant — RETAINED but currently dead/unreachable. Kept for
+    /// defensive-completeness parity with the enum shape only.
     M6_CurveDecompressRequiresBls12_381ImplPort,
-    /// `curve_pairing_map` requires BLS12-381 — out of scope this wave.
-    /// PORT: sig/src/crypto/bls12_381/lib.zig + `pairingSyscall`.
+    /// BLS12-381 pairing is implemented (`solCurvePairingMap` below calls
+    /// `bls12_381.pairingMap`) and never returns this variant — RETAINED but
+    /// currently dead/unreachable. Kept for defensive-completeness parity
+    /// with the enum shape only.
     M6_CurvePairingRequiresBls12_381ImplPort,
-    /// Alt_bn128 syscall placeholder (BN254 group ops + compression).
-    /// RETAINED for unknown attribute ids inside a real BN254 ABI.
+    /// Declared for defensive completeness; not currently returned anywhere
+    /// (alt_bn128 group-op is a real, live implementation — see below).
     M6_AltBn128NotImplemented,
-    /// `alt_bn128_*` need a BN254 implementation; sig pulls
-    /// `src/crypto/bn254/{fields,bn254_64,lib,pairing}.zig` (~3800 LoC). Out
-    /// of scope this wave — caller will see this named error.
-    /// PORT: sig/src/crypto/bn254/.
+    /// Alt_bn128 group-op (add/mul/pairing) is a real, pure-Zig, KAT-verified
+    /// implementation (`bn254.g1Add`/`g1Mul`/`g2Add`/`g2Mul`/`pairing`,
+    /// `vex_crypto/bn254.zig`). This variant is only returned when
+    /// `bn254.active_backend == .unported`, which is permanently false
+    /// (`bn254.zig:39`: `active_backend: Backend = .pure_zig`, not gated by
+    /// any build option) — the branch that returns this error is dead code,
+    /// retained as a defensive guard in case a future backend variant is
+    /// added.
     M6_AltBn128RequiresBn254ImplPort,
-    /// Poseidon BN254 placeholder (port sig hash.zig:19).
-    /// RETAINED for unknown parameter ids.
+    /// Returned when a `sol_poseidon` call passes an unsupported parameter
+    /// id (only Bn254X5 is defined) — this IS live, current behavior, not a
+    /// stale placeholder (see `solPoseidon` below).
     M6_PoseidonNotImplemented,
-    /// `sol_poseidon` requires the `zig-poseidon` package (Rexicon226). Out
-    /// of scope this wave. PORT: sig build.zig.zon `.poseidon` dep.
+    /// `sol_poseidon`'s BN254 hash is a real, pure-Zig, KAT-verified
+    /// implementation (`bn254.poseidonHash`, `vex_crypto/bn254/poseidon.zig`).
+    /// Like `M6_AltBn128RequiresBn254ImplPort` above, this variant is only
+    /// returned when `bn254.active_backend == .unported`, which is
+    /// permanently false — the branch that returns this error is dead code,
+    /// retained as a defensive guard.
     M6_PoseidonRequiresBn254ImplPort,
     /// secp256k1_recover failure (signature/recovery_id/message bad).
     M6_Secp256k1RecoverError,
@@ -189,6 +202,8 @@ pub const SyscallError = error{
     M6_ReturnDataTooLarge,
     /// Memcpy/memmove src and dst overlap (agave SyscallError::CopyOverlapping).
     M6_CopyOverlapping,
+    /// sol_log_'d bytes are not valid UTF-8 (agave SyscallError::InvalidString).
+    M6_InvalidUtf8,
     /// Aborted by program (sol_panic_, abort).
     M6_ProgramAbort,
     /// `sol_alloc_free_` called after deactivation feature gate flips on.
@@ -378,6 +393,15 @@ fn solLog(ic: *InvokeContext, addr: u64, len: u64, _: u64, _: u64, _: u64) Sysca
     const cost: u64 = @max(CuCost.syscall_base_cost, len);
     ic.consumeCompute(cost) catch return error.M6_ConsumeOverflow;
     const bytes = try translateConstSlice(ic, addr, len);
+    // G3 fix (conformance grind, sol_log_ UTF-8 validation): Agave's real
+    // SyscallLog (agave-4.2.0-beta.1-src/syscalls/src/lib.rs) validates the
+    // logged bytes are valid UTF-8 (`str::from_utf8`) and hard-fails
+    // `SyscallError::InvalidString` (declaration-order discriminant 0 ->
+    // proto code 1) on invalid input. Vexor previously logged raw bytes
+    // unconditionally and always returned success — silently accepting
+    // malformed UTF-8 (e.g. an overlong 3-byte encoding like `e0 80 80`)
+    // where Agave rejects it.
+    if (!std.unicode.utf8ValidateSlice(bytes)) return error.M6_InvalidUtf8;
     if (c17_probe and c17_lines < 400) {
         // skip the high-volume succeeding crank; capture everything else
         if (!std.mem.eql(u8, bytes, "Instruction: CopyVoteAccount")) {
@@ -1191,11 +1215,29 @@ fn solAltBn128Compress(ic: *InvokeContext, op: u64, in_addr: u64, in_len: u64, o
         return 1;
     }
 
+    // (5b) FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #2, zbpf 64c9e56
+    // stageIfAliasing/freeStaged): G1/G2 compress() in bn254/curve.zig do a
+    // bare @memcpy(out, input[0..N]) internally, which PANICS (safety-checked
+    // ReleaseSafe build -- @memcpy requires disjoint src/dst) the instant
+    // `in`/`out` alias at all, including exact aliasing (in_addr==out_addr),
+    // a legitimate in-place-compress calling pattern. Real Agave never
+    // crashes the validator process on this input shape. Stage `in` through
+    // a scratch allocator copy whenever it overlaps `out`, using the
+    // pre-existing isNonoverlapping() helper (:371, previously unused on
+    // this path) so the crypto leaf never receives aliasing pointers.
+    // compress()/decompress() are pure functions of the input bytes, so
+    // staging changes crash behavior only, never the result.
+    const staged_in = if (isNonoverlapping(in_addr, in_len, out_addr, out_size))
+        in
+    else
+        ic.allocator.dupe(u8, in) catch return error.M6_ConsumeOverflow;
+    defer if (staged_in.ptr != in.ptr) ic.allocator.free(@constCast(staged_in));
+
     const ok = switch (kind) {
-        .g1_compress => bn254.g1Compress(out, in, big_endian),
-        .g1_decompress => bn254.g1Decompress(out, in, big_endian),
-        .g2_compress => bn254.g2Compress(out, in, big_endian),
-        .g2_decompress => bn254.g2Decompress(out, in, big_endian),
+        .g1_compress => bn254.g1Compress(out, staged_in, big_endian),
+        .g1_decompress => bn254.g1Decompress(out, staged_in, big_endian),
+        .g2_compress => bn254.g2Compress(out, staged_in, big_endian),
+        .g2_decompress => bn254.g2Decompress(out, staged_in, big_endian),
     };
     if (!ok) {
         traceExit("sol_alt_bn128_compression", 1);
@@ -1443,14 +1485,50 @@ fn solTryFindPda(
 ) SyscallError!u64 {
     traceEntry("sol_try_find_program_address", ic, seeds_addr, seeds_len, program_id_addr, addr_out, bump_out);
     var seed_storage: [MAX_SEEDS][]const u8 = undefined;
+    // G2 fix (conformance grind, try_find_program_address MAX_SEEDS
+    // off-by-one): the redundant `seeds.len + 1 > MAX_SEEDS` pre-check that
+    // used to live here double-counted the bump seed against the 16-seed
+    // limit Agave applies to USER seeds only (agave-4.2.0-beta.1-src/
+    // syscalls/src/lib.rs `translate_and_check_program_address_inputs`:
+    // `if untranslated_seeds.len() > MAX_SEEDS { return Err(...) }`, checked
+    // on the USER-supplied seeds BEFORE appending the bump byte).
+    // `readSeedTable` above already enforces this correct bound, so no
+    // separate check is needed here.
     const seeds = try readSeedTable(ic, seeds_addr, seeds_len, &seed_storage);
-    if (seeds.len + 1 > MAX_SEEDS) return error.M6_PdaInputTooLarge;
     const pid = try translateType(ic, [32]u8, program_id_addr);
-    const addr_slot = try translateMutType(ic, [32]u8, addr_out);
-    const bump_slot = try translateMutType(ic, u8, bump_out);
 
-    // Append a 1-byte bump seed and try 255 → 0.
-    var local_seeds: [MAX_SEEDS][]const u8 = undefined;
+    // G2 fix, part 2 (2026-07-18, re-derived from reading Agave's real
+    // `SyscallTryFindProgramAddress::rust` directly, agave-4.2.0-beta.1-src/
+    // syscalls/src/lib.rs:882-931 -- the naive fix (delete the old guard +
+    // resize `local_seeds`) was NOT sufficient on its own: it still
+    // hard-errored/access-violated on the empirically confirmed 16-user-seed
+    // corpus fixtures. Reading the primary source revealed the REAL
+    // structure, replicated below:
+    //   1. `Pubkey::create_program_address(&seeds_with_bump, program_id)` is
+    //      called with the FULL 17-element set (16 user + 1 bump) when
+    //      seeds.len()==MAX_SEEDS -- Agave's own `create_program_address`
+    //      re-checks `seeds.len() > MAX_SEEDS` on that combined count and
+    //      returns `Err(MaxSeedLengthExceeded)` EVERY attempt. The caller
+    //      only does `if let Ok(new_address) = ...` -- ANY `Err` (not just
+    //      "not derivable") is silently treated as "this bump didn't work,
+    //      try the next one," so 16 user seeds structurally can NEVER find
+    //      a PDA and always exhausts to the not-derivable path.
+    //   2. `address_addr`/`bump_seed_addr` are translated LAZILY via
+    //      `translate_mut!` INSIDE the `if let Ok(new_address) = ...` arm --
+    //      i.e. ONLY when a candidate is actually about to be written --
+    //      not eagerly before the search loop. A garbage/unmapped
+    //      `addr_out`/`bump_out` is never dereferenced on the (structurally
+    //      guaranteed, for 16 seeds) not-derivable path, matching the
+    //      corpus's `expected error=0 r0=1` (soft "not derivable") instead
+    //      of an access-violation.
+    //   3. Exhausting the loop returns `Ok(1)` (soft "not derivable"), NOT
+    //      an error -- same convention `sol_create_program_address` already
+    //      uses just above.
+    // `local_seeds` stays sized [MAX_SEEDS+1] (16 user + 1 bump) so building
+    // that 17-element slice for `createProgramAddressInner` never overflows
+    // the array itself; `createProgramAddressInner`'s OWN `seeds.len >
+    // MAX_SEEDS` check (unchanged) is what correctly rejects it per-attempt.
+    var local_seeds: [MAX_SEEDS + 1][]const u8 = undefined;
     @memcpy(local_seeds[0..seeds.len], seeds);
     var bump_byte: [1]u8 = .{0xff};
     var bump: u8 = 255;
@@ -1461,16 +1539,41 @@ fn solTryFindPda(
         local_seeds[seeds.len] = &bump_byte;
         var out: [32]u8 = undefined;
         if (createProgramAddressInner(local_seeds[0 .. seeds.len + 1], pid, &out)) |_| {
+            // Lazy translate — only reached once a candidate PDA is found.
+            const addr_slot = try translateMutType(ic, [32]u8, addr_out);
+            const bump_slot = try translateMutType(ic, u8, bump_out);
+            // G1 fix (conformance grind, sol_try_find_program_address
+            // output-overlap check): Agave's real `translate_mut!` call
+            // translates `bump_seed_ref`/`address` TOGETHER into the same
+            // mutable-region-overlap-checked arena and rejects two
+            // overlapping mutable output regions with
+            // `SyscallError::CopyOverlapping` (declaration-order
+            // discriminant 11 -> proto code 12). Vexor previously
+            // translated these two host slices independently with NO
+            // overlap check, silently corrupting the aliased byte when
+            // `addr_out == bump_out` (or otherwise overlaps). Reuses the
+            // same `isNonoverlapping` helper `sol_memcpy_`/`sol_memmove_`
+            // already use against the two translated hosts' own
+            // addresses/lengths.
+            if (!isNonoverlapping(@intFromPtr(addr_slot), 32, @intFromPtr(bump_slot), 1)) {
+                return error.M6_CopyOverlapping;
+            }
             @memcpy(addr_slot, &out);
             bump_slot.* = bump;
             return 0;
         } else |e| switch (e) {
-            error.M6_PdaNotDerivable => {},
+            // Agave's `if let Ok(new_address) = ...` swallows ANY `Err` from
+            // `Pubkey::create_program_address` as "try the next bump" --
+            // both the genuine "on-curve, not derivable" case
+            // (`M6_PdaNotDerivable`) AND the "seeds_with_bump exceeds
+            // MAX_SEEDS" case (`M6_PdaInputTooLarge`, structurally always
+            // hit once seeds.len==MAX_SEEDS — see part 2 above).
+            error.M6_PdaNotDerivable, error.M6_PdaInputTooLarge => {},
             else => return e,
         }
         if (bump == 0) break;
     }
-    return error.M6_PdaNotDerivable;
+    return 1; // SUCCESS=0, "not derivable" is non-zero return per agave (matches solCreatePda above).
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1979,49 +2082,49 @@ pub const SyscallRegistry = struct {
         // Build the canonical 43-entry list. @prov:syscall.module-map
         // (+sol_sha512 SIMD-0512, registered unconditionally / gated at invoke).
         const tbl = [_]struct { name: []const u8, f: SyscallFn, cu: u64 }{
-            .{ .name = "abort", .f = abort_, .cu = 0 },
-            .{ .name = "sol_panic_", .f = solPanic, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_log_", .f = solLog, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_log_64_", .f = solLog64, .cu = CuCost.log_64_units },
-            .{ .name = "sol_log_pubkey", .f = solLogPubkey, .cu = CuCost.log_pubkey_units },
-            .{ .name = "sol_log_compute_units_", .f = solLogComputeUnits, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_create_program_address", .f = solCreatePda, .cu = CuCost.create_program_address_units },
-            .{ .name = "sol_try_find_program_address", .f = solTryFindPda, .cu = CuCost.create_program_address_units },
-            .{ .name = "sol_sha256", .f = solSha256, .cu = CuCost.sha256_base_cost },
-            .{ .name = "sol_keccak256", .f = solKeccak256, .cu = CuCost.sha256_base_cost },
-            .{ .name = "sol_secp256k1_recover", .f = solSecp256k1Recover, .cu = CuCost.secp256k1_recover_cost },
-            .{ .name = "sol_blake3", .f = solBlake3, .cu = CuCost.sha256_base_cost },
-            .{ .name = "sol_sha512", .f = solSha512, .cu = CuCost.sha256_base_cost }, // SIMD-0512 (gated at invoke)
-            .{ .name = "sol_curve_validate_point", .f = solCurveValidatePoint, .cu = CuCost.curve25519_edwards_validate_point_cost },
-            .{ .name = "sol_curve_group_op", .f = solCurveGroupOp, .cu = CuCost.curve25519_edwards_validate_point_cost },
-            .{ .name = "sol_curve_multiscalar_mul", .f = solCurveMsm, .cu = CuCost.curve25519_edwards_validate_point_cost },
-            .{ .name = "sol_curve_decompress", .f = solCurveDecompress, .cu = CuCost.curve25519_edwards_validate_point_cost },
-            .{ .name = "sol_curve_pairing_map", .f = solCurvePairingMap, .cu = CuCost.curve25519_edwards_validate_point_cost },
-            .{ .name = "sol_get_clock_sysvar", .f = solGetClock, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_get_epoch_schedule_sysvar", .f = solGetEpochSchedule, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_get_fees_sysvar", .f = solGetFees, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_get_rent_sysvar", .f = solGetRent, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_get_last_restart_slot", .f = solGetLastRestartSlot, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_get_epoch_rewards_sysvar", .f = solGetEpochRewards, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_memcpy_", .f = solMemcpy, .cu = CuCost.mem_op_base_cost },
-            .{ .name = "sol_memmove_", .f = solMemmove, .cu = CuCost.mem_op_base_cost },
-            .{ .name = "sol_memset_", .f = solMemset, .cu = CuCost.mem_op_base_cost },
-            .{ .name = "sol_memcmp_", .f = solMemcmp, .cu = CuCost.mem_op_base_cost },
-            .{ .name = "sol_get_processed_sibling_instruction", .f = solGetSibling, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_get_stack_height", .f = solGetStackHeight, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_set_return_data", .f = solSetReturnData, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_get_return_data", .f = solGetReturnData, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_invoke_signed_c", .f = solInvokeSignedC, .cu = 0 },
-            .{ .name = "sol_invoke_signed_rust", .f = solInvokeSignedRust, .cu = 0 },
-            .{ .name = "sol_alloc_free_", .f = solAllocFree, .cu = CuCost.syscall_base_cost },
-            .{ .name = "sol_alt_bn128_group_op", .f = solAltBn128GroupOp, .cu = CuCost.alt_bn128_g1_addition_cost },
-            .{ .name = "sol_big_mod_exp", .f = solBigModExp, .cu = 0 }, // @prov:syscall.big-mod-exp
-            .{ .name = "sol_poseidon", .f = solPoseidon, .cu = CuCost.poseidon_cost_coefficient_c },
-            .{ .name = "sol_remaining_compute_units", .f = solRemainingComputeUnits, .cu = CuCost.get_remaining_compute_units_cost },
-            .{ .name = "sol_alt_bn128_compression", .f = solAltBn128Compress, .cu = CuCost.alt_bn128_g1_addition_cost },
-            .{ .name = "sol_get_sysvar", .f = solGetSysvar, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_get_epoch_stake", .f = solGetEpochStake, .cu = CuCost.sysvar_base_cost },
-            .{ .name = "sol_log_data", .f = solLogData, .cu = CuCost.syscall_base_cost },
+            .{ .name = "abort",                           .f = abort_,                  .cu = 0 },
+            .{ .name = "sol_panic_",                      .f = solPanic,                .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_log_",                        .f = solLog,                  .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_log_64_",                     .f = solLog64,                .cu = CuCost.log_64_units },
+            .{ .name = "sol_log_pubkey",                  .f = solLogPubkey,            .cu = CuCost.log_pubkey_units },
+            .{ .name = "sol_log_compute_units_",          .f = solLogComputeUnits,      .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_create_program_address",      .f = solCreatePda,            .cu = CuCost.create_program_address_units },
+            .{ .name = "sol_try_find_program_address",    .f = solTryFindPda,           .cu = CuCost.create_program_address_units },
+            .{ .name = "sol_sha256",                      .f = solSha256,               .cu = CuCost.sha256_base_cost },
+            .{ .name = "sol_keccak256",                   .f = solKeccak256,            .cu = CuCost.sha256_base_cost },
+            .{ .name = "sol_secp256k1_recover",           .f = solSecp256k1Recover,     .cu = CuCost.secp256k1_recover_cost },
+            .{ .name = "sol_blake3",                      .f = solBlake3,               .cu = CuCost.sha256_base_cost },
+            .{ .name = "sol_sha512",                      .f = solSha512,               .cu = CuCost.sha256_base_cost }, // SIMD-0512 (gated at invoke)
+            .{ .name = "sol_curve_validate_point",        .f = solCurveValidatePoint,   .cu = CuCost.curve25519_edwards_validate_point_cost },
+            .{ .name = "sol_curve_group_op",              .f = solCurveGroupOp,         .cu = CuCost.curve25519_edwards_validate_point_cost },
+            .{ .name = "sol_curve_multiscalar_mul",       .f = solCurveMsm,             .cu = CuCost.curve25519_edwards_validate_point_cost },
+            .{ .name = "sol_curve_decompress",            .f = solCurveDecompress,      .cu = CuCost.curve25519_edwards_validate_point_cost },
+            .{ .name = "sol_curve_pairing_map",           .f = solCurvePairingMap,      .cu = CuCost.curve25519_edwards_validate_point_cost },
+            .{ .name = "sol_get_clock_sysvar",            .f = solGetClock,             .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_get_epoch_schedule_sysvar",   .f = solGetEpochSchedule,     .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_get_fees_sysvar",             .f = solGetFees,              .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_get_rent_sysvar",             .f = solGetRent,              .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_get_last_restart_slot",       .f = solGetLastRestartSlot,   .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_get_epoch_rewards_sysvar",    .f = solGetEpochRewards,      .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_memcpy_",                     .f = solMemcpy,               .cu = CuCost.mem_op_base_cost },
+            .{ .name = "sol_memmove_",                    .f = solMemmove,              .cu = CuCost.mem_op_base_cost },
+            .{ .name = "sol_memset_",                     .f = solMemset,               .cu = CuCost.mem_op_base_cost },
+            .{ .name = "sol_memcmp_",                     .f = solMemcmp,               .cu = CuCost.mem_op_base_cost },
+            .{ .name = "sol_get_processed_sibling_instruction", .f = solGetSibling,     .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_get_stack_height",            .f = solGetStackHeight,       .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_set_return_data",             .f = solSetReturnData,        .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_get_return_data",             .f = solGetReturnData,        .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_invoke_signed_c",             .f = solInvokeSignedC,        .cu = 0 },
+            .{ .name = "sol_invoke_signed_rust",          .f = solInvokeSignedRust,     .cu = 0 },
+            .{ .name = "sol_alloc_free_",                 .f = solAllocFree,            .cu = CuCost.syscall_base_cost },
+            .{ .name = "sol_alt_bn128_group_op",          .f = solAltBn128GroupOp,      .cu = CuCost.alt_bn128_g1_addition_cost },
+            .{ .name = "sol_big_mod_exp",                 .f = solBigModExp,            .cu = 0 }, // @prov:syscall.big-mod-exp
+            .{ .name = "sol_poseidon",                    .f = solPoseidon,             .cu = CuCost.poseidon_cost_coefficient_c },
+            .{ .name = "sol_remaining_compute_units",     .f = solRemainingComputeUnits, .cu = CuCost.get_remaining_compute_units_cost },
+            .{ .name = "sol_alt_bn128_compression",       .f = solAltBn128Compress,     .cu = CuCost.alt_bn128_g1_addition_cost },
+            .{ .name = "sol_get_sysvar",                  .f = solGetSysvar,            .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_get_epoch_stake",             .f = solGetEpochStake,        .cu = CuCost.sysvar_base_cost },
+            .{ .name = "sol_log_data",                    .f = solLogData,              .cu = CuCost.syscall_base_cost },
         };
 
         var entries = try alloc.alloc(SyscallEntry, tbl.len);

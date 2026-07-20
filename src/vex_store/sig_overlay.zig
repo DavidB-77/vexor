@@ -350,25 +350,13 @@ test "sanity check — highest ancestor wins" {
     const account_b = testPk(0xBB);
 
     try db.put(allocator, 1, account_a, .{
-        .lamports = 1_000_000,
-        .owner = account_b,
-        .executable = true,
-        .rent_epoch = 30,
-        .data = &.{},
+        .lamports = 1_000_000, .owner = account_b, .executable = true, .rent_epoch = 30, .data = &.{},
     });
     try db.put(allocator, 2, account_a, .{
-        .lamports = 500_000,
-        .owner = account_b,
-        .executable = true,
-        .rent_epoch = 30,
-        .data = &.{},
+        .lamports = 500_000, .owner = account_b, .executable = true, .rent_epoch = 30, .data = &.{},
     });
     try db.put(allocator, 3, account_a, .{
-        .lamports = 250_000,
-        .owner = account_b,
-        .executable = true,
-        .rent_epoch = 30,
-        .data = &.{},
+        .lamports = 250_000, .owner = account_b, .executable = true, .rent_epoch = 30, .data = &.{},
     });
 
     const ancestors = [_]Slot{ 1, 3 };
@@ -389,26 +377,14 @@ test "forked behaviour — same slot multiple writes" {
     const account_b = testPk(0xBB);
 
     try db.put(allocator, 1, account_a, .{
-        .lamports = 1_000_000,
-        .owner = account_b,
-        .executable = true,
-        .rent_epoch = 30,
-        .data = &.{},
+        .lamports = 1_000_000, .owner = account_b, .executable = true, .rent_epoch = 30, .data = &.{},
     });
     try db.put(allocator, 2, account_a, .{
-        .lamports = 500_000,
-        .owner = account_b,
-        .executable = true,
-        .rent_epoch = 30,
-        .data = &.{},
+        .lamports = 500_000, .owner = account_b, .executable = true, .rent_epoch = 30, .data = &.{},
     });
     // Same slot, overwrite — latest wins, prior `data` freed
     try db.put(allocator, 2, account_a, .{
-        .lamports = 750_000,
-        .owner = account_b,
-        .executable = true,
-        .rent_epoch = 30,
-        .data = &.{},
+        .lamports = 750_000, .owner = account_b, .executable = true, .rent_epoch = 30, .data = &.{},
     });
 
     const ancestors = [_]Slot{ 1, 2 };
@@ -425,11 +401,7 @@ test "account not in ancestor set" {
     const account_b = testPk(0xBB);
 
     try db.put(allocator, 5, account_a, .{
-        .lamports = 1_000_000,
-        .owner = account_b,
-        .executable = true,
-        .rent_epoch = 30,
-        .data = &.{},
+        .lamports = 1_000_000, .owner = account_b, .executable = true, .rent_epoch = 30, .data = &.{},
     });
 
     const ancestors = [_]Slot{ 1, 2, 3 };
@@ -448,11 +420,7 @@ test "purgeSlot evicts and frees" {
     const data = try allocator.alloc(u8, 128);
     @memset(data, 0xAB);
     try db.put(allocator, 1, account_a, .{
-        .lamports = 1_000_000,
-        .owner = account_b,
-        .executable = false,
-        .rent_epoch = 0,
-        .data = data,
+        .lamports = 1_000_000, .owner = account_b, .executable = false, .rent_epoch = 0, .data = data,
     });
 
     const ancestors = [_]Slot{1};

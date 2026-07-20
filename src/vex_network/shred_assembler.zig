@@ -733,7 +733,7 @@ pub const ShredAssembler = struct {
                 // Classify for logging
                 const is_live = (head_slot > 0) and
                     ((slot_key >= head_slot and slot_key - head_slot <= LIVE_SLOT_WINDOW) or
-                        (head_slot > slot_key and head_slot - slot_key <= LIVE_SLOT_WINDOW));
+                    (head_slot > slot_key and head_slot - slot_key <= LIVE_SLOT_WINDOW));
 
                 if (self.frame_manager) |fm| {
                     assembly.deinitWithFrameManager(fm);
@@ -1013,11 +1013,7 @@ pub const ShredAssembler = struct {
         const num_data: u32 = self.fec_resolver.getNumData(slot, fec_idx) orelse 0;
 
         const maybe_v = self.chain_tracker.observeAndRecord(
-            slot,
-            fec_idx,
-            num_data,
-            this_root,
-            chained_root,
+            slot, fec_idx, num_data, this_root, chained_root,
         ) catch |err| {
             std.log.warn("[SIMD-0340] tracker.observe alloc fail slot={d} err={s}", .{ slot, @errorName(err) });
             return;
@@ -1593,7 +1589,7 @@ pub const ShredAssembler = struct {
                                 const prev_flags = prev[85];
                                 const prev_ds = std.mem.readInt(u16, prev[86..88], .little);
                                 std.log.debug("[ZERO-SHRED] slot={d} LAST_GOOD idx={d} data_size={d} flags=0x{x:0>2} batch_complete={} block_complete={}\n", .{
-                                    slot_val,                 diag_i - 1,               prev_ds, prev_flags,
+                                    slot_val, diag_i - 1, prev_ds, prev_flags,
                                     (prev_flags & 0x40) != 0, (prev_flags & 0x80) != 0,
                                 });
                             }
@@ -1605,8 +1601,8 @@ pub const ShredAssembler = struct {
             // Summary
             if (diag_zero_payload_count > 0) {
                 std.log.debug("[ZERO-SHRED] slot={d} nonzero={d} zero={d} first_zero_at={d} last={d} batch_completes={d}", .{
-                    slot_val,                   nonzero_payload_count, diag_zero_payload_count,
-                    first_zero_idx orelse 9999, last,                  batch_complete_count,
+                    slot_val, nonzero_payload_count, diag_zero_payload_count,
+                    first_zero_idx orelse 9999, last, batch_complete_count,
                 });
                 // Print batch_complete indices
                 if (batch_complete_count > 0) {
@@ -1977,6 +1973,77 @@ pub const ShredAssembler = struct {
             } else break;
         }
         return out.toOwnedSlice(allocator);
+    }
+
+    /// One chunk of a paginated `getRawDataShredsForSlot` walk: at most
+    /// `max_count` shreds starting at `start_idx`, plus where to resume
+    /// (`next_idx`) and whether the slot's contiguous received-set is
+    /// exhausted (`done`).
+    pub const RawShredChunk = struct { shreds: []RawDataShred, next_idx: u32, done: bool };
+
+    /// Chunked variant of `getRawDataShredsForSlot`, added for the VexLedger
+    /// reconciliation backfill (Track 2c, `ledger_tile.zig` cold consumer).
+    ///
+    /// WHY THIS EXISTS (do not fold back into the plain variant): the plain
+    /// `getRawDataShredsForSlot` holds `self.mutex` for the WHOLE slot's
+    /// O(slot-size) dupe-loop (:1965-1974 above). That is fine for its one
+    /// caller today — a completion thread reading its OWN just-finished slot,
+    /// once, on the thread that's about to enqueue it anyway. The backfill
+    /// instead runs on the SEPARATE cold ledger-tile core, reading a slot it
+    /// did NOT just insert, racing the hot turbine/verify insert path for the
+    /// SAME mutex — and a large slot (up to 32768 shreds) could hold that lock
+    /// for thousands of allocations. Unmitigated, that turns a rare cold-path
+    /// backfill into hot-path contention, exactly what the ledger tile exists
+    /// to avoid (see ledger_tile.zig's module doc + the design doc's C5/C6
+    /// lock-contention caveat, VEXLEDGER-HYBRID-FD-SPEED-AGAVE-COMPLETE-
+    /// DESIGN-2026-07-17.md).
+    ///
+    /// This variant bounds ONE lock acquisition to at most `max_count` shreds
+    /// (copy-out under the lock), then returns — the caller releases the lock
+    /// implicitly (this function already has) before doing anything with the
+    /// copied bytes, and loops calling this again with `next_idx` as the next
+    /// `start_idx` until `done`. Read-only, ADDITIVE: shares the identical
+    /// walk predicate (contiguous `received` prefix + is_data variant filter)
+    /// with `getRawDataShredsForSlot` so it sees exactly the same shred set —
+    /// just paginated — and touches no hot-path code.
+    pub fn getRawDataShredsForSlotChunk(self: *ShredAssembler, allocator: std.mem.Allocator, slot_val: u64, start_idx: u32, max_count: u32) !RawShredChunk {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const assembly = self.slots.get(slot_val) orelse return .{ .shreds = &.{}, .next_idx = start_idx, .done = true };
+
+        var out = std.ArrayListUnmanaged(RawDataShred){};
+        errdefer {
+            for (out.items) |r| allocator.free(r.wire);
+            out.deinit(allocator);
+        }
+
+        var idx = start_idx;
+        var scanned: u32 = 0;
+        var done = false;
+        while (true) {
+            if (idx >= SlotAssembly.MAX_SHREDS_PER_SLOT) {
+                done = true;
+                break;
+            }
+            if (scanned >= max_count) break; // chunk boundary reached, more may follow
+            if (!assembly.received.isSet(idx)) {
+                done = true; // end of the contiguous prefix — same as the plain variant's `break`
+                break;
+            }
+            if (assembly.getPayload(idx)) |payload| {
+                if (payload.len >= shred_parse.SHRED_HEADER_SIZE and fec_resolver.parseVariantByte(payload[64]).is_data) {
+                    const wire = try allocator.dupe(u8, payload);
+                    try out.append(allocator, .{ .index = idx, .wire = wire });
+                }
+            } else {
+                done = true;
+                break;
+            }
+            idx += 1;
+            scanned += 1;
+        }
+        return .{ .shreds = try out.toOwnedSlice(allocator), .next_idx = idx, .done = done };
     }
 
     /// incident-422359406 follow-up (2026-07-16): on a REPLAY FAILURE (the

@@ -451,7 +451,7 @@ pub const UmemRing = struct {
     pub fn free(self: *UmemRing) u32 {
         return @intCast(self.ring.len - (self.cached_prod - @atomicLoad(u32, self.consumer, .acquire)));
     }
-
+    
     /// Check if kernel needs wakeup (for ~30M pps optimization)
     pub fn needWakeup(self: *UmemRing) bool {
         if (self.flags) |f| {
@@ -504,7 +504,7 @@ pub const DescRing = struct {
     pub fn free(self: *DescRing) u32 {
         return @intCast(self.ring.len - (self.cached_prod - @atomicLoad(u32, self.consumer, .acquire)));
     }
-
+    
     /// Check if kernel needs wakeup (for ~30M pps optimization)
     pub fn needWakeup(self: *DescRing) bool {
         if (self.flags) |f| {
@@ -726,7 +726,7 @@ pub const XdpSocket = struct {
             std.log.err("[AF_XDP] RX ring mmap failed: {}", .{err});
             return err;
         };
-
+        
         // Set up RX ring pointers (including flags for need_wakeup optimization)
         self.rx_ring = .{
             .producer = @ptrFromInt(@intFromPtr(rx_map.ptr) + offsets.rx.producer),
@@ -737,7 +737,7 @@ pub const XdpSocket = struct {
             .cached_cons = 0,
             .mask = self.config.rx_size - 1,
         };
-
+        
         // Mmap TX ring
         const tx_map_size = offsets.tx.desc + @as(usize, self.config.tx_size) * @sizeOf(XdpDesc);
         const tx_map = posix.mmap(
@@ -751,7 +751,7 @@ pub const XdpSocket = struct {
             std.log.err("[AF_XDP] TX ring mmap failed: {}", .{err});
             return err;
         };
-
+        
         // Set up TX ring pointers (including flags for need_wakeup optimization)
         self.tx_ring = .{
             .producer = @ptrFromInt(@intFromPtr(tx_map.ptr) + offsets.tx.producer),
@@ -762,7 +762,7 @@ pub const XdpSocket = struct {
             .cached_cons = 0,
             .mask = self.config.tx_size - 1,
         };
-
+        
         // Mmap Fill ring
         const fill_map_size = offsets.fr.desc + @as(usize, self.config.fill_size) * @sizeOf(u64);
         const fill_map = posix.mmap(
@@ -776,7 +776,7 @@ pub const XdpSocket = struct {
             std.log.err("[AF_XDP] Fill ring mmap failed: {}", .{err});
             return err;
         };
-
+        
         // Set up Fill ring pointers (including flags for need_wakeup optimization)
         self.fill_ring = .{
             .producer = @ptrFromInt(@intFromPtr(fill_map.ptr) + offsets.fr.producer),
@@ -787,7 +787,7 @@ pub const XdpSocket = struct {
             .cached_cons = 0,
             .mask = self.config.fill_size - 1,
         };
-
+        
         // Mmap Completion ring
         const comp_map_size = offsets.cr.desc + @as(usize, self.config.comp_size) * @sizeOf(u64);
         const comp_map = posix.mmap(
@@ -801,7 +801,7 @@ pub const XdpSocket = struct {
             std.log.err("[AF_XDP] Completion ring mmap failed: {}", .{err});
             return err;
         };
-
+        
         // Set up Completion ring pointers (including flags for need_wakeup optimization)
         self.comp_ring = .{
             .producer = @ptrFromInt(@intFromPtr(comp_map.ptr) + offsets.cr.producer),
@@ -812,14 +812,14 @@ pub const XdpSocket = struct {
             .cached_cons = 0,
             .mask = self.config.comp_size - 1,
         };
-
+        
         std.log.debug("[AF_XDP] Rings mapped successfully", .{});
     }
 
     fn populateFillRing(self: *XdpSocket) !void {
         // Add frames to fill ring for RX - kernel needs frame addresses to receive into
         const frames_to_add = @min(self.config.fill_size, self.config.frame_count);
-
+        
         const idx = self.fill_ring.reserve(frames_to_add);
         if (idx) |start_idx| {
             for (0..frames_to_add) |i| {

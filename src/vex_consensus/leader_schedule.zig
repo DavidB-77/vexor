@@ -232,9 +232,7 @@ pub const LeaderScheduleCache = struct {
         const count = self.schedules.count();
         if (self.schedules.get(epoch)) |schedule| {
             // Gate noisy print: only first 5 calls and every 10000th
-            const S = struct {
-                var call_count: u64 = 0;
-            };
+            const S = struct { var call_count: u64 = 0; };
             S.call_count += 1;
             if (S.call_count <= 5 or S.call_count % 10000 == 0) {
                 std.log.debug("[LS] slot={d} epoch={d} count={d} first={d} last={d}\n", .{ slot, epoch, count, schedule.first_slot, schedule.last_slot });
@@ -242,9 +240,7 @@ pub const LeaderScheduleCache = struct {
             return schedule.getLeader(slot);
         }
         // Gate "NO SCHEDULE" print to avoid spam on epoch boundary
-        const NS = struct {
-            var miss_count: u64 = 0;
-        };
+        const NS = struct { var miss_count: u64 = 0; };
         NS.miss_count += 1;
         if (NS.miss_count <= 5 or NS.miss_count % 1000 == 0) {
             std.log.debug("[LS] NO SCHEDULE: slot={d} epoch={d} count={d} miss#{d}\n", .{ slot, epoch, count, NS.miss_count });
@@ -443,10 +439,7 @@ pub const LeaderScheduleCache = struct {
             for (stakes_buf[0..n_built], 0..) |ss, i| {
                 var slot_idx: usize = 5;
                 for (top5_stk, 0..) |s, j| {
-                    if (ss.stake > s) {
-                        slot_idx = j;
-                        break;
-                    }
+                    if (ss.stake > s) { slot_idx = j; break; }
                 }
                 if (slot_idx < 5) {
                     var k: usize = 4;
@@ -462,8 +455,9 @@ pub const LeaderScheduleCache = struct {
                 if (s == 0) continue;
                 const sl = stakes_buf[i];
                 std.log.warn("[d28yy-LS-DIAG] top{d} stake={d} vote=0x{x:0>8} node=0x{x:0>8}", .{
-                    rank,                                                        s,
-                    std.mem.readInt(u32, sl.leader.vote_address[0..4], .little), std.mem.readInt(u32, sl.leader.id[0..4], .little),
+                    rank, s,
+                    std.mem.readInt(u32, sl.leader.vote_address[0..4], .little),
+                    std.mem.readInt(u32, sl.leader.id[0..4], .little),
                 });
             }
 
@@ -475,7 +469,7 @@ pub const LeaderScheduleCache = struct {
                 while (ii <= DIAG_END) : (ii += 1) {
                     const pk = slot_leaders_pk[ii];
                     std.log.warn("[d28yy-LS-DIAG] idx={d} slot={d} leader_first8=0x{x:0>16}", .{
-                        ii,                                           first_slot + ii,
+                        ii, first_slot + ii,
                         std.mem.readInt(u64, pk.data[0..8], .little),
                     });
                 }
@@ -521,7 +515,9 @@ pub const LeaderScheduleCache = struct {
         defer self.allocator.free(request_body);
 
         // Build shell command string for curl
-        const curl_cmd = try std.fmt.allocPrint(self.allocator, "/usr/bin/curl -s -X POST -H 'Content-Type: application/json' -d '{s}' {s}", .{ request_body, rpc_url });
+        const curl_cmd = try std.fmt.allocPrint(self.allocator,
+            "/usr/bin/curl -s -X POST -H 'Content-Type: application/json' -d '{s}' {s}",
+            .{ request_body, rpc_url });
         defer self.allocator.free(curl_cmd);
 
         std.log.debug("[LeaderSchedule] Fetching leader schedule via curl...\n", .{});
@@ -565,7 +561,9 @@ pub const LeaderScheduleCache = struct {
         // We need to know the current slot to compute the correct epoch.
         var effective_slot = slot orelse blk: {
             // Fetch current slot from RPC to determine the right epoch
-            const getslot_cmd = std.fmt.allocPrint(self.allocator, "/usr/bin/curl -s -X POST -H 'Content-Type: application/json' -d '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSlot\"}}' {s}", .{rpc_url}) catch break :blk @as(u64, 0);
+            const getslot_cmd = std.fmt.allocPrint(self.allocator,
+                "/usr/bin/curl -s -X POST -H 'Content-Type: application/json' -d '{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getSlot\"}}' {s}",
+                .{rpc_url}) catch break :blk @as(u64, 0);
             defer self.allocator.free(getslot_cmd);
 
             const gs_result = std.process.Child.run(.{
@@ -712,6 +710,7 @@ pub const LeaderScheduleCache = struct {
         try self.addSchedule(schedule);
         std.log.info("[LeaderSchedule] Loaded schedule for epoch {d}", .{epoch});
     }
+
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════

@@ -1245,3 +1245,4 @@ test "VoteData deserializeOwned retains transaction bytes (round-trip, no leak)"
     try std.testing.expectEqual(@as(usize, 0), legacy.transaction.len);
     try std.testing.expect(!legacy.transaction_is_owned);
 }
+

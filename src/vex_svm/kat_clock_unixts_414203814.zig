@@ -21,9 +21,9 @@ test "clock unix_ts: clean unanimous prior-slot voters -> 1781011502 (A/B discri
     const allocator = std.testing.allocator;
 
     const TARGET_SLOT: u64 = 414203814;
-    const VOTE_SLOT: u64 = 414203813; // prior slot
-    const CLUSTER_TS: i64 = 1781011502; // unanimous last_timestamp.timestamp
-    const NS_PER_SLOT: u64 = 400_000_000; // testnet: 64 ticks * 6_250_000 ns
+    const VOTE_SLOT: u64 = 414203813;        // prior slot
+    const CLUSTER_TS: i64 = 1781011502;      // unanimous last_timestamp.timestamp
+    const NS_PER_SLOT: u64 = 400_000_000;    // testnet: 64 ticks * 6_250_000 ns
     const N: usize = 519;
 
     var samples: [N]ct.VoteTimestampSample = undefined;
@@ -41,32 +41,20 @@ test "clock unix_ts: clean unanimous prior-slot voters -> 1781011502 (A/B discri
     // estimate_offset ~= poh_offset (both hours-wide), so the drift bound is a
     // no-op here; passing null and Some(anchor) MUST give the same result.
     const got_no_anchor = try ct.computeStakeWeightedUnixTs(
-        allocator,
-        &samples,
-        &stakes,
-        TARGET_SLOT,
-        NS_PER_SLOT,
-        null,
-        ct.ClockDriftBounds.DEFAULT,
-        true,
+        allocator, &samples, &stakes, TARGET_SLOT, NS_PER_SLOT,
+        null, ct.ClockDriftBounds.DEFAULT, true,
     );
     try std.testing.expectEqual(@as(?i64, CLUSTER_TS), got_no_anchor);
 
     // With an anchor far enough back that the median sits within bounds, result
     // is identical (proves anchor-null vs anchor-set is a red herring at delta=1).
     const anchor = ct.EpochAnchor{
-        .slot = TARGET_SLOT - 100_000, // arbitrary in-epoch anchor slot
-        .unix_ts = CLUSTER_TS - 40_000, // ~100_000 slots * 0.4s = 40_000s
+        .slot = TARGET_SLOT - 100_000,        // arbitrary in-epoch anchor slot
+        .unix_ts = CLUSTER_TS - 40_000,       // ~100_000 slots * 0.4s = 40_000s
     };
     const got_anchor = try ct.computeStakeWeightedUnixTs(
-        allocator,
-        &samples,
-        &stakes,
-        TARGET_SLOT,
-        NS_PER_SLOT,
-        anchor,
-        ct.ClockDriftBounds.DEFAULT,
-        true,
+        allocator, &samples, &stakes, TARGET_SLOT, NS_PER_SLOT,
+        anchor, ct.ClockDriftBounds.DEFAULT, true,
     );
     try std.testing.expectEqual(@as(?i64, CLUSTER_TS), got_anchor);
 }

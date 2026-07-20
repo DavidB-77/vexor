@@ -1,7 +1,12 @@
-// REQUIRES Zig 0.15.2 (see README.md for install instructions).
+// REQUIRES Zig 0.15.2 — zig
 //
-// Vexor build script — module graph + KAT/test targets for every subsystem
-// under src/. This file grows module-by-module as subsystems land.
+// Vexor clean-rebuild tree build script — a MINIMAL, REVIEWED SUBSET of
+// origin-tree's build.zig (source of truth: vex-fd-origin-tree/build.zig @
+// the origin-tree commit recorded in REBUILD-LEDGER.md). Per master plan §8.3.3
+// every deviation from origin-tree's wiring is a reviewed diff; this file grows
+// module-by-module as the migration proceeds and is expected to converge on
+// origin-tree's structure (minus the pruned DELETE-disposition wiring: vex_bpf_vm,
+// ramdisk option, rpc_server-era targets).
 //
 // Session-1 scope (vex_crypto + core + vendor/blst): module graph +
 // KAT test targets only. No executable is buildable yet.
@@ -14,7 +19,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
 
     // ── build options read by the migrated modules at comptime ──────────────
-    // CONFIG BAKE-IN: `-Dprod` bundles all 12 canonical production
+    // CONFIG BAKE-IN (2026-07-08): `-Dprod` bundles all 12 canonical production
     // feature flags ON in ONE flag, so the build/deploy script runs `zig build
     // -Dprod` instead of 12 separate -D flags that could be silently dropped (the
     // -Dvex_ledger/-Dsig_vote drops that bit us this session). Each flag stays
@@ -22,10 +27,10 @@ pub fn build(b: *std.Build) void {
     // test suite (built without -Dprod) is byte-identical-unchanged. The deploy
     // self-check still verifies SIG-VOTE/BN254/VEX_LEDGER markers → a dropped -Dprod
     // is caught, not silently shipped.
-    const prod = b.option(bool, "prod", "Bundle ON all canonical production feature flags (leader_mode, repair_stake_weighting, parallel_exec, fec_dedup, watchdog, status_cache, use_native_quic_votes, vex_ledger). Each still individually overridable. (Vote execution unconditionally uses Vexor's own vote executor — no flag.)") orelse false;
+    const prod = b.option(bool, "prod", "Bundle ON all canonical production feature flags (leader_mode, repair_stake_weighting, parallel_exec, fec_dedup, watchdog, status_cache, use_native_quic_votes, vex_ledger). Each still individually overridable. (Vote execution is unconditionally voteforge — no flag.)") orelse false;
 
     // Crypto is now pure-Zig UNCONDITIONALLY (the Firedancer Ballet FFI backend
-    // was removed — Vexor runs a fully FFI-free crypto leaf:
+    // was removed 2026-07-12 — Vexor runs a fully FFI-free crypto leaf:
     // ed25519 + bn254/poseidon + blake3 all in-tree Zig). `-Dpure_zig` is kept
     // ACCEPTED for compatibility with existing build/deploy recipes but is now a
     // no-op (crypto is pure-Zig regardless). The consensus verify() path is
@@ -48,7 +53,7 @@ pub fn build(b: *std.Build) void {
     const verify_ring_index = b.option(bool, "verify_ring_index", "Shadow-verify the unrooted_ring per-pubkey read index against the full scan (default OFF = comptime-dead, byte-identical)") orelse false;
     const verify_av_flush = b.option(bool, "verify_av_flush", "Shadow-verify each AppendVec tail flush by reading the whole .av file back and comparing to the heap buffer (default OFF = comptime-dead, byte-identical)") orelse false;
 
-    // Client-identity git stamp (core/version.zig): the gossip
+    // Client-identity git stamp (2026-07-10, core/version.zig): the gossip
     // ContactInfo advertisement + metrics reporter carry "src:<hash>". Explicit
     // -Dgit_hash overrides; default auto-detects from the tree (falls back to
     // "unknown" outside a git checkout). Consensus-neutral string.
@@ -136,7 +141,7 @@ pub fn build(b: *std.Build) void {
     test_restart_flags_step.dependOn(&run_test_restart_flags.step);
     test_migrated_step.dependOn(&run_test_restart_flags.step);
 
-    // ── metrics-reporter + client-identity KATs ────────────────
+    // ── metrics-reporter + client-identity KATs (2026-07-10) ────────────────
     // metrics_reporter.zig and version.zig are std-only leaves (no module
     // imports), so both test roots need zero wiring. metrics_reporter.zig is
     // deliberately NOT re-exported from core/root.zig — it belongs to the exe
@@ -183,7 +188,7 @@ pub fn build(b: *std.Build) void {
     test_ed25519_step.dependOn(&run_test_ed25519.step);
     test_migrated_step.dependOn(&run_test_ed25519.step);
 
-    // ── PURE-ZIG ed25519 core KATs (Phase 1,) ────────────────────
+    // ── PURE-ZIG ed25519 core KATs (Phase 1, 2026-07-11) ────────────────────
     // Gates the vendored+decoupled src/vex_crypto/ed25519/ core: wycheproof
     // strict-verdict match, ACCEPT round-trips, and the 3-way consensus/strict/
     // lenient semantic-divergence matrix (the slot-415479361 fork class).
@@ -229,7 +234,7 @@ pub fn build(b: *std.Build) void {
     // Gates src/vex_network/af_xdp/xdp_program.zig deinit()/detach() against
     // every partial-init state (never-attached, attached-but-bind-failed,
     // double-deinit) so the rapid kill→relaunch fallback can never double-close
-    // an fd → EBADF → std.posix.close `unreachable` → SIGABRT (the
+    // an fd → EBADF → std.posix.close `unreachable` → SIGABRT (the 2026-07-09
     // 19:35Z downtime). Needs libc for the @cImport(linux/bpf.h) headers.
     const test_xdp_deinit = b.addTest(.{
         .name = "test-xdp-deinit",
@@ -409,6 +414,14 @@ pub fn build(b: *std.Build) void {
     // Roots at src/vex_network/ledger_tile.zig (imports the std-only vex_ledger
     // module for FinishBlob/SlotMeta). Proves the MPSC ring is loss/dup/
     // corruption-free under concurrent producers + drops on full.
+    // Track 2c (2026-07-17): ledger_tile.zig now also relative-imports
+    // shred_assembler.zig (the reconciliation backfill's assembler read), the
+    // SAME file test-net roots at below — so it inherits the identical extra
+    // named-import requirement test-net documents just above: shred_assembler
+    // itself is core/vex_crypto-free, but its own relative import of
+    // shred_parse.zig needs both (core.Signature/Slot/Pubkey +
+    // crypto.verifyShred), and Zig resolves relative-file @imports against the
+    // ROOT module's import table — so both must be registered here too.
     const test_ledger_tile = b.addTest(.{
         .name = "test-ledger-tile",
         .root_module = b.createModule(.{
@@ -418,13 +431,15 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_ledger_tile.root_module.addImport("vex_ledger", vex_ledger_mod);
+    test_ledger_tile.root_module.addImport("core", core);
+    test_ledger_tile.root_module.addImport("vex_crypto", vex_crypto);
     const run_ledger_tile = b.addRunArtifact(test_ledger_tile);
     const test_ledger_tile_step = b.step("test-ledger-tile", "Run the MPSC ledger-tile ring KATs (concurrent producers, drop-on-full)");
     test_ledger_tile_step.dependOn(&run_ledger_tile.step);
     test_migrated_step.dependOn(&run_ledger_tile.step);
 
     // ── test-verify-ring — module 15 — origin-tree build.zig:1710-1725 verbatim ──
-    // Option B verify-handoff SPSC ring KATs. Rooted directly at
+    // Option B verify-handoff SPSC ring KATs (2026-06-14). Rooted directly at
     // spsc_ring.zig (the lock-free ring lives in its own file so its KATs run
     // standalone). It imports ONLY af_xdp/socket.zig (UmemFrameRef, migrated
     // module 14), which imports only std — so the test graph is tiny and
@@ -441,7 +456,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_vring.step);
 
     // ── test-produce-ring — module 16 — origin-tree build.zig:1825-1837 verbatim ─
-    // Block-production TILE-ISOLATION SPSC control rings: Ring A
+    // Block-production TILE-ISOLATION SPSC control rings (2026-06-16): Ring A
     // replay->produce (BecomeLeader snapshot), Ring B produce->replay (SlotDone
     // + loopback bytes). Rooted directly at produce_ring.zig, which imports
     // ONLY std (grepped fresh at kickoff) — the manifest notes its ring
@@ -460,7 +475,7 @@ pub fn build(b: *std.Build) void {
 
     // ── test-overlay-lookup — module 16 — origin-tree build.zig:1812-1821 verbatim
     // (judgment second leaf) — Parallel-exec Stage B/B2a write-overlay
-    // newest-first lookup KATs: the read-your-writes core for
+    // newest-first lookup KATs (2026-06-22): the read-your-writes core for
     // wave-parallel execution. std-only (grepped fresh), KEEP disposition
     // (byte-identical copy, no hygiene edit cited or needed) — the smallest
     // still-unmigrated vex_svm leaf with a real origin-tree KAT target, picked
@@ -525,7 +540,7 @@ pub fn build(b: *std.Build) void {
     // the sibling import resolves through the root_source_file's directory.
 
     const run_test_fc = b.addRunArtifact(test_fc);
-    const test_fc_step = b.step("test-fork-choice", "Run fork_choice.zig unit tests (Agave port; incl. slot-memoized switchProofVoteCounts)");
+    const test_fc_step = b.step("test-fork-choice", "Run fork_choice.zig unit tests (Agave Phase 1 port; incl. task #32 slot-memoized switchProofVoteCounts)");
     test_fc_step.dependOn(&run_test_fc.step);
     test_migrated_step.dependOn(&run_test_fc.step);
 
@@ -617,7 +632,7 @@ pub fn build(b: *std.Build) void {
     // leaf). Zero deps on core/vex_crypto/vex_svm/builtins — confirmed by
     // grepping every @import line pre-copy. interpreter.zig/syscalls.zig/
     // cpi.zig/invoke_ctx.zig are HELD OUT (see REBUILD-LEDGER.md row) —
-    // entangled with the unmerged per-tx CU-meter branch
+    // entangled with the unmerged fix/cu-meter-per-tx-2026-07-05 branch
     // (carrier 419786142, still soaking) and/or pull vex_crypto+builtins.
 
     // ── test-vex-bpf2-elf — origin-tree build.zig:3212-3229 verbatim ─────────────
@@ -656,7 +671,7 @@ pub fn build(b: *std.Build) void {
     test_vex_bpf2_memory_step.dependOn(&run_test_vex_bpf2_memory.step);
     test_migrated_step.dependOn(&run_test_vex_bpf2_memory.step);
 
-    // ── test-invoke-ctx — module 61 — CU-meter-soak gate LIFTED ──
+    // ── test-invoke-ctx — module 61 — CU-meter-soak gate LIFTED 2026-07-07 ──
     // invoke_ctx.zig (the §H leaf) imports ONLY sysvar_cache.zig (module 5) +
     // std; invoke_ctx_test.zig imports invoke_ctx.zig + sysvar_cache.zig — all
     // relative, zero named modules. First of the un-frozen vex_bpf2 core cluster.
@@ -707,9 +722,9 @@ pub fn build(b: *std.Build) void {
     // builtins imports cpi/syscalls). Aggregate step test-vex-bpf2-builtins.
     {
         const M9_NAMES = [_][]const u8{
-            "system",           "vote",           "stake",
-            "config",           "compute_budget", "address_lookup_table",
-            "zk_elgamal_proof", "feature_gate",   "mod",
+            "system",               "vote",             "stake",
+            "config",               "compute_budget",   "address_lookup_table",
+            "zk_elgamal_proof",     "feature_gate",     "mod",
             "harness",
         };
         const builtins_agg = b.step("test-vex-bpf2-builtins", "Run ALL vex_bpf2 M9 builtin unit tests");
@@ -997,11 +1012,13 @@ pub fn build(b: *std.Build) void {
     // FD-fixture byte-match KAT (strongest gate in the cluster): drives the encoder
     // over real Firedancer demo-shreds.{bin,key,pcap} and asserts every one of the
     // 512 produced shreds == FD's own pcap capture, byte-for-byte. GOLDEN DATA,
-    // NON-REGENERABLE — lives OUTSIDE this repo at the FIX_DIR path (see
-    // src/vex_network/shred_encoder_pcap_kat.zig:24): a local Firedancer
-    // v0.1002.40103 checkout's src/disco/shred/fixtures/{demo-shreds.bin,
-    // demo-shreds.key,demo-shreds.pcap}. This test SKIPs loudly, not silently,
-    // if that checkout is missing/moved.
+    // NON-REGENERABLE — lives OUTSIDE this repo at the hardcoded FIX_DIR path
+    // (src/vex_network/shred_encoder_pcap_kat.zig:24, deliberately left untouched
+    // per manifest note "FIX_DIR hardcodes FD checkout path — env-var cleanup
+    // candidate; keep gate untouched"): firedancer-v0.1002.40103/
+    // src/disco/shred/fixtures/{demo-shreds.bin,demo-shreds.key,demo-shreds.pcap}.
+    // md5 recorded in REBUILD-LEDGER.md at migration time (this test SKIPs loudly,
+    // not silently, if that FD checkout is ever missing/moved).
     const test_shred_encoder_pcap_mod = b.createModule(.{
         .root_source_file = b.path("src/vex_network/shred_encoder_pcap_kat.zig"),
         .target = target,
@@ -1015,7 +1032,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_shred_encoder_pcap.step);
 
     // NOTE: bmtree.zig (the SHA256 shred-merkle primitive, incl. the
-    // makeMerkleProof bounds-guard — the repair-path SIGABRT fix,
+    // makeMerkleProof bounds-guard — the 2026-06-26 repair-path SIGABRT fix,
     // fedf1ba, verified present) has NO dedicated origin-tree build.zig target of
     // its own, exactly like module 5's sysvar_cache_test.zig precedent: its
     // in-file tests (round-trip, the SIGABRT-guard regression test, shred
@@ -1032,7 +1049,7 @@ pub fn build(b: *std.Build) void {
 
     // C1 turbine WeightedShuffle/Fenwick + ChaCha8/ChaCha20 + UniformU64Sampler
     // KATs. CONSENSUS-adjacent (byte-exact broadcast-root selection): carries
-    // Agave's own hard-coded ChaCha20 vectors PLUS the Rust-harness
+    // Agave's own hard-coded ChaCha20 vectors PLUS the 2026-06-17 Rust-harness
     // -proven ChaCha8 (live SIMD-0332 testnet variant) golden vectors inline —
     // "treat byte-frozen" per manifest. std-only.
     const test_wshuf = b.addTest(.{
@@ -1502,6 +1519,43 @@ pub fn build(b: *std.Build) void {
     test_txbe_step.dependOn(&run_txbe.step);
     test_migrated_step.dependOn(&run_txbe.step);
 
+    // ── test-produce-parity — the durable execute-once-and-record produce executor (PASS 3) ─────────
+    // Drives block_executor.BlockExecutor (src/vex_svm/block_executor.zig): produce a block from a
+    // MIXED mempool via execute-and-commit (pack iff was_processed), then REPLAY the packed bytes via
+    // the SAME executor from the same parent, asserting byte-identical bank_hash + zero dead blocks +
+    // the correctness cases (third-party drain chain the delta gate mishandles). ONE shared
+    // block_produce/tx_ingest/system instance across the executor + KAT so RecentSigCache/ParsedTx/
+    // AccountMeta types are identical across module boundaries.
+    const pp_banking = b.createModule(.{ .root_source_file = b.path("src/vex_svm/banking_stage.zig"), .target = target, .optimize = optimize });
+    pp_banking.addImport("vex_crypto", vex_crypto);
+    const pp_txingest = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
+    pp_txingest.addImport("core", core);
+    pp_txingest.addImport("vex_crypto", vex_crypto);
+    const pp_cb = b.createModule(.{ .root_source_file = b.path("src/vex_svm/compute_budget.zig"), .target = target, .optimize = optimize });
+    const pp_bprod = b.createModule(.{ .root_source_file = b.path("src/vex_svm/block_produce.zig"), .target = target, .optimize = optimize });
+    pp_bprod.addImport("banking_stage", pp_banking);
+    pp_bprod.addImport("tx_ingest", pp_txingest);
+    pp_bprod.addImport("compute_budget", pp_cb);
+    // block_executor.zig imports native/system.zig RELATIVELY (joins THIS module) — no separate "system"
+    // module (that would double-own native/system.zig with any module that also roots it). vex_crypto is
+    // the only named dep native/system.zig+types.zig need.
+    const pp_bexec = b.createModule(.{ .root_source_file = b.path("src/vex_svm/block_executor.zig"), .target = target, .optimize = optimize });
+    pp_bexec.addImport("block_produce", pp_bprod);
+    pp_bexec.addImport("tx_ingest", pp_txingest);
+    pp_bexec.addImport("vex_crypto", vex_crypto);
+    const pp_mod = b.createModule(.{ .root_source_file = b.path("tests/kat_produce_parity.zig"), .target = target, .optimize = optimize });
+    pp_mod.addImport("block_executor", pp_bexec);
+    pp_mod.addImport("block_produce", pp_bprod);
+    pp_mod.addImport("banking_stage", pp_banking);
+    pp_mod.addImport("tx_ingest", pp_txingest);
+    pp_mod.addImport("vex_crypto", vex_crypto);
+    const test_pp = b.addTest(.{ .name = "test-produce-parity", .root_module = pp_mod });
+    test_pp.linkLibC();
+    const run_pp = b.addRunArtifact(test_pp);
+    const test_pp_step = b.step("test-produce-parity", "Run the durable execute-once-and-record produce-executor KATs (produce==replay bank_hash, zero dead blocks, drain-chain correctness)");
+    test_pp_step.dependOn(&run_pp.step);
+    test_migrated_step.dependOn(&run_pp.step);
+
     // ── test-block-broadcast — module 41 — origin-tree build.zig:1393-1423 verbatim ──
     // M2 empty-block broadcast driver + SELF-REPLAY GATE: block_broadcast.zig's
     // produceEmptySlotShreds → deshred round-trip to the EXACT entry batch +
@@ -1622,7 +1676,7 @@ pub fn build(b: *std.Build) void {
     // Run with: zig build test-net
     // origin-tree roots this DIRECTLY at (pre-split) shred.zig so its 5 `test` blocks
     // (FIX #56 chained-merkle over-alloc, task #71 L3 clearRootedSlots leak,
-    // 2x FEC-boundary guard FD:544, FIX carrier-420258409 frame-overwrite
+    // 2x FEC-boundary guard FD:544, FIX 2026-07-07 carrier-420258409 frame-overwrite
     // drop) execute. Module 57's SPLIT moved every one of those blocks into
     // `shred_assembler.zig` (they all exercise ShredAssembler/SlotAssembly, not the
     // shred_parse.zig wire-format half) — REPOINTED root_source_file to
@@ -1644,6 +1698,47 @@ pub fn build(b: *std.Build) void {
     const test_net_step = b.step("test-net", "Run shred-assembler (FEC-boundary guard) tests");
     test_net_step.dependOn(&run_net.step);
     test_migrated_step.dependOn(&run_net.step);
+
+    // ── SHRED-PARSE KATs — module 57 wire-format half — fix/small-parity-batch-2026-07-17 ──
+    // Run with: zig build test-shred-parse
+    // shred_parse.zig's own `test` blocks (the fuzz-found parent_offset bounds
+    // regression below) are NOT reachable from test-net above — that target roots
+    // at shred_assembler.zig, whose SPLIT carried away only the ShredAssembler/
+    // SlotAssembly test blocks, not shred_parse.zig's. Same two named imports as
+    // test-net (core + vex_crypto), rooted directly at shred_parse.zig instead so
+    // its own test blocks execute.
+    const test_shred_parse_mod = b.createModule(.{
+        .root_source_file = b.path("src/vex_network/shred_parse.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_shred_parse_mod.addImport("core", core);
+    test_shred_parse_mod.addImport("vex_crypto", vex_crypto);
+    const test_shred_parse = b.addTest(.{ .name = "test-shred-parse", .root_module = test_shred_parse_mod });
+    const run_shred_parse = b.addRunArtifact(test_shred_parse);
+    const test_shred_parse_step = b.step("test-shred-parse", "Run shred_parse.zig's own KATs (incl. the fuzz-found parent_offset bounds regression)");
+    test_shred_parse_step.dependOn(&run_shred_parse.step);
+    test_migrated_step.dependOn(&run_shred_parse.step);
+
+    // ── ELF-RESOLUTION-FAILURE GUARD KAT — fix/small-parity-batch-2026-07-17 ──
+    // Run with: zig build test-elf-resolution-guard
+    // elf_resolution_guard.zig is a zero-dependency (std-only) leaf holding the
+    // pure decision predicate for instruction_dispatch.dispatchBpfExecution's
+    // ELF-resolution-failure hardening. No named-module imports needed — it
+    // doesn't touch core/vex_store/vex_bpf2 at all, unlike instruction_dispatch.zig
+    // itself (which has no standalone test root; see e1_test_root_replay_siblings.zig).
+    const test_elf_resolution_guard = b.addTest(.{
+        .name = "test-elf-resolution-guard",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/vex_svm/elf_resolution_guard.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_elf_resolution_guard = b.addRunArtifact(test_elf_resolution_guard);
+    const test_elf_resolution_guard_step = b.step("test-elf-resolution-guard", "Run the ELF-resolution-failure hardening's pure decision-predicate KATs");
+    test_elf_resolution_guard_step.dependOn(&run_elf_resolution_guard.step);
+    test_migrated_step.dependOn(&run_elf_resolution_guard.step);
 
     // ── TURBINE TREE — module 58 — origin-tree build.zig:1478-1513 verbatim (2 targets) ──
     // Run with: zig build test-turbine-tree / zig build test-turbine-retransmit
@@ -2001,7 +2096,7 @@ pub fn build(b: *std.Build) void {
     test_snapshot_trust_step.dependOn(&run_test_snapshot_trust.step);
     test_migrated_step.dependOn(&run_test_snapshot_trust.step);
 
-    // REPAIR-TARGETING KAT (PRIMARY ROOT FIX). std-only — origin-tree
+    // REPAIR-TARGETING KAT (PRIMARY ROOT FIX 2026-06-14). std-only — origin-tree
     // build.zig:600-608 verbatim (test-repair-targeting).
     const test_repair_targeting = b.addTest(.{
         .name = "test-repair-targeting",
@@ -2112,10 +2207,10 @@ pub fn build(b: *std.Build) void {
     });
     test_manifest_lthash_vex_svm_view.addImport("vex_crypto", vex_crypto);
 
-    // Manifest lt_hash offline-verify (task #39,) — origin-tree
+    // Manifest lt_hash offline-verify (task #39, 2026-06-22) — origin-tree
     // build.zig:3119-3135, DEVIATION: origin-tree's own target only wires `core`
     // (its comment "snapshot_manifest.zig imports only std" is stale — the
-    // FeeRateGovernor/vex_svm import landed later via ccbbd0a,
+    // FeeRateGovernor/vex_svm import landed later via ccbbd0a 2026-06-25,
     // confirmed by module-12's kickoff investigation; origin-tree's target would
     // hit the same "no module named 'vex_svm'" compile error if actually
     // built there, unverified since origin-tree is read-only). This tree adds the
@@ -2368,7 +2463,7 @@ pub fn build(b: *std.Build) void {
     // self-contained (std/core-only) leaves; each @import grepped fresh at
     // kickoff, not reused from any prior session's claim.
 
-    // EpochSlots slot-aware-repair KAT — origin-tree build.zig:572-587
+    // EpochSlots slot-aware-repair KAT (2026-06-14) — origin-tree build.zig:572-587
     // verbatim (test-epochslots). cluster_slots.zig imports `std` ONLY.
     const test_epochslots = b.addTest(.{
         .name = "test-epochslots",
@@ -2383,7 +2478,7 @@ pub fn build(b: *std.Build) void {
     test_epochslots_step.dependOn(&run_epochslots.step);
     test_migrated_step.dependOn(&run_epochslots.step);
 
-    // Geyser-style streaming sink KATs — origin-tree build.zig:1791-1799
+    // Geyser-style streaming sink KATs (2026-06-22) — origin-tree build.zig:1791-1799
     // verbatim (test-geyser). geyser.zig imports `std` ONLY (comptime-gated OFF
     // by its own `geyser` build option elsewhere; the KAT itself needs no
     // module wiring at all).
@@ -2418,7 +2513,7 @@ pub fn build(b: *std.Build) void {
     // despite living beside them): 5/5 PASS both modes.
 
     // ── module 28: src/vex_svm/native first entries ──────────────────────────
-    // address_lookup_table.zig (KEEP, CONSENSUS, carries the
+    // address_lookup_table.zig (KEEP, CONSENSUS, carries the 2026-07-06
     // carrier-420180889 PROGRAM_ID fix) + epoch_schedule.zig (KEEP, CONSENSUS,
     // std-only leaf) + vote_state_serde.zig (KEEP, CONSENSUS, unblocked by
     // epoch_schedule.zig sibling + the now-complete vex_store package's
@@ -2655,8 +2750,8 @@ pub fn build(b: *std.Build) void {
     // same fix shape. origin-tree has no dedicated build.zig target for this file
     // either (its in-file tests ride on a broader test-svm target that hasn't
     // migrated here yet); this is a NEW standalone target, module-30 precedent
-    // for wiring shape. Regression-gates the secp256r1-ungated fix (
-    // ported from the origin-tree secp256r1-gate fix): with the old bogus
+    // for wiring shape. Regression-gates the secp256r1-ungated fix (2026-07-10,
+    // ported from origin-tree fix/secp256r1-gate-2026-07-07): with the old bogus
     // FEATURE_SECP256R1 constant this file's tests still passed (the bug was
     // an accept-invalid silent-skip, not a crash), so the two new tests
     // ("...FAILS even with empty feature set" / "...PASSES through the
@@ -2901,8 +2996,8 @@ pub fn build(b: *std.Build) void {
     // bank/features/vex_bpf2 closure type-checks. It is superseded (not merely
     // "armed") by the behavioral KATs once §E lands.
 
-    // ── module-73: native/stake_program.zig test root (P0-2 fix,,
-    //    the program-coverage audit §7) ──
+    // ── module-73: native/stake_program.zig test root (P0-2 fix, 2026-07-11,
+    //    VEXOR-PROGRAM-COVERAGE-AUDIT-2026-07-11 §7) ──
     // Same shape/reason as module-68's bpf_loader gate above: native/
     // stake_program.zig had NO test target before this fix (only imported
     // by production code — replay_stage.zig / instruction_dispatch.zig —
@@ -3241,7 +3336,11 @@ pub fn build(b: *std.Build) void {
     test_conformance_step.dependOn(&run_test_conformance.step);
     test_migrated_step.dependOn(&run_test_conformance.step);
 
-    // ── vote executor, stage 1: voteforge/vote_codec.zig byte-exactness KATs ───────
+
+
+
+
+    // ── VOTEFORGE Stage 1: voteforge/vote_codec.zig byte-exactness KATs ───────
     // The rewrite's codec layer (fixed-offset V3/V4 serde, derived from Agave
     // 4.2.0-beta.0, zero heap). KATs round-trip the CARRIER-419996256 real V4
     // vector + sigvote-minted V3 goldens (transplant as differential oracle)
@@ -3255,7 +3354,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_test_vote_codec = b.addRunArtifact(test_vote_codec);
-    const test_vote_codec_step = b.step("test-vote-codec", "vote executor, stage 1: fixed-offset V3/V4 vote-state codec byte-exactness KATs (real-account + transplant-differential)");
+    const test_vote_codec_step = b.step("test-vote-codec", "VOTEFORGE Stage 1: fixed-offset V3/V4 vote-state codec byte-exactness KATs (real-account + transplant-differential)");
     test_vote_codec_step.dependOn(&run_test_vote_codec.step);
     test_migrated_step.dependOn(&run_test_vote_codec.step);
 
@@ -3276,8 +3375,8 @@ pub fn build(b: *std.Build) void {
     test_vote_codec_step.dependOn(&run_test_vote_codec_b756.step);
     test_migrated_step.dependOn(&run_test_vote_codec_b756.step);
 
-    // ── vote executor, stage 2: voteforge/account_io.zig borrow-only-what's-touched
-    // account-I/O layer KATs (the vote-rewrite scope plan, stage 2
+    // ── VOTEFORGE Stage 2: voteforge/account_io.zig borrow-only-what's-touched
+    // account-I/O layer KATs (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 2
     // gate). `kat_account_io.zig` needs `sigvote` (differential leg vs the
     // transplant's BorrowedAccount, same pattern as test-vote-codec's leg 2)
     // and reaches `vote_codec.zig`/`account_io.zig` as sibling files by name —
@@ -3291,7 +3390,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_test_account_io = b.addRunArtifact(test_account_io);
-    const test_account_io_step = b.step("test-account-io", "vote executor, stage 2: borrow-only-what's-touched account-I/O layer KATs (borrow rules, lamport/data mutation, codec composition, sigvote-differential)");
+    const test_account_io_step = b.step("test-account-io", "VOTEFORGE Stage 2: borrow-only-what's-touched account-I/O layer KATs (borrow rules, lamport/data mutation, codec composition, sigvote-differential)");
     test_account_io_step.dependOn(&run_test_account_io.step);
     // account_io.zig also carries its own std-only self-tests (BorrowCounter
     // port, double-borrow/readonly/signer/lamport-overflow rules) — run them
@@ -3312,8 +3411,8 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_account_io.step);
     test_migrated_step.dependOn(&run_test_account_io_selftest.step);
 
-    // ── vote executor, stage 3: voteforge/vote_instructions.zig state-transition
-    // KATs (the vote-rewrite scope plan, stage 3 gate). Two
+    // ── VOTEFORGE Stage 3: voteforge/vote_instructions.zig state-transition
+    // KATs (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 3 gate). Two
     // artifacts: `vote_instructions.zig`'s own std+bls_pop-only self-tests
     // (getAndUpdateAuthorizedVoter unit pin), and the full family KAT suite
     // (`kat_vote_instructions.zig`), which additionally needs `sigvote` for
@@ -3340,7 +3439,7 @@ pub fn build(b: *std.Build) void {
     });
     test_vote_instructions.root_module.addImport("bls_pop", bls_pop);
     const run_test_vote_instructions = b.addRunArtifact(test_vote_instructions);
-    const test_vote_instructions_step = b.step("test-vote-instructions", "vote executor, stage 3: state-transition-layer KATs (Authorize/UpdateValidatorIdentity/UpdateCommission[Bps]/UpdateCommissionCollector/Withdraw/InitializeAccount[V2]/DepositDelegatorRewards — Agave-ported + sigvote-differential)");
+    const test_vote_instructions_step = b.step("test-vote-instructions", "VOTEFORGE Stage 3: state-transition-layer KATs (Authorize/UpdateValidatorIdentity/UpdateCommission[Bps]/UpdateCommissionCollector/Withdraw/InitializeAccount[V2]/DepositDelegatorRewards — Agave-ported + sigvote-differential)");
     test_vote_instructions_step.dependOn(&run_test_vote_instructions.step);
     test_vote_instructions_step.dependOn(&run_test_vote_instructions_selftest.step);
     test_account_io_step.dependOn(&run_test_vote_instructions.step);
@@ -3348,9 +3447,9 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_vote_instructions.step);
     test_migrated_step.dependOn(&run_test_vote_instructions_selftest.step);
 
-    // ── vote executor, stage 5: Vote/VoteSwitch/UpdateVoteState(+Switch)/
+    // ── VOTEFORGE Stage 5: Vote/VoteSwitch/UpdateVoteState(+Switch)/
     // CompactUpdateVoteState(+Switch)/TowerSync(+Switch) KATs
-    // (the vote-rewrite scope plan, stage 5 gate). Landed
+    // (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 5 gate). Landed
     // directly inside vote_instructions.zig (see that file's own Stage-5
     // section header) — this KAT file is the dedicated gate artifact, same
     // sigvote-differential pattern as test-vote-instructions.
@@ -3364,13 +3463,13 @@ pub fn build(b: *std.Build) void {
     });
     test_vote_towersync.root_module.addImport("bls_pop", bls_pop);
     const run_test_vote_towersync = b.addRunArtifact(test_vote_towersync);
-    const test_vote_towersync_step = b.step("test-vote-towersync", "vote executor, stage 5: Vote/TowerSync-family state-transition KATs (check_and_filter_proposed_vote_state/process_new_vote_state reject taxonomy, TVC boundaries, lockout doubling/expiry, root advance, Switch/Compact wire equivalence, sigvote-differential)");
+    const test_vote_towersync_step = b.step("test-vote-towersync", "VOTEFORGE Stage 5: Vote/TowerSync-family state-transition KATs (check_and_filter_proposed_vote_state/process_new_vote_state reject taxonomy, TVC boundaries, lockout doubling/expiry, root advance, Switch/Compact wire equivalence, sigvote-differential)");
     test_vote_towersync_step.dependOn(&run_test_vote_towersync.step);
     test_account_io_step.dependOn(&run_test_vote_towersync.step);
     test_migrated_step.dependOn(&run_test_vote_towersync.step);
 
-    // ── vote executor, stage 4: voteforge/vote_program.zig dispatch-glue/front-door
-    // KATs (the vote-rewrite scope plan, stage 4 gate). Same
+    // ── VOTEFORGE Stage 4: voteforge/vote_program.zig dispatch-glue/front-door
+    // KATs (VEXOR-VOTE-REWRITE-SCOPE-2026-07-10.md §E Stage 4 gate). Same
     // two-artifact split as Stage 3: `vote_program.zig`'s own std+bls_pop-only
     // self-tests (classify/peekDiscriminant/owner-check-ordering pins), and
     // the full KAT suite (`kat_vote_program.zig`, decode-layer + dispatch-
@@ -3397,13 +3496,14 @@ pub fn build(b: *std.Build) void {
     });
     test_vote_program.root_module.addImport("bls_pop", bls_pop);
     const run_test_vote_program = b.addRunArtifact(test_vote_program);
-    const test_vote_program_step = b.step("test-vote-program", "vote executor, stage 4: instruction dispatch glue / front-door KATs (decode-layer, dispatch-table completeness, sigvote-differential-decode)");
+    const test_vote_program_step = b.step("test-vote-program", "VOTEFORGE Stage 4: instruction dispatch glue / front-door KATs (decode-layer, dispatch-table completeness, sigvote-differential-decode)");
     test_vote_program_step.dependOn(&run_test_vote_program.step);
     test_vote_program_step.dependOn(&run_test_vote_program_selftest.step);
     test_account_io_step.dependOn(&run_test_vote_program.step);
     test_account_io_step.dependOn(&run_test_vote_program_selftest.step);
     test_migrated_step.dependOn(&run_test_vote_program.step);
     test_migrated_step.dependOn(&run_test_vote_program_selftest.step);
+
 
     // ════════════════════════════════════════════════════════════════════════
     // MODULE 72 (§J/§K vex_network HUB + §E3 replay_stage FORCE-COMPILE):
@@ -3435,7 +3535,7 @@ pub fn build(b: *std.Build) void {
     // never exercise the rebuild binary's replay/consensus path (0 VEX-LEDGER-REPLAY
     // symbols vs origin-tree's 8). Driven ON by the production+ledger build (-Dvex_ledger),
     // exactly as origin-tree's build-production-ledger.sh. Default OFF = comptime-dead,
-    // byte-identical. See the golden-master control notes.
+    // byte-identical. See golden/GOLDEN-MASTER-CONTROL-2026-07-07.md.
     const vex_ledger_enabled = b.option(bool, "vex_ledger", "Wire the VexLedger persistent blockstore (default OFF = comptime-dead, byte-identical). ON arms persistence behind the VEX_LEDGER env. See ledger-docs/PHASE2-WIRING-PLAN.md.") orelse prod;
     const VerifyTicksLevel72 = enum { off, zerohash, full };
     // Full-feature production-parity options (mirror origin-tree build-production-ledger.sh).
@@ -3446,13 +3546,20 @@ pub fn build(b: *std.Build) void {
     // Vote execution runs unconditionally through voteforge (the Vexor-authored
     // vote executor) — no build flag selects it. The retired Sig transplant
     // (-Dsig_vote), its A/B oracle harness (-Dvote_ab), and the Stage-7 flip
-    // gate (-Dvote_live) were removed once voteforge became the sole
+    // gate (-Dvote_live) were removed 2026-07-12 once voteforge became the sole
     // path; voteforge reads canonical LOCAL SlotHashes so the wave path is safe.
     const parallel_exec = b.option(bool, "parallel_exec", "Stage B wave-parallel tx execution over a persistent worker pool") orelse prod;
     const fec_dedup = b.option(bool, "fec_dedup", "Ed25519 FEC-set signature dedup cache in verify_tile (arms behind VEXOR_ED25519_FEC_DEDUP)") orelse prod;
     const watchdog = b.option(bool, "watchdog", "Liveness watchdog thread (restart-on-wedge gated behind VEX_WATCHDOG_RESTART)") orelse prod;
     const status_cache = b.option(bool, "status_cache", "Cross-block AlreadyProcessed recent-signature cache (arms behind VEXOR_STATUS_CACHE)") orelse prod;
     const use_native_quic_votes = b.option(bool, "use_native_quic_votes", "Route votes through the native QUIC TPU client") orelse prod;
+    // OFFLINE-ONLY diagnostic: compile the VEX_FORCE_DEAD_SLOT synthetic Shape-A
+    // dead-slot injector (replay_stage.zig replayEntriesInternal pre-freeze hook).
+    // Default OFF and NEVER `prod` — a deliberate slot-killer must not exist in the
+    // deploy binary. ON compiles the hook, which then reads the target slot from
+    // the VEX_FORCE_DEAD_SLOT env (single-shot). Used to make the switch-proof
+    // Part-2 offline self-recovery gate runnable without a fresh live incident.
+    const force_dead_slot = b.option(bool, "force_dead_slot", "OFFLINE-ONLY diag: compile the VEX_FORCE_DEAD_SLOT synthetic Shape-A dead-slot kill hook (default OFF = comptime-dead, byte-identical; NEVER set in prod)") orelse false;
     const net_opts = b.addOptions();
     net_opts.addOption(bool, "ramdisk_enabled", true);
     net_opts.addOption(bool, "leader_mode", leader_mode);
@@ -3465,6 +3572,7 @@ pub fn build(b: *std.Build) void {
     net_opts.addOption(bool, "use_native_quic_votes", use_native_quic_votes);
     net_opts.addOption(VerifyTicksLevel72, "verify_ticks", .zerohash);
     net_opts.addOption(bool, "alpenglow", false);
+    net_opts.addOption(bool, "force_dead_slot", force_dead_slot);
     net_opts.addOption(bool, "repair_stake_weighting", repair_stake_weighting);
     net_opts.addOption(bool, "fec_dedup", fec_dedup);
     net_opts.addOption(bool, "status_cache", status_cache);
@@ -3510,6 +3618,12 @@ pub fn build(b: *std.Build) void {
     net_block_produce.addImport("banking_stage", net_banking);
     net_block_produce.addImport("tx_ingest", net_txingest);
     net_block_produce.addImport("compute_budget", net_cb);
+    // NOTE (PASS 3 live wiring): block_executor.zig is NOT a separate module here — replay_stage.zig
+    // imports it RELATIVELY (`@import("block_executor.zig")`) so it joins the vex_svm module and shares
+    // vex_svm's native/system.zig (the REAL System processor). A separate module rooted at
+    // block_executor.zig would double-own native/system.zig (already owned by vex_svm via native/root.zig)
+    // → "file exists in modules 'vex_svm' and 'system'". Its named imports (block_produce/tx_ingest/
+    // vex_crypto) resolve against vex_svm's own import table — same instances, so types are identical.
 
     // vex_topo (origin-tree:277) — std-only declarative topology table.
     const net_vex_topo = b.createModule(.{ .root_source_file = b.path("src/vex_topo.zig"), .target = target, .optimize = optimize });
@@ -3576,7 +3690,7 @@ pub fn build(b: *std.Build) void {
     test_net_fc.root_module.addImport("vex_svm", net_vex_svm);
     test_net_fc.linkLibC();
     const run_net_fc = b.addRunArtifact(test_net_fc);
-    const test_net_fc_step = b.step("test-net-force-compile", "Force-compile the tvu.zig hub + replay_stage.ReplayStage type surface");
+    const test_net_fc_step = b.step("test-net-force-compile", "Force-compile the tvu.zig hub + replay_stage.ReplayStage type surface (module 72)");
     test_net_fc_step.dependOn(&run_net_fc.step);
     test_migrated_step.dependOn(&run_net_fc.step);
 
@@ -3611,9 +3725,43 @@ pub fn build(b: *std.Build) void {
     });
     test_revive_detect.root_module.addImport("core", core);
     const run_test_revive_detect = b.addRunArtifact(test_revive_detect);
-    const test_revive_detect_step = b.step("test-revive-detect", "Switch-proof revive: [REVIVE-WOULD-FIRE] detection tap + offline SlotHashes-injection pure-predicate KATs");
+    const test_revive_detect_step = b.step("test-revive-detect", "Switch-proof Part 2 M1 [REVIVE-WOULD-FIRE] detection tap + offline SlotHashes-injection pure-predicate KATs");
     test_revive_detect_step.dependOn(&run_test_revive_detect.step);
     test_migrated_step.dependOn(&run_test_revive_detect.step);
+
+    // ── test-revive-repair (switch-proof Part 2, M2 — Shape-A revive DECISION core) ──
+    // Same leaf-extraction shape as test-revive-detect / test-root-guards above:
+    // the load-bearing revive state machine (refuse-on-frozen Shape-B rejection,
+    // bounded-retry give-up, cluster-match escape hatch, flag-off dormancy) lives
+    // in src/vex_svm/revive_repair.zig as a PURE function over primitive inputs
+    // (imports only std), so its KATs run standalone — replay_stage.zig's sweep
+    // caller does all mutation (self.banks.remove under banks_lock, dead_slots
+    // remove, assembler clear, repair kick) and is a thin caller with no test
+    // blocks of its own (same god-file constraint the sibling comments document).
+    const test_revive_repair = b.addTest(.{
+        .name = "test-revive-repair",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/vex_svm/revive_repair.zig"), .target = target, .optimize = optimize }),
+    });
+    const run_test_revive_repair = b.addRunArtifact(test_revive_repair);
+    const test_revive_repair_step = b.step("test-revive-repair", "Switch-proof Part 2 M2 Shape-A dead-slot revive decision-core pure-predicate KATs");
+    test_revive_repair_step.dependOn(&run_test_revive_repair.step);
+    test_migrated_step.dependOn(&run_test_revive_repair.step);
+
+    // ── test-txbearing-tripwire (tx-bearing block production M3 — auto-safe-off
+    // tripwire) ── Same extraction shape as test-revive-detect immediately above:
+    // the trip decision (TripwireState.recordSlotOutcome / effectiveArmed) lives
+    // in a small leaf (src/vex_svm/txbearing_tripwire.zig) that imports only
+    // `std`, so its KATs run standalone — replay_stage.zig's onSlotCompleted
+    // freeze-hook / produceAndBroadcastEmptySlot / produceTileLoop are thin
+    // callers into this leaf with no test blocks of their own.
+    const test_txbearing_tripwire = b.addTest(.{
+        .name = "test-txbearing-tripwire",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/vex_svm/txbearing_tripwire.zig"), .target = target, .optimize = optimize }),
+    });
+    const run_test_txbearing_tripwire = b.addRunArtifact(test_txbearing_tripwire);
+    const test_txbearing_tripwire_step = b.step("test-txbearing-tripwire", "Tx-bearing block production M3 auto-safe-off tripwire pure-predicate KATs");
+    test_txbearing_tripwire_step.dependOn(&run_test_txbearing_tripwire.step);
+    test_migrated_step.dependOn(&run_test_txbearing_tripwire.step);
 
     // ═════════════════════════════════════════════════════════════════════════
     // MODULE 73 — §3.7 exe (main.zig) + §3.8 golden-master gate arming + the
@@ -3632,6 +3780,7 @@ pub fn build(b: *std.Build) void {
     // ═════════════════════════════════════════════════════════════════════════
     const vexfd_exe = b.addExecutable(.{
         .name = "vex-fd",
+        .use_llvm = true,
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
@@ -3666,10 +3815,10 @@ pub fn build(b: *std.Build) void {
     vexfd_exe.root_module.addImport("vex_topo", net_vex_topo);
     vexfd_exe.root_module.addImport("vex_ledger", vex_ledger_mod);
     // Crypto is pure-Zig in-tree (ed25519 + bn254/poseidon + blake3); no leaf-crypto
-    // FFI is linked (the Firedancer Ballet backend was removed).
+    // FFI is linked (the Firedancer Ballet backend was removed 2026-07-12).
     const vexfd_install = b.addInstallArtifact(vexfd_exe, .{});
     b.getInstallStep().dependOn(&vexfd_install.step);
-    const vexfd_exe_step = b.step("vex-fd", "Build+install the rebuild `vex-fd` validator exe (force-compiles replay_stage method bodies; arms the golden-master gate)");
+    const vexfd_exe_step = b.step("vex-fd", "Build+install the rebuild `vex-fd` validator exe (§3.7; force-compiles replay_stage method bodies; arms the §3.8 golden-master gate)");
     vexfd_exe_step.dependOn(&vexfd_install.step);
 
     // ── §1.1 root-level regression KATs (origin-tree build.zig:2632-2724 / 2794) ──
@@ -3717,7 +3866,7 @@ pub fn build(b: *std.Build) void {
     test_ftr73.root_module.addImport("core", core);
     test_ftr73.linkLibC();
     const run_ftr73 = b.addRunArtifact(test_ftr73);
-    const test_ftr73_step = b.step("test-failed-tx-rollback-414386920", "Regression KAT: failed-tx whole-tx rollback carrier (DEFERRED — origin-tree-pre-existing RED, standalone only)");
+    const test_ftr73_step = b.step("test-failed-tx-rollback-414386920", "Regression KAT CARRIER #6: failed-tx whole-tx rollback (DEFERRED — origin-tree-pre-existing RED, standalone only)");
     test_ftr73_step.dependOn(&run_ftr73.step);
 
     // test-mark-dead-cascade (origin-tree:2714) — also imports vex_consensus; links
@@ -3745,7 +3894,7 @@ pub fn build(b: *std.Build) void {
     test_mdc73_step.dependOn(&run_mdc73.step);
     test_migrated_step.dependOn(&run_mdc73.step);
 
-    // test-revive-would-fire (switch-proof Part 2, M1 —) — live-path
+    // test-revive-would-fire (switch-proof Part 2, M1 — 2026-07-16) — live-path
     // regression gate for the [REVIVE-WOULD-FIRE] detection tap. Same module
     // graph/linking as test-mark-dead-cascade immediately above (both drive
     // real ReplayStage methods that reach into dead_slots/markSlotDead-adjacent
@@ -3771,9 +3920,127 @@ pub fn build(b: *std.Build) void {
         } else |_| {}
     }
     const run_rwf73 = b.addRunArtifact(test_rwf73);
-    const test_rwf73_step = b.step("test-revive-would-fire", "Switch-proof revive: [REVIVE-WOULD-FIRE] tap live-path regression KAT (real ReplayStage glue, not just the pure leaf)");
+    const test_rwf73_step = b.step("test-revive-would-fire", "Switch-proof Part 2 M1: [REVIVE-WOULD-FIRE] tap live-path regression KAT (real ReplayStage glue, not just the pure leaf)");
     test_rwf73_step.dependOn(&run_rwf73.step);
     test_migrated_step.dependOn(&run_rwf73.step);
+
+    // test-revive-dump (switch-proof Part 2, M2 STAGE 3 — 2026-07-19) — ARMED
+    // dispatch regression gate. Same module graph/linking as test-revive-would-fire
+    // (drives the REAL ReplayStage.sweepPendingTickGateSlots with VEX_REVIVE_DEAD_SLOTS
+    // armed). SEPARATE binary from test-revive-would-fire so the arm can't perturb
+    // that file's flag-OFF zero-mutation invariant — reviveEnabled() caches the env
+    // parse process-globally on first call. Proves the STAGE-3 decision->action
+    // wiring (dump/kick/attempt-bump, no-kick guard, give-up latch), NOT stall
+    // release (that is the offline gate — see the PART2-WIRING report section).
+    const test_rd73 = b.addTest(.{
+        .name = "test-revive-dump",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_revive_dump.zig"), .target = target, .optimize = optimize }),
+    });
+    test_rd73.root_module.addImport("vex_svm", net_vex_svm);
+    test_rd73.root_module.addImport("vex_store", net_vex_store);
+    test_rd73.root_module.addImport("vex_crypto", vex_crypto);
+    test_rd73.root_module.addImport("vex_bpf", net_vex_bpf);
+    test_rd73.root_module.addImport("vex_consensus", vex_consensus);
+    test_rd73.root_module.addImport("core", core);
+    test_rd73.linkLibC();
+    {
+        const jp_rd = "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2";
+        if (std.fs.cwd().access(jp_rd, .{})) |_| {
+            test_rd73.root_module.addObjectFile(.{ .cwd_relative = jp_rd });
+        } else |_| {}
+    }
+    const run_rd73 = b.addRunArtifact(test_rd73);
+    const test_rd73_step = b.step("test-revive-dump", "Switch-proof Part 2 M2 STAGE 3: ARMED Shape-A revive dispatch (dump/kick/give-up wiring) live-path regression KAT");
+    test_rd73_step.dependOn(&run_rd73.step);
+    test_migrated_step.dependOn(&run_rd73.step);
+
+    // test-first-root-latch (G0 first-root positive-attestation latch, incident
+    // 423083743 — 2026-07-19) — live-path regression gate for
+    // ReplayStage.rootGuardDecisionForAdvance: real fork-choice key resolution +
+    // scanCachedSlotHash + the fetchProducedSlots VEX_SKIP_CANON_FILE probe +
+    // the first_root_attested latch transition. Complements test-root-guards'
+    // pure-predicate G0 KATs. Same module graph/linking as test-revive-would-fire
+    // above (drives real ReplayStage methods).
+    const test_frl = b.addTest(.{
+        .name = "test-first-root-latch",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_first_root_latch.zig"), .target = target, .optimize = optimize }),
+    });
+    test_frl.root_module.addImport("vex_svm", net_vex_svm);
+    test_frl.root_module.addImport("vex_store", net_vex_store);
+    test_frl.root_module.addImport("vex_crypto", vex_crypto);
+    test_frl.root_module.addImport("vex_bpf", net_vex_bpf);
+    test_frl.root_module.addImport("vex_consensus", vex_consensus);
+    test_frl.root_module.addImport("core", core);
+    test_frl.linkLibC();
+    {
+        const jp_frl = "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2";
+        if (std.fs.cwd().access(jp_frl, .{})) |_| {
+            test_frl.root_module.addObjectFile(.{ .cwd_relative = jp_frl });
+        } else |_| {}
+    }
+    const run_frl = b.addRunArtifact(test_frl);
+    const test_frl_step = b.step("test-first-root-latch", "G0 first-root positive-attestation latch (incident 423083743): live-path regression KAT (real ReplayStage glue)");
+    test_frl_step.dependOn(&run_frl.step);
+    test_migrated_step.dependOn(&run_frl.step);
+
+    // test-vote-threshold-shadow (VOTE-THRESHOLD depth-8 stake wiring, incident
+    // 423083743 companion fix — 2026-07-19) — proves the simulated-tower depth-8
+    // slot selection (thresholdDepthSlot), the mode seam (thresholdStakesForMode:
+    // shadow can never alter the vote decision by construction), the shouldVote
+    // verdicts (stake present ⇒ PASS / absent ⇒ WOULD-REFUSE / (0,0) ⇒ legacy
+    // skip), and the REAL fork-choice glue clusterVotedStakeAtDepthSlot against
+    // a constructed tree fed through the real addVotes path.
+    const test_vts = b.addTest(.{
+        .name = "test-vote-threshold-shadow",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_vote_threshold_shadow.zig"), .target = target, .optimize = optimize }),
+    });
+    test_vts.root_module.addImport("vex_svm", net_vex_svm);
+    test_vts.root_module.addImport("vex_store", net_vex_store);
+    test_vts.root_module.addImport("vex_crypto", vex_crypto);
+    test_vts.root_module.addImport("vex_bpf", net_vex_bpf);
+    test_vts.root_module.addImport("vex_consensus", vex_consensus);
+    test_vts.root_module.addImport("core", core);
+    test_vts.linkLibC();
+    {
+        const jp_vts = "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2";
+        if (std.fs.cwd().access(jp_vts, .{})) |_| {
+            test_vts.root_module.addObjectFile(.{ .cwd_relative = jp_vts });
+        } else |_| {}
+    }
+    const run_vts = b.addRunArtifact(test_vts);
+    const test_vts_step = b.step("test-vote-threshold-shadow", "VOTE-THRESHOLD depth-8 stake wiring (423083743 companion): shadow-never-alters + verdict + real fork-choice glue KATs");
+    test_vts_step.dependOn(&run_vts.step);
+    test_migrated_step.dependOn(&run_vts.step);
+
+    // test-ancestor-walk-depth (switch-proof-gossip-arming fix, d2c2f59,
+    // 2026-07-17) — live-path regression gate for ReplayStage.ancestorChainComplete's
+    // CALLER-side buffer sizing (the ACTUAL blocker behind the live 422521275
+    // wedge: a fixed [4096]Slot stack buffer silently truncated the tower-lockout
+    // ancestor set once unrooted depth exceeded ~4096, permanently misclassifying
+    // last_voted_slot as a non-ancestor -> false lockout -> switch-proof block
+    // never reached). Same module graph/linking as test-revive-would-fire
+    // immediately above (both drive real ReplayStage methods).
+    const test_awd73 = b.addTest(.{
+        .name = "test-ancestor-walk-depth",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_ancestor_walk_unrooted_depth.zig"), .target = target, .optimize = optimize }),
+    });
+    test_awd73.root_module.addImport("vex_svm", net_vex_svm);
+    test_awd73.root_module.addImport("vex_store", net_vex_store);
+    test_awd73.root_module.addImport("vex_crypto", vex_crypto);
+    test_awd73.root_module.addImport("vex_bpf", net_vex_bpf);
+    test_awd73.root_module.addImport("vex_consensus", vex_consensus);
+    test_awd73.root_module.addImport("core", core);
+    test_awd73.linkLibC();
+    {
+        const jp_awd = "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2";
+        if (std.fs.cwd().access(jp_awd, .{})) |_| {
+            test_awd73.root_module.addObjectFile(.{ .cwd_relative = jp_awd });
+        } else |_| {}
+    }
+    const run_awd73 = b.addRunArtifact(test_awd73);
+    const test_awd73_step = b.step("test-ancestor-walk-depth", "Switch-proof-gossip-arming fix (d2c2f59): ancestorChainComplete buffer-sizing live-path regression KAT (real ReplayStage.banks, exact captured wedge numbers)");
+    test_awd73_step.dependOn(&run_awd73.step);
+    test_migrated_step.dependOn(&run_awd73.step);
 
     // test-epoch-schedule (origin-tree:2794) — imports only vex_svm
     const test_epoch73 = b.addTest(.{
@@ -3806,7 +4073,7 @@ pub fn build(b: *std.Build) void {
     const test_ccd73_step = b.step("test-cpi-carrier-dispatch", "CPI-created-account commit carrier KAT (DEFERRED — origin-tree-pre-existing RED, standalone only)");
     test_ccd73_step.dependOn(&run_ccd73.step);
 
-    // ── vexor-program-test (M1,) — LiteSVM-class sBPF harness ──────
+    // ── vexor-program-test (M1, 2026-07-12) — LiteSVM-class sBPF harness ──────
     // Standalone CLI + fixture KAT over the UNMODIFIED v2_dispatch engine.
     // Rooted OUTSIDE vex_svm (imports it opaquely) — same module graph the
     // cpi-carrier KAT uses, so it dodges the vex_svm ⇄ replay_stage cycle.
@@ -3833,11 +4100,48 @@ pub fn build(b: *std.Build) void {
     const test_progtest_step = b.step("test-program-test", "M1 hello-fixture KAT: first Zig-SDK program in Vexor's sBPF VM");
     test_progtest_step.dependOn(&run_progtest.step);
 
-    // ── divergence-localize (P5 MOAT #2 · M1,) ────────────────────
+    // ── shred-replay (tool/vsd1-replay-loader, 2026-07-16) ────────────────────────
+    // Offline LOADER for captured raw shred-buffer dumps (born from incident
+    // 422359406: a truncated block was correctly refused live, but neither of
+    // its two forensic dump formats — the raw assembled-entry-buffer
+    // `/tmp/vex_slot_<N>_fail.bin` nor the VSD1 per-shred
+    // `/tmp/vex_slot_<N>_shreds.bin` — had a reader). Rooted OUTSIDE vex_svm,
+    // same "module-cycle dodge" pattern as vexor-program-test/test-commit-owner
+    // above (imports vex_svm + vex_network opaquely). verify_ticks.zig is reached
+    // as `vex_svm.verify_ticks` (root.zig pub re-export, zero logic change — Zig
+    // requires each source file belong to exactly one module, and verify_ticks.zig
+    // is already inside vex_svm's graph via replay_stage.zig's own import) so the
+    // tool drives the SAME canonical Verifier instance the live replay path does.
+    // entry.zig/replay_stage.zig/shred_assembler.zig are all imported UNMODIFIED —
+    // zero validator runtime changes.
+    const shredreplay_exe = b.addExecutable(.{
+        .name = "shred-replay",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/tools/vsd1_replay_loader.zig"), .target = target, .optimize = optimize }),
+    });
+    shredreplay_exe.root_module.addImport("vex_svm", net_vex_svm);
+    shredreplay_exe.root_module.addImport("vex_network", net_vex_network);
+    shredreplay_exe.root_module.addImport("core", core);
+    shredreplay_exe.linkLibC();
+    const shredreplay_step = b.step("shred-replay", "Build the shred-replay CLI (offline VSD1/fail.bin LOADER — replays captured shred dumps through the real assembler + tick-gate)");
+    shredreplay_step.dependOn(&b.addInstallArtifact(shredreplay_exe, .{}).step);
+
+    const test_shredreplay = b.addTest(.{
+        .name = "test-shred-replay",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/tools/vsd1_replay_loader.zig"), .target = target, .optimize = optimize }),
+    });
+    test_shredreplay.root_module.addImport("vex_svm", net_vex_svm);
+    test_shredreplay.root_module.addImport("vex_network", net_vex_network);
+    test_shredreplay.root_module.addImport("core", core);
+    test_shredreplay.linkLibC();
+    const run_test_shredreplay = b.addRunArtifact(test_shredreplay);
+    const test_shredreplay_step = b.step("test-shred-replay", "shred-replay KATs incl. the incident-422359406 real fail.bin regression (skips if forensics capture absent)");
+    test_shredreplay_step.dependOn(&run_test_shredreplay.step);
+
+    // ── divergence-localize (P5 MOAT #2 · M1, 2026-07-12) ────────────────────
     // The offline bank_hash-divergence localizer: a std-only CLI over the pure
     // 4-input classifier engine (src/vex_ledger/divergence_alarm.zig). No vex_svm /
     // validator import — a tiny, fast, dependency-free binary the wrapper composes.
-    // DESIGN: the divergence-alarm design notes
+    // DESIGN: vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
     const divalarm_mod = b.createModule(.{ .root_source_file = b.path("src/vex_ledger/divergence_alarm.zig"), .target = target, .optimize = optimize });
 
     const divloc_exe = b.addExecutable(.{
@@ -3866,7 +4170,7 @@ pub fn build(b: *std.Build) void {
     test_migrated_step.dependOn(&run_test_divalarm.step);
     test_migrated_step.dependOn(&run_test_divloc.step);
 
-    // ── divergence-alarm M2 — the LIVE runtime alarm KATs ─────────
+    // ── divergence-alarm M2 (2026-07-14) — the LIVE runtime alarm KATs ─────────
     // Ring (enqueue/drain/drop-oldest/wraparound/threaded) + debounce + rooted-both-sides
     // + latch + base58 + getBlock parse + classify()-seam integration + flag-off dormancy.
     // std-only module (imports the M1 classifier as a sibling file) so it tests standalone.
@@ -3880,149 +4184,4 @@ pub fn build(b: *std.Build) void {
     test_divalarm_rt_step.dependOn(&run_test_divalarm_rt.step);
     test_divloc_step.dependOn(&run_test_divalarm_rt.step);
     test_migrated_step.dependOn(&run_test_divalarm_rt.step);
-
-    // ════════════════════════════════════════════════════════════════════════
-    // FUZZ HARNESSES (fuzz/) — libFuzzer-ABI targets over the untrusted-input
-    // parsing surfaces (shred/entry-batch/gossip/tx/compute-budget wire decode).
-    // See fuzz/README.md for target rationale + the OSS-Fuzz integration gap.
-    //
-    // Each `fuzz_*.zig` file is a plain module (no `main`) exporting
-    // `LLVMFuzzerTestOneInput`, so a real OSS-Fuzz toolchain can build it
-    // unchanged. `fuzz/runner.zig` is a LOCAL-ONLY bounded mutation driver
-    // (fork-per-input) that lets the same harness logic run today without a
-    // libFuzzer runtime — each `fuzz-<name>` step builds one such combined
-    // binary. `optimize` here is deliberately the top-level ReleaseSafe
-    // default (never ReleaseFast): Zig's safety-panic checks ARE the crash
-    // oracle these harnesses rely on.
-    // ════════════════════════════════════════════════════════════════════════
-    const fuzz_step = b.step("fuzz", "Build all local bounded-fuzz-driver binaries under fuzz/");
-
-    // shred_parse.zig's relative sibling chain (fec_resolver/bmtree/duplicate_shred/
-    // shred_encoder/shred_layout/shred_reedsol/gf_simd/shred_header/crds) needs only
-    // `core` + `vex_crypto` as NAMED imports — every other dependency is file-relative
-    // and resolves automatically off this root file's directory.
-    const fuzz_shred_parse_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/shred_parse.zig"), .target = target, .optimize = optimize });
-    fuzz_shred_parse_target.addImport("core", core);
-    fuzz_shred_parse_target.addImport("vex_crypto", vex_crypto);
-
-    // Dedicated unit-test step for shred_parse.zig's own `test` blocks (the
-    // fuzz-found parent_offset regression KAT below them). Not otherwise reachable:
-    // every fuzz_*.zig harness imports this file by NAME (@import("shred_parse")),
-    // which Zig's test discovery does not walk, and no existing test root reaches
-    // it via a relative import chain either.
-    const test_shred_parse = b.addTest(.{
-        .name = "test-shred-parse",
-        .root_module = fuzz_shred_parse_target,
-    });
-    const run_test_shred_parse = b.addRunArtifact(test_shred_parse);
-    const test_shred_parse_step = b.step("test-shred-parse", "Run shred_parse.zig's own KATs (incl. the fuzz-found parent_offset bounds regression)");
-    test_shred_parse_step.dependOn(&run_test_shred_parse.step);
-    test_migrated_step.dependOn(&run_test_shred_parse.step);
-
-    // crds.zig has exactly one named import (vex_crypto) and no relative siblings.
-    const fuzz_crds_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/crds.zig"), .target = target, .optimize = optimize });
-    fuzz_crds_target.addImport("vex_crypto", vex_crypto);
-
-    // entry.zig has zero non-std dependencies.
-    const fuzz_entry_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/entry.zig"), .target = target, .optimize = optimize });
-
-    // tx_ingest.zig / compute_budget.zig reuse the module-72 instances (net_txingest /
-    // net_cb) already wired above with the same core/vex_crypto imports — no need to
-    // mint fresh copies.
-
-    const FuzzTarget = struct {
-        /// Build-step name suffix, e.g. "shred-parse" -> `zig build fuzz-shred-parse`.
-        step_name: []const u8,
-        /// fuzz/<name>.zig harness file stem.
-        harness_stem: []const u8,
-        /// Name the harness's LLVMFuzzerTestOneInput call reaches for, used only
-        /// in the run log / crash-file prefix (fuzz/runner.zig's `fuzz_meta`).
-        harness_name: []const u8,
-        /// (import name, module) pairs the harness file's own @import(...) calls need.
-        imports: []const struct { name: []const u8, module: *std.Build.Module },
-        description: []const u8,
-    };
-
-    const fuzz_targets = [_]FuzzTarget{
-        .{
-            .step_name = "shred-parse",
-            .harness_stem = "fuzz_shred_parse",
-            .harness_name = "shred_parse",
-            .imports = &.{.{ .name = "shred_parse", .module = fuzz_shred_parse_target }},
-            .description = "Shred wire-format decode (parseShred + Merkle-root reconstruction)",
-        },
-        .{
-            .step_name = "entry-batch",
-            .harness_stem = "fuzz_entry_batch",
-            .harness_name = "entry_batch",
-            .imports = &.{
-                .{ .name = "entry", .module = fuzz_entry_target },
-                .{ .name = "tx_ingest", .module = net_txingest },
-            },
-            .description = "Entry-batch buffer walk (readEntryCount/readEntryHeader + tx-bearing entry skip)",
-        },
-        .{
-            .step_name = "gossip-protocol",
-            .harness_stem = "fuzz_gossip_protocol",
-            .harness_name = "gossip_protocol",
-            .imports = &.{.{ .name = "crds", .module = fuzz_crds_target }},
-            .description = "Gossip Protocol/CrdsValue/ContactInfo decode",
-        },
-        .{
-            .step_name = "tx-ingest",
-            .harness_stem = "fuzz_tx_ingest",
-            .harness_name = "tx_ingest",
-            .imports = &.{.{ .name = "tx_ingest", .module = net_txingest }},
-            .description = "Transaction wire decode + sanitize (tx_ingest.parse)",
-        },
-        .{
-            .step_name = "compute-budget",
-            .harness_stem = "fuzz_compute_budget",
-            .harness_name = "compute_budget",
-            .imports = &.{
-                .{ .name = "tx_ingest", .module = net_txingest },
-                .{ .name = "compute_budget", .module = net_cb },
-            },
-            .description = "Compute-budget instruction parse over real tx_ingest-derived offsets",
-        },
-    };
-
-    for (fuzz_targets) |ft| {
-        var path_buf: [64]u8 = undefined;
-        const harness_path = std.fmt.bufPrint(&path_buf, "fuzz/{s}.zig", .{ft.harness_stem}) catch unreachable;
-        const harness_mod = b.createModule(.{ .root_source_file = b.path(harness_path), .target = target, .optimize = optimize });
-        for (ft.imports) |imp| harness_mod.addImport(imp.name, imp.module);
-
-        const meta_opts = b.addOptions();
-        meta_opts.addOption([]const u8, "harness_name", ft.harness_name);
-
-        const runner_mod = b.createModule(.{ .root_source_file = b.path("fuzz/runner.zig"), .target = target, .optimize = optimize });
-        runner_mod.addImport("target_harness", harness_mod);
-        runner_mod.addImport("fuzz_meta", meta_opts.createModule());
-
-        var name_buf: [64]u8 = undefined;
-        const exe_name = std.fmt.bufPrint(&name_buf, "fuzz-{s}", .{ft.step_name}) catch unreachable;
-        const exe = b.addExecutable(.{ .name = exe_name, .root_module = runner_mod });
-        const install = b.addInstallArtifact(exe, .{});
-
-        var step_buf: [64]u8 = undefined;
-        const step_key = std.fmt.bufPrint(&step_buf, "fuzz-{s}", .{ft.step_name}) catch unreachable;
-        const step = b.step(step_key, ft.description);
-        step.dependOn(&install.step);
-        fuzz_step.dependOn(&install.step);
-
-        // Also expose the pure harness module as a `zig build test --fuzz`-able
-        // target (std.testing.fuzz path — see fuzz/README.md). Not the vehicle
-        // for the bounded local run, but free once the module exists.
-        var test_buf: [64]u8 = undefined;
-        const test_name = std.fmt.bufPrint(&test_buf, "test-fuzz-{s}", .{ft.step_name}) catch unreachable;
-        const harness_test_mod = b.createModule(.{ .root_source_file = b.path(harness_path), .target = target, .optimize = optimize });
-        for (ft.imports) |imp| harness_test_mod.addImport(imp.name, imp.module);
-        const harness_test = b.addTest(.{ .name = test_name, .root_module = harness_test_mod });
-        const run_harness_test = b.addRunArtifact(harness_test);
-        var test_step_buf: [64]u8 = undefined;
-        const test_step_key = std.fmt.bufPrint(&test_step_buf, "test-fuzz-{s}", .{ft.step_name}) catch unreachable;
-        const test_step = b.step(test_step_key, "Smoke-run (non---fuzz) the harness's std.testing.fuzz test block");
-        test_step.dependOn(&run_harness_test.step);
-    }
 }

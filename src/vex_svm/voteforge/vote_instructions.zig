@@ -185,6 +185,16 @@ pub const ExecContext = struct {
     leader_schedule_epoch: u64,
     epoch_schedule: EpochScheduleParams,
     features: FeatureFlags,
+    /// Transaction-scoped allocator backing the account-data buffers this
+    /// dispatch mutates. Threaded to `storeV4` for SIMD-0185's
+    /// realloc-before-write (`set_vote_account_state`, grows an under-sized
+    /// account to `VOTE_ACCOUNT_DATA_LEN` before serialize) — the ONLY vote
+    /// path that resizes an account. MUST be the same allocator that allocated
+    /// the writable vote account's `data` slice (the live seam's
+    /// `executeVoteViaVoteforge` dupes it with this `alloc`). No default: a
+    /// missed construction site is a compile error, never a silent wrong
+    /// allocator on a live resize.
+    alloc: std.mem.Allocator,
     custom_error: ?u32 = null,
     slot_hashes: SlotHashesView = SlotHashesView.EMPTY,
 };
@@ -212,6 +222,31 @@ pub fn isRentExempt(lamports: u64, data_len: usize) bool {
 /// "11111111111111111111111111111111"), used by the collector-account /
 /// deposit-source ownership checks.
 pub const SYSTEM_PROGRAM_ID: [32]u8 = [_]u8{0} ** 32;
+
+/// [agave] Clock sysvar id ("SysvarC1ock11111111111111111111111111111111").
+/// Independently-declared byte copy (voteforge imports nothing outside
+/// voteforge/ — same discipline as vote_program.zig's VOTE_PROGRAM_ID); pinned
+/// byte-equal to `vex_bpf2/sysvar_cache.zig` SYSVAR_CLOCK_ID by a KAT. Used by
+/// the Authorize-family dispatch to certify the account at instruction index 1
+/// is really the Clock sysvar (`get_sysvar_with_account_check::clock`).
+pub const SYSVAR_CLOCK_ID: [32]u8 = .{
+    0x06, 0xa7, 0xd5, 0x17, 0x18, 0xc7, 0x74, 0xc9, 0x28, 0x56, 0x63, 0x98,
+    0x69, 0x1d, 0x5e, 0xb6, 0x8b, 0x5e, 0xb8, 0xa3, 0x9b, 0x4b, 0x6d, 0x5c,
+    0x73, 0x55, 0x5b, 0x21, 0x00, 0x00, 0x00, 0x00,
+};
+
+/// [agave] `get_sysvar_with_account_check::clock` (`sysvar_cache.rs:287-297`) —
+/// validates the account supplied at instruction index 1 IS the Clock sysvar
+/// pubkey, returning `InvalidArgument` (bare, NOT wrapped in Custom) on mismatch
+/// and BEFORE any vote-state deserialize. Agave's four Authorize*/AuthorizeChecked*
+/// dispatch arms each call this at index 1 (`vote_processor.rs:143/322/36`) — a
+/// vote executor that skipped it would SUCCEED on a validly-signed authorize
+/// carrying a garbage account at the Clock index where Agave FAILS
+/// (success-vs-fail). `checkSysvarId` also fails (MissingAccount) when fewer than
+/// 2 instruction accounts are present, matching Agave's account-index access.
+fn checkClockSysvarAccount(table: *aio.AccountTable) InstrError!void {
+    try table.checkSysvarId(1, SYSVAR_CLOCK_ID);
+}
 
 /// [agave] `VoteStateV4::size_of() == VoteStateV3::size_of() == 3762` bytes —
 /// the FIXED account-data-buffer length every vote account is allocated at
@@ -241,10 +276,24 @@ fn verifyAuthorizedSigner(authorized: [32]u8, signers: []const [32]u8) InstrErro
     if (!isSigner(signers, authorized)) return error.MissingRequiredSignature;
 }
 
-/// [agave] `Pubkey::create_with_seed` — `SHA256(base || seed || owner)`. No
-/// domain-separator suffix (unlike PDA's `find_program_address`, which is a
-/// different derivation entirely).
-pub fn createWithSeed(base: [32]u8, seed: []const u8, owner: [32]u8) [32]u8 {
+/// [agave] `Pubkey::create_with_seed` (`solana-address-2.6.1/src/lib.rs:283-302`)
+/// — `SHA256(base || seed || owner)`, no domain-separator suffix (unlike PDA's
+/// `find_program_address`). FALLIBLE per Agave: `seed.len() > MAX_SEED_LEN(32)`
+/// → `AddressError::MaxSeedLengthExceeded` (discriminant 0); an `owner` whose
+/// LAST 21 bytes equal the `PDA_MARKER` b"ProgramDerivedAddress" →
+/// `AddressError::IllegalOwner` (discriminant 2). vote_processor.rs's
+/// `.map_err(|e| e as u64)?` casts those discriminants through the documented
+/// "incorrect, but existing" num-traits path into `InstructionError::Custom(0)`
+/// / `Custom(2)` — reproduced here via `ctx.custom_error` + `error.Custom`.
+fn createWithSeed(base: [32]u8, seed: []const u8, owner: [32]u8, ctx: *ExecContext) InstrError![32]u8 {
+    if (seed.len > 32) {
+        ctx.custom_error = 0; // MaxSeedLengthExceeded -> Custom(0)
+        return error.Custom;
+    }
+    if (std.mem.eql(u8, owner[11..32], "ProgramDerivedAddress")) {
+        ctx.custom_error = 2; // IllegalOwner -> Custom(2)
+        return error.Custom;
+    }
     var h = std.crypto.hash.sha2.Sha256.init(.{});
     h.update(&base);
     h.update(seed);
@@ -265,6 +314,18 @@ pub fn createWithSeed(base: [32]u8, seed: []const u8, owner: [32]u8) [32]u8 {
 // program's own purge invariant never leaves that map empty once initialized).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// [agave] `VoteStateVersions::is_uninitialized` as observed through the
+/// `initialize_account` "generic-enum" call site (`get_state::<VoteStateVersions
+/// >()`, `mod.rs:1199-1202`): tag 0 (V0_23_5) decodes as the `Uninitialized`
+/// unit variant → uninitialized=true (proceed to init); tag 1/2 (V1_14_11/V3)
+/// decode their struct → uninitialized iff `authorized_voters` empty; tag 3
+/// (V4) is ALWAYS considered initialized (`vote_state_versions.rs:126`,
+/// `V4(_) => false`) — but the vote program's purge invariant never leaves a
+/// live V4's authorized_voters empty, so an empty V4 is not honest-reachable and
+/// the legacy `authorized_voters_len==0` check below is behavior-preserving on
+/// every real account. This is the "already-initialized" gate for
+/// `initializeAccount`/`initializeAccountV2` ONLY; the mutating/read path uses
+/// `loadV4Checked` (the strict cursor `VoteStateVersions::deserialize`).
 pub fn isUninitializedData(data: []const u8) bool {
     const tag = codec.versionTag(data) catch return true;
     if (tag == codec.VERSION_TAG_V4) {
@@ -273,23 +334,77 @@ pub fn isUninitializedData(data: []const u8) bool {
     } else if (tag == codec.VERSION_TAG_V3) {
         const p = codec.VoteStateV3.parse(data) catch return true;
         return p.state.tail.authorized_voters_len == 0;
+    } else if (tag == codec.VERSION_TAG_V1_14_11) {
+        const p = codec.VoteState1_14_11.parse(data) catch return true;
+        return p.state.tail.authorized_voters_len == 0;
     }
     return true;
 }
 
+/// [agave] `get_vote_state_handler_checked` (`mod.rs:33-52`) — the read path for
+/// EVERY mutating vote instruction except DepositDelegatorRewards. Mirrors it
+/// byte-for-byte:
+///   1. `VoteStateVersions::deserialize(data)` (`vote_state_versions.rs:141-185`,
+///      the strict cursor parser): tag 0 (V0_23_5, variant DROPPED) →
+///      InvalidAccountData; tag 1 → V1_14_11; tag 2 → V3; tag 3 → V4; else →
+///      InvalidAccountData.
+///   2. `if versioned.is_uninitialized() → UninitializedAccount`. For V1_14_11/
+///      V3 that means empty `authorized_voters`; V4 is never uninitialized.
+///   3. `try_convert_to_vote_state_v4` (`handler.rs:624-670`): V1_14_11/V3
+///      migrate to V4; V4 returned as-is.
+/// The tag-0 arm here is INTENTIONALLY different from `isUninitializedData`'s
+/// (which serves the generic-enum `initialize_account` site): collapsing both
+/// to one behavior reproduces the grind commit's 79-fixture initialize-account
+/// regression (bacc392).
 fn loadV4Checked(data: []const u8, vote_pubkey: [32]u8) InstrError!codec.VoteStateV4 {
-    if (isUninitializedData(data)) return error.UninitializedAccount;
-    const tag = try codec.versionTag(data);
-    if (tag == codec.VERSION_TAG_V4) {
-        return (try codec.VoteStateV4.parse(data)).state;
-    } else if (tag == codec.VERSION_TAG_V3) {
-        const v3 = (try codec.VoteStateV3.parse(data)).state;
-        return codec.migrateV3ToV4(&v3, vote_pubkey);
+    const tag = codec.versionTag(data) catch return error.InvalidAccountData;
+    switch (tag) {
+        codec.VERSION_TAG_V1_14_11 => {
+            const v1 = (try codec.VoteState1_14_11.parse(data)).state;
+            if (v1.tail.authorized_voters_len == 0) return error.UninitializedAccount;
+            return codec.migrateV1_14_11ToV4(&v1, vote_pubkey);
+        },
+        codec.VERSION_TAG_V3 => {
+            const v3 = (try codec.VoteStateV3.parse(data)).state;
+            if (v3.tail.authorized_voters_len == 0) return error.UninitializedAccount;
+            return codec.migrateV3ToV4(&v3, vote_pubkey);
+        },
+        codec.VERSION_TAG_V4 => {
+            // V4 is always initialized (SIMD-0185) — no uninitialized check.
+            return (try codec.VoteStateV4.parse(data)).state;
+        },
+        // tag 0 (V0_23_5, unsupported) and any tag >= 4.
+        else => return error.InvalidAccountData,
     }
-    return error.InvalidAccountData;
 }
 
-fn storeV4(borrow: *aio.Borrow, state: *const codec.VoteStateV4) InstrError!void {
+/// [agave] `VoteStateHandler::set_vote_account_state` (`handler.rs:298-320`),
+/// SIMD-0185 realloc-before-write. If the account's CURRENT data length is
+/// smaller than `VOTE_ACCOUNT_DATA_LEN` (`VoteStateV4::size_of()` = 3762), grow
+/// it to exactly 3762 FIRST, gated on TWO conditions matching Agave's
+/// `(len < 3762) && (!is_rent_exempt_at_data_length(3762) || set_data_length(
+/// 3762).is_err())` short-circuit: (1) rent-exemption at the NEW size — a
+/// READ-ONLY check against the account's CURRENT lamports (independent of
+/// writability); (2) the resize itself succeeding (writable + vote-owned, via
+/// `setDataLength`'s `checkCanSetDataLength`). EITHER failing returns
+/// `AccountNotRentExempt` with NO graceful fallback to a smaller layout, exactly
+/// as SIMD-0185 mandates. The grow preserves bytes [0..old_len] and zero-fills
+/// [old_len..3762] (`resizeInPlace`); `serialize` then overwrites only the V4
+/// prefix, leaving the stale tail intact — byte-identical to Agave, where the
+/// lt_hash covers the full 3762-byte buffer. V3 and V4 are already 3762, so this
+/// branch never fires on them (no regression / byte-unchanged store path).
+fn storeV4(alloc: std.mem.Allocator, borrow: *aio.Borrow, state: *const codec.VoteStateV4) InstrError!void {
+    if (borrow.dataConst().len < VOTE_ACCOUNT_DATA_LEN) {
+        if (!isRentExempt(borrow.lamports(), VOTE_ACCOUNT_DATA_LEN)) return error.AccountNotRentExempt;
+        borrow.setDataLength(alloc, VOTE_ACCOUNT_DATA_LEN) catch |e| {
+            // OOM is a harness/allocation condition the live seam handles out
+            // of band, not a consensus outcome — propagate it. Any other
+            // resize failure (non-writable / foreign-owned / realloc-cap) is
+            // Agave's `set_data_length().is_err()` arm → AccountNotRentExempt.
+            if (e == error.OutOfMemory) return error.OutOfMemory;
+            return error.AccountNotRentExempt;
+        };
+    }
     const d = try borrow.dataMut();
     _ = try state.serialize(d);
 }
@@ -451,7 +566,7 @@ pub fn authorize(
             try setNewAuthorizedVoterV4(&state.tail, &state.bls_pubkey_compressed, new_authority, target_epoch, args.bls_pubkey, ctx);
         },
     }
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -471,13 +586,16 @@ pub fn authorizeWithSeed(
     new_authority: [32]u8,
     ctx: *ExecContext,
 ) InstrError!void {
+    // [agave] `process_authorize_with_seed_instruction:36` — Clock check at
+    // index 1 runs FIRST, before the base-key derivation and vote-state load.
+    try checkClockSysvarAccount(table);
     var derived_buf: [1][32]u8 = undefined;
     var derived: []const [32]u8 = &[_][32]u8{};
     {
         var bb = try table.borrowConst(base_authority_idx);
         defer bb.release();
         if (bb.isSigner()) {
-            derived_buf[0] = createWithSeed(bb.pubkey(), current_authority_derived_key_seed, current_authority_derived_key_owner);
+            derived_buf[0] = try createWithSeed(bb.pubkey(), current_authority_derived_key_seed, current_authority_derived_key_owner, ctx);
             derived = derived_buf[0..1];
         }
     }
@@ -523,6 +641,9 @@ pub fn authorizeChecked(
         if (!nb.isSigner()) return error.MissingRequiredSignature;
         break :blk nb.pubkey();
     };
+    // [agave] `vote_processor.rs:321` — the index-3 signer check (above) runs
+    // FIRST, THEN the Clock check at index 1, THEN authorize's state load.
+    try checkClockSysvarAccount(table);
     try authorize(table, vote_idx, signers, new_authority, vote_authorize, ctx);
 }
 
@@ -552,7 +673,7 @@ pub fn updateValidatorIdentity(
     if (!ctx.features.custom_commission_collector) {
         state.block_revenue_collector = node_pubkey;
     }
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -603,7 +724,7 @@ pub fn updateCommission(
     var state = try maybe_state;
     try verifyAuthorizedSigner(state.authorized_withdrawer, signers);
     state.inflation_rewards_commission_bps = @as(u16, commission) * 100;
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -632,7 +753,7 @@ pub fn updateCommissionBps(
         .inflation_rewards => state.inflation_rewards_commission_bps = commission_bps,
         .block_revenue => state.block_revenue_commission_bps = commission_bps,
     }
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -671,7 +792,7 @@ pub fn updateCommissionCollector(
         .inflation_rewards => state.inflation_rewards_collector = new_key,
         .block_revenue => state.block_revenue_collector = new_key,
     }
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -763,7 +884,7 @@ pub fn initializeAccount(
     state.tail.authorized_voters_len = 1;
     state.tail.authorized_voters[0] = .{ .epoch = ctx.epoch, .pubkey = authorized_voter };
 
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -826,7 +947,7 @@ pub fn initializeAccountV2(
     state.tail.authorized_voters_len = 1;
     state.tail.authorized_voters[0] = .{ .epoch = ctx.epoch, .pubkey = args.authorized_voter };
 
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -901,7 +1022,7 @@ pub fn depositDelegatorRewards(
     table.records[source_idx].lamports -= deposit;
     table.records[vote_idx].lamports += deposit;
     state.pending_delegator_rewards = std.math.add(u64, state.pending_delegator_rewards, deposit) catch return error.ProgramArithmeticOverflow;
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
 
     vb.release();
     sb.release();
@@ -1203,7 +1324,7 @@ pub fn processVoteWithAccount(
         }
         try processTimestamp(&state, max_slot, ts, ctx);
     }
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -1432,7 +1553,7 @@ pub fn processVoteStateUpdate(
     const authorized_voter = try getAndUpdateAuthorizedVoter(&state.tail, ctx.epoch);
     try verifyAuthorizedSigner(authorized_voter, signers);
     try doProcessVoteStateUpdate(&state, ctx.slot_hashes.slice(), ctx.epoch, ctx.slot, proposed, ctx);
-    try storeV4(&vb, &state);
+    try storeV4(ctx.alloc, &vb, &state);
     vb.release();
 }
 
@@ -1869,7 +1990,16 @@ pub fn isKnownGapDiscriminant(disc: u32) bool {
 pub fn execute(table: *aio.AccountTable, parsed: ParsedInstruction, signers: []const [32]u8, ctx: *ExecContext) InstrError!void {
     switch (parsed) {
         .initialize_account => |a| try initializeAccount(table, 0, a.node_pubkey, a.authorized_voter, a.authorized_withdrawer, a.commission, signers, ctx),
-        .authorize => |a| try authorize(table, 0, signers, a.new_authority, a.vote_authorize, ctx),
+        .authorize => |a| {
+            // [agave] `vote_processor.rs:143` — Clock check at index 1 precedes
+            // authorize's vote-state load. Kept at the dispatch arm (not inside
+            // the shared `authorize` core, which AuthorizeChecked/WithSeed reuse
+            // and whose direct KATs test the state transition, not this
+            // dispatch-layer precondition) — mirrors Agave's layering, where
+            // the Clock check lives in vote_processor.rs, not vote_state.rs.
+            try checkClockSysvarAccount(table);
+            try authorize(table, 0, signers, a.new_authority, a.vote_authorize, ctx);
+        },
         .vote => |a| {
             if (legacyVoteRejected(ctx)) return error.InvalidInstructionData;
             try processVoteWithAccount(table, 0, &a, signers, ctx);

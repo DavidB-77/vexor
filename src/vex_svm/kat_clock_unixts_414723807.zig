@@ -135,11 +135,7 @@ fn runArm(allocator: std.mem.Allocator, drop_zero_ts: bool) !?i64 {
         "[KAT-807] arm={s} samples={d} stakes={d} parse_fail={d} drop_zero={d} raw_estimate={?d}\n",
         .{
             if (drop_zero_ts) "vexor-live" else "canonical",
-            loaded.samples.len,
-            loaded.stakes.len,
-            loaded.parse_fail,
-            loaded.dropped_zero_ts,
-            est,
+            loaded.samples.len, loaded.stakes.len, loaded.parse_fail, loaded.dropped_zero_ts, est,
         },
     );
     // updateClockSysvar monotonic floor (bank.zig:1056 / Agave bank.rs:2294-2299):

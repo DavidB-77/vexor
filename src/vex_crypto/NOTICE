@@ -98,13 +98,12 @@ HOW WE DECOUPLED IT (made it standalone + our own):
     Source  : https://github.com/firedancer-io/firedancer
     License : Apache License 2.0
 
-During development, Ballet's fd_ed25519_verify / fd_ed25519_sign (AVX-512 C)
-were linked behind a -Dballet_ed25519 build flag and used as a differential
-ORACLE: the ed25519/kat.zig differential KAT proved our pure-Zig verifyStrict
-agreed with fd_ed25519_verify byte-for-byte on canonical vectors. That FFI
-backend was removed entirely on 2026-07-12 once the epoch-boundary soak
-passed — Vexor's ed25519 is unconditionally pure-Zig today; the KAT corpus
-remains as a regression guard against the recorded Ballet-verified vectors.
+Ballet's fd_ed25519_verify / fd_ed25519_sign (AVX-512 C) remain LINKED behind
+the -Dballet_ed25519 build flag and are used as a differential ORACLE: the
+ed25519/kat.zig differential KAT proves our pure-Zig verifyStrict agrees with
+fd_ed25519_verify byte-for-byte on canonical vectors. Ballet is the rollback
+path and is NOT deleted until the epoch-boundary soak passes. -Dpure_zig forces
+this FFI off for a fully self-contained ed25519 binary.
 
 
 3. Agave / Solana Labs — reference semantics
@@ -151,9 +150,8 @@ Vexor-authored, informed by the framework and algorithms of:
       (shared/crypto/bn254: field tower shape, group law, pairing structure)
     - Firedancer Ballet (Apache-2.0) — the alt_bn128 syscall byte contract, the
       subgroup-check semantics (G2 add = curve-only, G2 mul / pairing = subgroup),
-      and (during development, via a -Dballet_bn254 flag removed 2026-07-12
-      once the epoch-boundary soak passed) the differential oracle used to
-      byte-verify this implementation.
+      and the differential ORACLE (libballet_bn254.a) retained behind
+      -Dballet_bn254 until the epoch-boundary soak passes.
     - solana-bn254 v3.2.1 / ark-bn254 (Apache-2.0) — the authoritative Agave
       wire/serialization/error semantics (endianness, flag bytes, length rules).
 The Fp2/Fp6/Fp12 tower, G1/G2 group law, Miller loop, final exponentiation, and

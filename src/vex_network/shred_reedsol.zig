@@ -143,7 +143,7 @@ pub fn encodeParity(
     const parity = try allocator.alloc(u8, m * shard_len);
     @memset(parity, 0);
     for (0..m) |j| {
-        const mrow = enc[(n + j) * n ..][0..n]; // parity generator row
+        const mrow = enc[(n + j) * n ..][0 .. n]; // parity generator row
         for (0..n) |i| {
             const coeff = mrow[i];
             if (coeff == 0) continue;

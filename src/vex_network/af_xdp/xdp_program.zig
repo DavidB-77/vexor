@@ -47,30 +47,30 @@ const BpfAttr = extern union {
         btf_value_type_id: u32,
         btf_vmlinux_value_type_id: u32,
     },
-    prog_load: extern struct {
-        prog_type: u32,
-        insn_cnt: u32,
-        insns: usize,
-        license: usize,
-        log_level: u32,
-        log_size: u32,
-        log_buf: usize,
-        kern_version: u32,
-        prog_flags: u32,
-        prog_name: [16]u8,
-        prog_ifindex: u32,
-        expected_attach_type: u32,
-        prog_btf_fd: u32,
-        func_info_rec_size: u32,
-        func_info: usize,
-        func_info_cnt: u32,
-        line_info_rec_size: u32,
-        line_info: usize,
-        line_info_cnt: u32,
-        attach_btf_id: u32,
-        attach_prog_fd: u32,
-        fd_array: usize, // Pointer to array of map FDs
-    },
+           prog_load: extern struct {
+               prog_type: u32,
+               insn_cnt: u32,
+               insns: usize,
+               license: usize,
+               log_level: u32,
+               log_size: u32,
+               log_buf: usize,
+               kern_version: u32,
+               prog_flags: u32,
+               prog_name: [16]u8,
+               prog_ifindex: u32,
+               expected_attach_type: u32,
+               prog_btf_fd: u32,
+               func_info_rec_size: u32,
+               func_info: usize,
+               func_info_cnt: u32,
+               line_info_rec_size: u32,
+               line_info: usize,
+               line_info_cnt: u32,
+               attach_btf_id: u32,
+               attach_prog_fd: u32,
+               fd_array: usize, // Pointer to array of map FDs
+           },
     map_update_elem: extern struct {
         map_fd: u32,
         _pad0: u32, // padding for alignment
@@ -119,7 +119,7 @@ const BPF_PROG_TYPE_XDP = 6;
 // XDP flags (must match kernel uapi/linux/if_link.h)
 const XDP_FLAGS_UPDATE_IF_NOEXIST = 1 << 0;
 const XDP_FLAGS_SKB_MODE = 1 << 1;
-const XDP_FLAGS_DRV_MODE = 1 << 2; // Driver mode for zero-copy support
+const XDP_FLAGS_DRV_MODE = 1 << 2;  // Driver mode for zero-copy support
 const XDP_FLAGS_HW_MODE = 1 << 3;
 
 // BPF attach types
@@ -153,9 +153,9 @@ pub const XdpProgram = struct {
     attached: bool,
 
     pub const AttachMode = enum(u32) {
-        skb = XDP_FLAGS_SKB_MODE, // SKB mode (slower, more compatible)
-        driver = XDP_FLAGS_DRV_MODE, // Driver mode (faster, zero-copy capable)
-        hardware = XDP_FLAGS_HW_MODE, // Hardware offload (fastest, limited support)
+        skb = XDP_FLAGS_SKB_MODE,         // SKB mode (slower, more compatible)
+        driver = XDP_FLAGS_DRV_MODE,      // Driver mode (faster, zero-copy capable)
+        hardware = XDP_FLAGS_HW_MODE,     // Hardware offload (fastest, limited support)
         update_only = XDP_FLAGS_UPDATE_IF_NOEXIST,
     };
 
@@ -301,11 +301,11 @@ pub const XdpProgram = struct {
             .xsks_map_fd = @intCast(xsks_map_fd),
             .port_filter_map_fd = @intCast(port_filter_map_fd),
             .prog_fd = @intCast(prog_fd),
-            .link_fd = -1, // Not attached yet
+            .link_fd = -1,  // Not attached yet
             .ifindex = ifindex,
             .mode = mode,
             .allocator = allocator,
-            .attached = false, // Not attached
+            .attached = false,  // Not attached
         };
     }
 
@@ -353,24 +353,24 @@ pub const XdpProgram = struct {
         // Generate eBPF bytecode at runtime
         var code_buf: [512]u64 = undefined;
         const ports = [_]u16{bind_port};
-
+        
         const code_cnt = ebpf_gen.generateXdpProgram(&code_buf, xsks_map_fd, &ports) catch |err| {
             std.log.err("[XDP] Failed to generate eBPF program: {any}", .{err});
             return error.ProgramGenerationFailed;
         };
-
+        
         // Convert to bytes for BPF_PROG_LOAD
         var byte_buf: [4096]u8 = undefined;
         const prog_bytes = ebpf_gen.codeToBytes(code_buf[0..code_cnt], &byte_buf) catch |err| {
             std.log.err("[XDP] Failed to convert eBPF program to bytes: {any}", .{err});
             return error.ProgramGenerationFailed;
         };
-
+        
         // Allocate log buffer for verifier output
         const log_buf = try allocator.alloc(u8, 32768);
         defer allocator.free(log_buf);
         @memset(log_buf, 0);
-
+        
         // Load program using BPF_PROG_LOAD
         var load_attr: BpfAttr = std.mem.zeroes(BpfAttr);
         load_attr.prog_load.prog_type = BPF_PROG_TYPE_XDP;
@@ -380,7 +380,7 @@ pub const XdpProgram = struct {
         load_attr.prog_load.log_level = 1;
         load_attr.prog_load.log_size = 32768;
         load_attr.prog_load.log_buf = @intFromPtr(log_buf.ptr);
-
+        
         const prog_fd = bpf(BPF_PROG_LOAD, &load_attr, @sizeOf(BpfAttr));
         if (prog_fd < 0) {
             const err = std.posix.errno(@as(i32, @intCast(prog_fd)));
@@ -393,7 +393,7 @@ pub const XdpProgram = struct {
             }
             return error.ProgramLoadFailed;
         }
-
+        
         std.log.info("[XDP] eBPF program loaded successfully (FD: {d}, {d} instructions, port: {d})", .{ prog_fd, code_cnt, bind_port });
         return @intCast(prog_fd);
     }

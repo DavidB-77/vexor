@@ -420,7 +420,7 @@ pub const TxCtxOwned = struct {
             list.append(mut_alloc, .{
                 .pubkey = .{ .data = a.pubkey },
                 .new_lamports = a.lamports,
-                .owner = a.owner, // vex-039 restored: post-mutation owner (V2)
+                .owner = a.owner,  // vex-039 restored: post-mutation owner (V2)
                 .data = data_copy,
                 .new_owner = new_owner_opt,
             }) catch return error.OutOfMemory;
@@ -599,7 +599,7 @@ fn fallbackSystem(
         list.append(alloc, .{
             .pubkey = m.pubkey,
             .new_lamports = m.lamports,
-            .owner = m.owner.data, // vex-039 restored: post-mutation owner (V2 builtin)
+            .owner = m.owner.data,  // vex-039 restored: post-mutation owner (V2 builtin)
             .data = data_out,
             .new_owner = if (owner_changed) m.owner.data else null,
         }) catch return error.OutOfMemory;
@@ -707,6 +707,7 @@ fn accountViewToAccountInput(a: vex_bpf2.invoke_ctx.AccountView) serialize2.Acco
 /// `feature_set` is forwarded to M6 (currently ignored by registry init —
 /// `syscalls.SyscallRegistry.init` takes `anytype` and discards it; future
 /// waves wire per-feature gating). Pass `.{}` if no feature_set is threaded.
+
 /// PR-5w (2026-05-19) — realloc callback for MODE 3 input-region OOB growth.
 /// Mirrors Agave transaction.rs:535-541. When a BPF program writes past
 /// current account data length but within `address_space_reserved`, the
@@ -1010,15 +1011,28 @@ pub fn v2DispatchBpfProgramMetered(
         const fs_ptr = if (comptime is_optional_fs) (feature_set orelse break :blk false) else feature_set;
         break :blk fs_ptr.isActive(features.DIRECT_ACCOUNT_POINTERS_IN_PROGRAM_INPUT, current_slot);
     };
+    // disable_zk_elgamal_proof_program / reenable_zk_elgamal_proof_program —
+    // gates M9's zk-elgamal-proof builtin (executeReal). Same (feature_set,
+    // current_slot) as every gate above. Conformance grind backport
+    // (2026-07-18): see zk_elgamal_proof_program.zig's executeReal +
+    // invoke_ctx.zig's field doc for the exact Agave check being ported.
+    const disable_zk_elgamal_proof_program_active: bool = blk: {
+        if (!is_real_feature_set) break :blk false;
+        const fs_ptr = if (comptime is_optional_fs) (feature_set orelse break :blk false) else feature_set;
+        break :blk fs_ptr.isActive(features.DISABLE_ZK_ELGAMAL_PROOF_PROGRAM, current_slot);
+    };
+    const reenable_zk_elgamal_proof_program_active: bool = blk: {
+        if (!is_real_feature_set) break :blk false;
+        const fs_ptr = if (comptime is_optional_fs) (feature_set orelse break :blk false) else feature_set;
+        break :blk fs_ptr.isActive(features.REENABLE_ZK_ELGAMAL_PROOF_PROGRAM, current_slot);
+    };
 
     // PR-5af-probe (2026-05-19): Carrier J — confirm MODE 3 state per BPF
     // dispatch. Rate-limited threadlocal counter — first 40 only. Captures
     // direct_mapping_active + vasa_active + program ID prefix per dispatch
     // to verify whether MODE 3 is actually engaging for HJT-6009 invocations.
     {
-        const ModeProbe = struct {
-            var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
-        };
+        const ModeProbe = struct { var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0); };
         const mn = ModeProbe.count.fetchAdd(1, .monotonic);
         if (mn < 40) {
             const pid_short = std.fmt.bytesToHex(program_id[0..4], .lower);
@@ -1257,6 +1271,8 @@ pub fn v2DispatchBpfProgramMetered(
     ctx.alt_bpf_active = alt_bpf_active; // F3: CPI ALT Core-BPF route gate (SIMD-0128, see field doc)
     ctx.max_stack_depth = if (raise_cpi_nesting_active) ic_mod.MAX_INSTRUCTION_STACK_DEPTH_SIMD_0268 else ic_mod.MAX_INSTRUCTION_STACK_DEPTH; // SIMD-0268
     ctx.direct_account_pointers_active = direct_account_pointers_active; // SIMD-0449
+    ctx.disable_zk_elgamal_proof_program_active = disable_zk_elgamal_proof_program_active; // zk-elgamal gate
+    ctx.reenable_zk_elgamal_proof_program_active = reenable_zk_elgamal_proof_program_active; // zk-elgamal gate
     // fix/cu-parity-batch2 (2026-07-12): tx-wide heap_size for the CU-cost
     // charge (NOT the region-size `heap_size` param above — see
     // requested_heap_bytes doc). Propagates unchanged through every CPI
@@ -1373,9 +1389,7 @@ pub fn v2DispatchBpfProgramMetered(
         const cci_disc = [_]u8{ 0x7c, 0x7e, 0x8b, 0x86, 0x7e, 0xe6, 0x64, 0x25 };
         if (std.mem.eql(u8, ix_data[0..8], &cci_disc)) {
             // Rate-limit: log first 20 dispatches per session
-            const CciProbe = struct {
-                var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
-            };
+            const CciProbe = struct { var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0); };
             const n = CciProbe.count.fetchAdd(1, .monotonic);
             if (n < 20) {
                 const clk = sysvars.getClockBytes() catch null;
@@ -1385,7 +1399,7 @@ pub fn v2DispatchBpfProgramMetered(
                 if (clk) |b| std.log.warn("[PR5AD-CCI-PROBE n={d}] clock len={d} bytes={x}", .{ n, b.len, b[0..@min(40, b.len)] });
                 if (es) |b| std.log.warn("[PR5AD-CCI-PROBE n={d}] epoch_schedule len={d} bytes={x}", .{ n, b.len, b[0..@min(33, b.len)] });
                 if (sh) |b| {
-                    std.log.warn("[PR5AD-CCI-PROBE n={d}] slot_history len={d} first16={x} last16={x}", .{ n, b.len, b[0..@min(16, b.len)], b[b.len -| 16..] });
+                    std.log.warn("[PR5AD-CCI-PROBE n={d}] slot_history len={d} first16={x} last16={x}", .{ n, b.len, b[0..@min(16, b.len)], b[b.len -| 16 ..] });
                 }
             }
         }
@@ -1406,14 +1420,7 @@ pub fn v2DispatchBpfProgramMetered(
                 vm.reg[11],
                 vm.due_insn_count,
                 &prog_short_for_err,
-                vm.reg[0],
-                vm.reg[1],
-                vm.reg[2],
-                vm.reg[3],
-                vm.reg[4],
-                vm.reg[5],
-                vm.reg[6],
-                vm.reg[10],
+                vm.reg[0], vm.reg[1], vm.reg[2], vm.reg[3], vm.reg[4], vm.reg[5], vm.reg[6], vm.reg[10],
             },
         );
         // CU-METER: a genuine program failure (incl. ExceededMaxInstructions)
@@ -1455,9 +1462,7 @@ pub fn v2DispatchBpfProgramMetered(
         if (r0_value == 6009 and program_id[0] == 0xf8 and program_id[1] == 0x75 and
             program_id[2] == 0x59 and program_id[3] == 0x62)
         {
-            const HjtErrProbe = struct {
-                var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0);
-            };
+            const HjtErrProbe = struct { var count: std.atomic.Value(u32) = std.atomic.Value(u32).init(0); };
             const en = HjtErrProbe.count.fetchAdd(1, .monotonic);
             if (en < 20) {
                 std.log.warn(
@@ -1469,12 +1474,7 @@ pub fn v2DispatchBpfProgramMetered(
                         vm.reg[11],
                         vm.due_insn_count,
                         vm.previous_instruction_meter,
-                        vm.reg[1],
-                        vm.reg[2],
-                        vm.reg[3],
-                        vm.reg[4],
-                        vm.reg[5],
-                        vm.reg[6],
+                        vm.reg[1], vm.reg[2], vm.reg[3], vm.reg[4], vm.reg[5], vm.reg[6],
                     },
                 );
                 // Dump snapshots: which accounts were loaded for this BPF dispatch
@@ -1654,7 +1654,8 @@ pub fn v2DispatchBpfProgramMetered(
                 }
             }
             break :blk canon.data[0..@min(canon.data.len, post_len_dm)];
-        } else out.data[0..@as(usize, @intCast(out.data_len))];
+        } else
+            out.data[0..@as(usize, @intCast(out.data_len))];
 
         // UnbalancedInstruction invariant: accumulate pre (snapshot / instruction
         // start) and post (post_lamports = the CANONICAL committed value — under
@@ -1683,9 +1684,11 @@ pub fn v2DispatchBpfProgramMetered(
                 const sp_pk = std.fmt.bytesToHex(s.pubkey[0..8], .lower);
                 const sp_own = std.fmt.bytesToHex(canon.owner[0..8], .lower);
                 std.log.warn("[DM-LAMPORT-SPLIT n={d}] slot={d} pk={s} owner={s} pre_lam={d} out_lam={d} canon_lam={d} committed_lam={d} owner_split={} lam_chg_vs_pre={}", .{
-                    sn,                                         current_slot,               &sp_pk,         &sp_own,
-                    s.lamports,                                 out.lamports,               canon.lamports, post_lamports,
-                    !std.mem.eql(u8, &out.owner, &canon.owner), out.lamports != s.lamports,
+                    sn,         current_slot, &sp_pk, &sp_own,
+                    s.lamports, out.lamports, canon.lamports,
+                    post_lamports,
+                    !std.mem.eql(u8, &out.owner, &canon.owner),
+                    out.lamports != s.lamports,
                 });
             }
         }
@@ -1694,6 +1697,7 @@ pub fn v2DispatchBpfProgramMetered(
         const owner_changed = !std.mem.eql(u8, &post_owner, &s.owner);
         const data_changed = (post_data.len != s.data.len) or
             (post_data.len > 0 and !std.mem.eql(u8, post_data, s.data));
+
 
         if (jito_probe_on) {
             const is_vh = std.mem.eql(u8, s.owner[0..8], &JITO_VH8);
@@ -1850,7 +1854,7 @@ pub fn v2DispatchBpfProgramMetered(
             list.append(alloc, .{
                 .pubkey = .{ .data = a.pubkey },
                 .new_lamports = a.lamports,
-                .owner = a.owner, // vex-039 restored: post-mutation owner (V2 CPI extras)
+                .owner = a.owner,  // vex-039 restored: post-mutation owner (V2 CPI extras)
                 .data = data_copy,
                 .new_owner = new_owner_opt,
             }) catch return DispatchError.OutOfMemory;

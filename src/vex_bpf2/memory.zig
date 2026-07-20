@@ -71,10 +71,10 @@ pub const MM_REGION_SIZE: u64 = @as(u64, 1) << VIRTUAL_ADDRESS_BITS;
 // canonical (elf.zig:216-218 defines the constants correctly). Treat the names
 // below as historical; never reference MM_BYTECODE_START/MM_RODATA_START for v3.
 pub const MM_BYTECODE_START: u64 = 0x000000000;
-pub const MM_RODATA_START: u64 = 0x100000000;
-pub const MM_STACK_START: u64 = 0x200000000;
-pub const MM_HEAP_START: u64 = 0x300000000;
-pub const MM_INPUT_START: u64 = 0x400000000;
+pub const MM_RODATA_START:   u64 = 0x100000000;
+pub const MM_STACK_START:    u64 = 0x200000000;
+pub const MM_HEAP_START:     u64 = 0x300000000;
+pub const MM_INPUT_START:    u64 = 0x400000000;
 
 // vex-079: BPF_ALIGN_OF_U128 — input serializer alignment stride.
 // Agave/Firedancer/sig agree on 8 (NOT 16). This constant is referenced by
@@ -265,8 +265,18 @@ pub const Region = struct {
                 return AccessError.AccessViolation;
             const end: u64 = std.math.add(u64, host_off, len) catch
                 return AccessError.AccessViolation;
-            // The access must NOT cross the frame boundary into a gap.
-            if (off_in_stride + len > self.frame_size) return AccessError.AccessViolation;
+            // agave memory_region.rs:109-134 (MemoryRegion::vm_to_host) and FD
+            // fd_vm_private.h:442-489 (fd_vm_mem_haddr) do NOT reject an access
+            // whose length runs past the CURRENT frame into the following gap,
+            // as long as the START addr isn't itself in a gap (off_in_stride >=
+            // self.frame_size, checked above) and the compacted host end stays
+            // within the region's physical buffer (end > self.host.len, below).
+            // VM-space gaps have no physical counterpart to violate; the prior
+            // non-canonical `off_in_stride + len > self.frame_size` guard here
+            // rejected legitimate multi-frame-spanning stack memcpy/memmove that
+            // Agave allows (conformance fixture memcpy/..._1443524.fix: dst=stack
+            // vaddr+0, n=5001 > STACK_FRAME_SIZE=4096, sbpf v0). Backported from
+            // zbpf 3451e50 (2026-07-18).
             if (end > self.host.len) return AccessError.AccessViolation;
             return self.host[host_off..end];
         } else {
@@ -685,7 +695,9 @@ pub const AlignedMemoryMap = struct {
         // (catches stores to RO-account data which MODE 1 silently allowed)
         // and is the load-bearing wire onto cluster's MODE 2/3 path.
         const is_input_region = (vm_addr >= MM_INPUT_START) and (vm_addr < MM_INPUT_START + MM_REGION_SIZE);
-        const use_region_resolver = (self.config.virtual_address_space_adjustments or self.config.direct_mapping) and is_input_region and self.input_mem_regions.len > 0;
+        const use_region_resolver = (self.config.virtual_address_space_adjustments or self.config.direct_mapping)
+            and is_input_region
+            and self.input_mem_regions.len > 0;
         if (use_region_resolver) {
             const offset = vm_addr - MM_INPUT_START;
             const is_write = acc.isWrite();

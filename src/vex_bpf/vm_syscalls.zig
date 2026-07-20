@@ -1,8 +1,29 @@
-//! Complete sBPF syscall implementations
+//! sBPF syscall implementations — NOT wired into any live dispatch path.
 //!
-//! All syscall IDs are murmur3_32(name, seed=0).  Every syscall listed in
-//! Agave's Syscall enum is implemented here — no stubs except for syscalls
-//! that require full CPI context which is handled by the CpiHandler callback.
+//! `registerAll` (below) has zero callers anywhere in this tree (verified by
+//! grep at fix/small-parity-batch-2026-07-17): this file's `SyscallMap` is
+//! never populated and none of these handlers execute on the live validator,
+//! not even as a fallback. The live BPF dispatch chain is
+//! `instruction_dispatch.dispatchBpfExecution` -> (resolvable ELF)
+//! `dispatchV3ViaV2Producer` -> `vex_bpf2/syscalls.zig`'s registry, or
+//! (ELF-resolution failure) `executeBpfProgram` -> `executeBpfProgramCore` ->
+//! `SbpfExecutor.execute`, which registers syscalls from the sibling file
+//! `src/vex_bpf/syscalls.zig` (a different, actually-consumed table — see
+//! `sbpf_executor.zig:24`), not this one. `build.zig` labels this file part
+//! of the "dormant-chain DELETE→KEEP verbatim-carry" set (module 67 comment)
+//! pending a post-migration cleanup pass.
+//!
+//! Several handlers below are genuine stubs (poseidon/secp256k1-recover/
+//! alt-bn128 group-op+compression return an unconditional placeholder value)
+//! — those TODOs are accurate statements about THIS file's code, just moot
+//! for live behavior since the file is never reached. `src/vex_bpf/
+//! syscalls.zig`, the table actually used by the legacy V1 fallback path,
+//! has a real (stub) secp256k1-recover but does not register poseidon or
+//! alt-bn128 at all; the actual pure-Zig BN254/Poseidon implementations live
+//! in `vex_crypto/bn254.zig` and are reachable only via the V2 dispatch path
+//! (`vex_bpf2/syscalls.zig`).
+//!
+//! All syscall IDs are murmur3_32(name, seed=0).
 //!
 //! References:
 //!   sig/src/vm/syscalls/lib.zig        (dispatch, logging, alloc, PDA, return data)
@@ -13,72 +34,68 @@
 //!   sig/src/vm/syscalls/cpi.zig        (CPI — thin shim for now)
 //!   fd_vm/syscall/fd_vm_syscall_*.c    (authoritative C implementations)
 
-const std = @import("std");
-const sbpf = @import("vm_sbpf.zig");
-const mem = @import("vm_memory.zig");
-const interp = @import("vm_interpreter.zig");
+const std     = @import("std");
+const sbpf    = @import("vm_sbpf.zig");
+const mem     = @import("vm_memory.zig");
+const interp  = @import("vm_interpreter.zig");
 const sys_cpi = @import("system_cpi.zig");
 
-const MemoryMap = mem.MemoryMap;
+const MemoryMap      = mem.MemoryMap;
 const SyscallContext = interp.SyscallContext;
-const SyscallMap = interp.SyscallMap;
-const SyscallFn = interp.SyscallFn;
+const SyscallMap     = interp.SyscallMap;
+const SyscallFn      = interp.SyscallFn;
 const ExecutionError = sbpf.ExecutionError;
-const ComputeBudget = sbpf.ComputeBudget;
+const ComputeBudget  = sbpf.ComputeBudget;
 
 // ── Syscall IDs: murmur3_32(name, 0) ─────────────────────────────────────────
 // Verified against Agave rbpf source and sig/src/vm/syscalls/lib.zig:Syscall.
 
-pub const ID_ABORT: u32 = 0xb6fc1a11;
-pub const ID_SOL_PANIC: u32 = 0x686093bb;
-pub const ID_SOL_LOG: u32 = 0x207559bd;
-pub const ID_SOL_LOG_64: u32 = 0x5c2a3178;
-pub const ID_SOL_LOG_PUBKEY: u32 = 0x7ef088ca;
-pub const ID_SOL_LOG_COMPUTE_UNITS: u32 = 0x52ba5096;
-pub const ID_SOL_LOG_DATA: u32 = 0x7317b434;
-pub const ID_SOL_MEMCPY: u32 = 0x717cc4a3;
-pub const ID_SOL_MEMMOVE: u32 = 0x434371f8;
-pub const ID_SOL_MEMCMP: u32 = 0x5fdcde31;
-pub const ID_SOL_MEMSET: u32 = 0x3770fb22;
-pub const ID_SOL_SHA256: u32 = 0x11f49d86;
-pub const ID_SOL_KECCAK256: u32 = 0xd7793abb;
-pub const ID_SOL_BLAKE3: u32 = 0x174c5122;
-pub const ID_SOL_POSEIDON: u32 = 0xc4947c21; // r74-vex-027: was 0xa5d8a0e6 (drifted); corrected to murmur3("sol_poseidon")
-pub const ID_SOL_SECP256K1_RECOVER: u32 = 0x17e40350;
-pub const ID_SOL_CURVE_VALIDATE: u32 = 0xaa2607ca;
-pub const ID_SOL_CURVE_GROUP_OP: u32 = 0xdd1c41a6; // r74-vex-027: was 0xbf2b90e1 (drifted); corrected to murmur3("sol_curve_group_op")
-pub const ID_SOL_CURVE_MSM: u32 = 0x60a40880; // r74-vex-027: was 0xcc6ada39 (drifted); corrected to murmur3("sol_curve_multiscalar_mul")
-pub const ID_SOL_ALT_BN128: u32 = 0xae0c318b; // r74-vex-027: was 0x23a6e300 (drifted); corrected to murmur3("sol_alt_bn128_group_op")
-pub const ID_SOL_ALT_BN128_COMPRESS: u32 = 0x334fd5ed; // r74-vex-027: was 0x9d4e2b9d (drifted); corrected to murmur3("sol_alt_bn128_compression")
-pub const ID_SOL_CREATE_PDA: u32 = 0x9377323c; // r74-vex-027: was 0x96108919 (drifted, trailing-underscore variant); corrected to murmur3("sol_create_program_address")
-pub const ID_SOL_TRY_FIND_PDA: u32 = 0x48504a38;
-pub const ID_SOL_INVOKE_SIGNED_C: u32 = 0xa22b9c85;
-pub const ID_SOL_INVOKE_SIGNED_R: u32 = 0xd7449092;
-pub const ID_SOL_ALLOC_FREE: u32 = 0x83f00e8f;
-pub const ID_SOL_GET_CLOCK: u32 = 0xd56b5fe9;
-pub const ID_SOL_GET_EPOCH_SCHED: u32 = 0x23a29a61;
-pub const ID_SOL_GET_FEES: u32 = 0x3b97b73c; // r74-vex-027: was 0xa5d20d1e (drifted); corrected to murmur3("sol_get_fees_sysvar")
-pub const ID_SOL_GET_RENT: u32 = 0xbf7188f6;
-pub const ID_SOL_GET_LAST_RESTART_SLOT: u32 = 0x188a0031; // r74-vex-027: corrected to murmur3("sol_get_last_restart_slot") — SIMD-0047
-pub const ID_SOL_GET_EPOCH_REWARDS: u32 = 0xfdba2b3b; // r74-vex-027: was 0x91d0dd4c (drifted); corrected to murmur3("sol_get_epoch_rewards_sysvar")
-pub const ID_SOL_SET_RETURN_DATA: u32 = 0xa226d3eb;
-pub const ID_SOL_GET_RETURN_DATA: u32 = 0x5d2245e4;
-pub const ID_SOL_GET_STACK_HEIGHT: u32 = 0x85532d94;
-pub const ID_SOL_GET_SIBLING: u32 = 0xadb8efc8;
-pub const ID_SOL_GET_SYSVAR: u32 = 0x13c1b505; // r74-vex-027: was 0x4caaee6e (drifted); corrected to murmur3("sol_get_sysvar") — SIMD-0127
-pub const ID_SOL_REMAINING_CU: u32 = 0xedef5aee; // r74-vex-027: was 0x3e2b5b08 (drifted); corrected to murmur3("sol_remaining_compute_units")
-pub const ID_SOL_GET_EPOCH_STAKE: u32 = 0x5be92f4a; // r74-vex-027: was 0x9b3ee6e2 (drifted); corrected to murmur3("sol_get_epoch_stake")
+pub const ID_ABORT                      : u32 = 0xb6fc1a11;
+pub const ID_SOL_PANIC                  : u32 = 0x686093bb;
+pub const ID_SOL_LOG                    : u32 = 0x207559bd;
+pub const ID_SOL_LOG_64                 : u32 = 0x5c2a3178;
+pub const ID_SOL_LOG_PUBKEY             : u32 = 0x7ef088ca;
+pub const ID_SOL_LOG_COMPUTE_UNITS      : u32 = 0x52ba5096;
+pub const ID_SOL_LOG_DATA               : u32 = 0x7317b434;
+pub const ID_SOL_MEMCPY                 : u32 = 0x717cc4a3;
+pub const ID_SOL_MEMMOVE                : u32 = 0x434371f8;
+pub const ID_SOL_MEMCMP                 : u32 = 0x5fdcde31;
+pub const ID_SOL_MEMSET                 : u32 = 0x3770fb22;
+pub const ID_SOL_SHA256                 : u32 = 0x11f49d86;
+pub const ID_SOL_KECCAK256              : u32 = 0xd7793abb;
+pub const ID_SOL_BLAKE3                 : u32 = 0x174c5122;
+pub const ID_SOL_POSEIDON               : u32 = 0xc4947c21;  // r74-vex-027: was 0xa5d8a0e6 (drifted); corrected to murmur3("sol_poseidon")
+pub const ID_SOL_SECP256K1_RECOVER      : u32 = 0x17e40350;
+pub const ID_SOL_CURVE_VALIDATE         : u32 = 0xaa2607ca;
+pub const ID_SOL_CURVE_GROUP_OP         : u32 = 0xdd1c41a6;  // r74-vex-027: was 0xbf2b90e1 (drifted); corrected to murmur3("sol_curve_group_op")
+pub const ID_SOL_CURVE_MSM              : u32 = 0x60a40880;  // r74-vex-027: was 0xcc6ada39 (drifted); corrected to murmur3("sol_curve_multiscalar_mul")
+pub const ID_SOL_ALT_BN128              : u32 = 0xae0c318b;  // r74-vex-027: was 0x23a6e300 (drifted); corrected to murmur3("sol_alt_bn128_group_op")
+pub const ID_SOL_ALT_BN128_COMPRESS     : u32 = 0x334fd5ed;  // r74-vex-027: was 0x9d4e2b9d (drifted); corrected to murmur3("sol_alt_bn128_compression")
+pub const ID_SOL_CREATE_PDA             : u32 = 0x9377323c;  // r74-vex-027: was 0x96108919 (drifted, trailing-underscore variant); corrected to murmur3("sol_create_program_address")
+pub const ID_SOL_TRY_FIND_PDA           : u32 = 0x48504a38;
+pub const ID_SOL_INVOKE_SIGNED_C        : u32 = 0xa22b9c85;
+pub const ID_SOL_INVOKE_SIGNED_R        : u32 = 0xd7449092;
+pub const ID_SOL_ALLOC_FREE             : u32 = 0x83f00e8f;
+pub const ID_SOL_GET_CLOCK              : u32 = 0xd56b5fe9;
+pub const ID_SOL_GET_EPOCH_SCHED        : u32 = 0x23a29a61;
+pub const ID_SOL_GET_FEES               : u32 = 0x3b97b73c;  // r74-vex-027: was 0xa5d20d1e (drifted); corrected to murmur3("sol_get_fees_sysvar")
+pub const ID_SOL_GET_RENT               : u32 = 0xbf7188f6;
+pub const ID_SOL_GET_LAST_RESTART_SLOT  : u32 = 0x188a0031;  // r74-vex-027: corrected to murmur3("sol_get_last_restart_slot") — SIMD-0047
+pub const ID_SOL_GET_EPOCH_REWARDS      : u32 = 0xfdba2b3b;  // r74-vex-027: was 0x91d0dd4c (drifted); corrected to murmur3("sol_get_epoch_rewards_sysvar")
+pub const ID_SOL_SET_RETURN_DATA        : u32 = 0xa226d3eb;
+pub const ID_SOL_GET_RETURN_DATA        : u32 = 0x5d2245e4;
+pub const ID_SOL_GET_STACK_HEIGHT       : u32 = 0x85532d94;
+pub const ID_SOL_GET_SIBLING            : u32 = 0xadb8efc8;
+pub const ID_SOL_GET_SYSVAR             : u32 = 0x13c1b505;  // r74-vex-027: was 0x4caaee6e (drifted); corrected to murmur3("sol_get_sysvar") — SIMD-0127
+pub const ID_SOL_REMAINING_CU           : u32 = 0xedef5aee;  // r74-vex-027: was 0x3e2b5b08 (drifted); corrected to murmur3("sol_remaining_compute_units")
+pub const ID_SOL_GET_EPOCH_STAKE        : u32 = 0x5be92f4a;  // r74-vex-027: was 0x9b3ee6e2 (drifted); corrected to murmur3("sol_get_epoch_stake")
 
 // ── CPI callback ─────────────────────────────────────────────────────────────
 // When the Vm encounters sol_invoke_signed, it calls this if wired in.
 pub const CpiHandlerFn = *const fn (
     cpi_ctx: *anyopaque,
-    sc_ctx: *SyscallContext,
-    r1: u64,
-    r2: u64,
-    r3: u64,
-    r4: u64,
-    r5: u64,
+    sc_ctx:  *SyscallContext,
+    r1: u64, r2: u64, r3: u64, r4: u64, r5: u64,
 ) ExecutionError!u64;
 
 pub const CpiHandler = struct {
@@ -89,12 +106,8 @@ pub const CpiHandler = struct {
 // Thread-local CPI handler; wired by the executor before each invocation.
 var tls_cpi_handler: ?CpiHandler = null;
 
-pub fn setCpiHandler(h: CpiHandler) void {
-    tls_cpi_handler = h;
-}
-pub fn clearCpiHandler() void {
-    tls_cpi_handler = null;
-}
+pub fn setCpiHandler(h: CpiHandler) void { tls_cpi_handler = h; }
+pub fn clearCpiHandler() void            { tls_cpi_handler = null; }
 
 // ── vex-152 W3: inline System program CPI counters (observability) ──────────
 pub const SystemCpiDiag = struct {
@@ -112,9 +125,9 @@ pub const SystemCpiDiag = struct {
 
 pub fn snapshotSystemCpi() [9]u64 {
     return .{
-        SystemCpiDiag.total,      SystemCpiDiag.transfer, SystemCpiDiag.create_account,
-        SystemCpiDiag.allocate,   SystemCpiDiag.assign,   SystemCpiDiag.with_seed_stub,
-        SystemCpiDiag.nonce_stub, SystemCpiDiag.ok,       SystemCpiDiag.err,
+        SystemCpiDiag.total, SystemCpiDiag.transfer, SystemCpiDiag.create_account,
+        SystemCpiDiag.allocate, SystemCpiDiag.assign, SystemCpiDiag.with_seed_stub,
+        SystemCpiDiag.nonce_stub, SystemCpiDiag.ok, SystemCpiDiag.err,
     };
 }
 
@@ -124,45 +137,45 @@ pub fn snapshotSystemCpi() [9]u64 {
 /// cf. sig/src/vm/syscalls/lib.zig:Syscall.Registry + sig Syscall.map
 pub fn registerAll(smap: *SyscallMap, allocator: std.mem.Allocator) error{OutOfMemory}!void {
     const put = SyscallMap.put;
-    try put(smap, allocator, ID_ABORT, abort_);
-    try put(smap, allocator, ID_SOL_PANIC, solPanic);
-    try put(smap, allocator, ID_SOL_LOG, solLog);
-    try put(smap, allocator, ID_SOL_LOG_64, solLog64);
-    try put(smap, allocator, ID_SOL_LOG_PUBKEY, solLogPubkey);
-    try put(smap, allocator, ID_SOL_LOG_COMPUTE_UNITS, solLogComputeUnits);
-    try put(smap, allocator, ID_SOL_LOG_DATA, solLogData);
-    try put(smap, allocator, ID_SOL_MEMCPY, solMemcpy);
-    try put(smap, allocator, ID_SOL_MEMMOVE, solMemmove);
-    try put(smap, allocator, ID_SOL_MEMCMP, solMemcmp);
-    try put(smap, allocator, ID_SOL_MEMSET, solMemset);
-    try put(smap, allocator, ID_SOL_SHA256, solSha256);
-    try put(smap, allocator, ID_SOL_KECCAK256, solKeccak256);
-    try put(smap, allocator, ID_SOL_BLAKE3, solBlake3);
-    try put(smap, allocator, ID_SOL_POSEIDON, solPoseidon);
-    try put(smap, allocator, ID_SOL_SECP256K1_RECOVER, solSecp256k1Recover);
-    try put(smap, allocator, ID_SOL_CURVE_VALIDATE, solCurveValidate);
-    try put(smap, allocator, ID_SOL_CURVE_GROUP_OP, solCurveGroupOp);
-    try put(smap, allocator, ID_SOL_CURVE_MSM, solCurveMsm);
-    try put(smap, allocator, ID_SOL_ALT_BN128, solAltBn128GroupOp);
+    try put(smap, allocator, ID_ABORT,                  abort_);
+    try put(smap, allocator, ID_SOL_PANIC,              solPanic);
+    try put(smap, allocator, ID_SOL_LOG,                solLog);
+    try put(smap, allocator, ID_SOL_LOG_64,             solLog64);
+    try put(smap, allocator, ID_SOL_LOG_PUBKEY,         solLogPubkey);
+    try put(smap, allocator, ID_SOL_LOG_COMPUTE_UNITS,  solLogComputeUnits);
+    try put(smap, allocator, ID_SOL_LOG_DATA,           solLogData);
+    try put(smap, allocator, ID_SOL_MEMCPY,             solMemcpy);
+    try put(smap, allocator, ID_SOL_MEMMOVE,            solMemmove);
+    try put(smap, allocator, ID_SOL_MEMCMP,             solMemcmp);
+    try put(smap, allocator, ID_SOL_MEMSET,             solMemset);
+    try put(smap, allocator, ID_SOL_SHA256,             solSha256);
+    try put(smap, allocator, ID_SOL_KECCAK256,          solKeccak256);
+    try put(smap, allocator, ID_SOL_BLAKE3,             solBlake3);
+    try put(smap, allocator, ID_SOL_POSEIDON,           solPoseidon);
+    try put(smap, allocator, ID_SOL_SECP256K1_RECOVER,  solSecp256k1Recover);
+    try put(smap, allocator, ID_SOL_CURVE_VALIDATE,     solCurveValidate);
+    try put(smap, allocator, ID_SOL_CURVE_GROUP_OP,     solCurveGroupOp);
+    try put(smap, allocator, ID_SOL_CURVE_MSM,          solCurveMsm);
+    try put(smap, allocator, ID_SOL_ALT_BN128,          solAltBn128GroupOp);
     try put(smap, allocator, ID_SOL_ALT_BN128_COMPRESS, solAltBn128Compress);
-    try put(smap, allocator, ID_SOL_CREATE_PDA, solCreatePda);
-    try put(smap, allocator, ID_SOL_TRY_FIND_PDA, solTryFindPda);
-    try put(smap, allocator, ID_SOL_INVOKE_SIGNED_C, solInvokeSigned);
-    try put(smap, allocator, ID_SOL_INVOKE_SIGNED_R, solInvokeSigned);
-    try put(smap, allocator, ID_SOL_ALLOC_FREE, solAllocFree);
-    try put(smap, allocator, ID_SOL_GET_CLOCK, solGetClock);
-    try put(smap, allocator, ID_SOL_GET_EPOCH_SCHED, solGetEpochSchedule);
-    try put(smap, allocator, ID_SOL_GET_FEES, solGetFees);
-    try put(smap, allocator, ID_SOL_GET_RENT, solGetRent);
+    try put(smap, allocator, ID_SOL_CREATE_PDA,         solCreatePda);
+    try put(smap, allocator, ID_SOL_TRY_FIND_PDA,       solTryFindPda);
+    try put(smap, allocator, ID_SOL_INVOKE_SIGNED_C,    solInvokeSigned);
+    try put(smap, allocator, ID_SOL_INVOKE_SIGNED_R,    solInvokeSigned);
+    try put(smap, allocator, ID_SOL_ALLOC_FREE,         solAllocFree);
+    try put(smap, allocator, ID_SOL_GET_CLOCK,          solGetClock);
+    try put(smap, allocator, ID_SOL_GET_EPOCH_SCHED,    solGetEpochSchedule);
+    try put(smap, allocator, ID_SOL_GET_FEES,           solGetFees);
+    try put(smap, allocator, ID_SOL_GET_RENT,           solGetRent);
     try put(smap, allocator, ID_SOL_GET_LAST_RESTART_SLOT, solGetLastRestartSlot);
-    try put(smap, allocator, ID_SOL_GET_EPOCH_REWARDS, solGetEpochRewards);
-    try put(smap, allocator, ID_SOL_SET_RETURN_DATA, solSetReturnData);
-    try put(smap, allocator, ID_SOL_GET_RETURN_DATA, solGetReturnData);
-    try put(smap, allocator, ID_SOL_GET_STACK_HEIGHT, solGetStackHeight);
-    try put(smap, allocator, ID_SOL_GET_SIBLING, solGetSibling);
-    try put(smap, allocator, ID_SOL_GET_SYSVAR, solGetSysvar);
-    try put(smap, allocator, ID_SOL_REMAINING_CU, solRemainingComputeUnits);
-    try put(smap, allocator, ID_SOL_GET_EPOCH_STAKE, solGetEpochStake);
+    try put(smap, allocator, ID_SOL_GET_EPOCH_REWARDS,  solGetEpochRewards);
+    try put(smap, allocator, ID_SOL_SET_RETURN_DATA,    solSetReturnData);
+    try put(smap, allocator, ID_SOL_GET_RETURN_DATA,    solGetReturnData);
+    try put(smap, allocator, ID_SOL_GET_STACK_HEIGHT,   solGetStackHeight);
+    try put(smap, allocator, ID_SOL_GET_SIBLING,        solGetSibling);
+    try put(smap, allocator, ID_SOL_GET_SYSVAR,         solGetSysvar);
+    try put(smap, allocator, ID_SOL_REMAINING_CU,       solRemainingComputeUnits);
+    try put(smap, allocator, ID_SOL_GET_EPOCH_STAKE,    solGetEpochStake);
 }
 
 // ── Memory translation helpers ────────────────────────────────────────────────
@@ -177,6 +190,7 @@ pub fn registerAll(smap: *SyscallMap, allocator: std.mem.Allocator) error{OutOfM
 /// yet include a MemoryMap pointer.  We accept this limitation; full integration
 /// requires extending SyscallContext.  For now, syscalls that need memory translation
 /// receive the MemoryMap from the context extension below.
+
 const MAX_LOG_LEN: u64 = 10_000;
 const MAX_SLICE_LEN: u64 = 32 * 1024 * 1024; // 32 MiB absolute cap
 
@@ -207,7 +221,7 @@ fn abort_(_: *SyscallContext, _: u64, _: u64, _: u64, _: u64, _: u64) ExecutionE
 fn solPanic(ctx: *SyscallContext, file_vm: u64, file_len: u64, line: u64, col: u64, _: u64) ExecutionError!u64 {
     const mm = sc(ctx).memory_map;
     const file: []const u8 = mm.vmap(.constant, file_vm, @min(file_len, 512)) catch "<?>";
-    std.log.warn("[SBPF] panic at {s}:{}:{}", .{ file, line, col });
+    std.log.warn("[SBPF] panic at {s}:{}:{}", .{file, line, col});
     return ExecutionError.Exit;
 }
 
@@ -234,7 +248,7 @@ fn solLog64(_: *SyscallContext, a: u64, b: u64, c: u64, d: u64, e: u64) Executio
     if (b0 == 0x8c or b0 == 0xe3 or b0 == 0x06) {
         std.log.err("[BPF-MSG-64] prog={x:0>2}{x:0>2} 0x{x} 0x{x} 0x{x} 0x{x} 0x{x}", .{ b0, interp.Bpf143.cur_prog_b1, a, b, c, d, e });
     } else {
-        std.log.debug("[Program] 0x{x} 0x{x} 0x{x} 0x{x} 0x{x}", .{ a, b, c, d, e });
+        std.log.debug("[Program] 0x{x} 0x{x} 0x{x} 0x{x} 0x{x}", .{a,b,c,d,e});
     }
     return 0;
 }
@@ -268,7 +282,7 @@ fn solLogData(ctx: *SyscallContext, slices_vm: u64, n: u64, _: u64, _: u64, _: u
     while (i < n) : (i += 1) {
         const off = @as(usize, @intCast(i)) * 16;
         const ptr = std.mem.readInt(u64, hdrs[off..][0..8], .little);
-        const len = std.mem.readInt(u64, hdrs[off + 8 ..][0..8], .little);
+        const len = std.mem.readInt(u64, hdrs[off+8..][0..8], .little);
         consumeCu(ctx, len);
         const data = mm.vmap(.constant, ptr, @min(len, 1024)) catch continue;
         if (panic_loop) {
@@ -309,16 +323,13 @@ fn solMemcmp(ctx: *SyscallContext, a_vm: u64, b_vm: u64, n: u64, out_vm: u64, _:
     if (n > MAX_SLICE_LEN) return ExecutionError.AccessViolation;
     consumeCu(ctx, n / 1024 + ComputeBudget.MEM_OP_BASE_COST);
     const mm = sc(ctx).memory_map;
-    const a = try mm.vmap(.constant, a_vm, n);
-    const b = try mm.vmap(.constant, b_vm, n);
+    const a   = try mm.vmap(.constant, a_vm, n);
+    const b   = try mm.vmap(.constant, b_vm, n);
     const out = try mm.vmap(.mutable, out_vm, 4);
     var cmp: i32 = 0;
     var mi: usize = 0;
     while (mi < @as(usize, @intCast(n))) : (mi += 1) {
-        if (a[mi] != b[mi]) {
-            cmp = @as(i32, a[mi]) - @as(i32, b[mi]);
-            break;
-        }
+        if (a[mi] != b[mi]) { cmp = @as(i32, a[mi]) - @as(i32, b[mi]); break; }
     }
     std.mem.writeInt(i32, out[0..4], cmp, .little);
     return 0;
@@ -345,7 +356,7 @@ fn solAllocFree(ctx: *SyscallContext, size: u64, free_addr: u64, _: u64, _: u64,
     const align_to: u64 = 16;
     const bytes_to_align = (align_to - (ctx.bpf_alloc_pos % align_to)) % align_to;
     const start = ctx.bpf_alloc_pos + bytes_to_align;
-    const end = start + size;
+    const end   = start + size;
     if (end > sbpf.HEAP_SIZE) return 0; // OOM → null (not an error)
     ctx.bpf_alloc_pos = end;
     return sbpf.HEAP_START + start;
@@ -398,11 +409,12 @@ fn solBlake3(ctx: *SyscallContext, sl_vm: u64, n: u64, out_vm: u64, _: u64, _: u
     return hashSlices(std.crypto.hash.Blake3, ctx, sl_vm, n, out_vm, 32);
 }
 
-/// Poseidon hash (SIMD-0193) — returns 1 (unimplemented) for now.
-/// Full implementation requires a Poseidon BN254 implementation.
-/// sig/src/vm/syscalls/hash.zig:poseidon
+/// Genuine stub — always returns 1 (unimplemented). Not registered by
+/// `registerAll` (dead table, see file header) and not the syscall a live
+/// `sol_poseidon` call reaches; the real pure-Zig implementation is
+/// `vex_crypto.bn254.poseidonHash` via `vex_bpf2/syscalls.zig`.
 fn solPoseidon(_: *SyscallContext, _: u64, _: u64, _: u64, _: u64, _: u64) ExecutionError!u64 {
-    return 1; // TODO: implement Poseidon BN254 (cf. sig/src/vm/syscalls/hash.zig:poseidon)
+    return 1; // unimplemented in this dormant table (see file header)
 }
 
 // ── secp256k1 recover ─────────────────────────────────────────────────────────
@@ -411,28 +423,26 @@ fn solPoseidon(_: *SyscallContext, _: u64, _: u64, _: u64, _: u64, _: u64) Execu
 
 fn solSecp256k1Recover(
     ctx: *SyscallContext,
-    hash_vm: u64,
-    recovery_id_vm: u64,
-    sig_vm: u64,
-    result_vm: u64,
-    _: u64,
+    hash_vm: u64, recovery_id_vm: u64, sig_vm: u64, result_vm: u64, _: u64,
 ) ExecutionError!u64 {
     consumeCu(ctx, ComputeBudget.SECP256K1_COST);
     const mm = sc(ctx).memory_map;
 
     // Validate input addresses are accessible — even if we can't recover yet.
-    _ = try mm.vmap(.constant, hash_vm, 32); // 32-byte hash
-    _ = try mm.vmap(.constant, sig_vm, 64); // 64-byte (r||s) signature
+    _ = try mm.vmap(.constant, hash_vm,        32); // 32-byte hash
+    _ = try mm.vmap(.constant, sig_vm,         64); // 64-byte (r||s) signature
     const recovery_id_bytes = try mm.vmap(.constant, recovery_id_vm, 8);
-    _ = try mm.vmap(.mutable, result_vm, 64); // output: uncompressed pubkey (x||y)
+    _ = try mm.vmap(.mutable,  result_vm,      64); // output: uncompressed pubkey (x||y)
 
     const rec_id = std.mem.readInt(u64, recovery_id_bytes[0..8], .little);
     if (rec_id > 3) return 2; // invalid recovery id
 
-    // TODO: implement full secp256k1 recovery once std.crypto.sign.ecdsa gains
-    // recoverPublicKey or we import a BPF-compatible secp256k1 implementation.
-    // cf. sig/src/vm/syscalls/ecc.zig:secp256k1Recover (uses Ecdsa(Secp256k1, Keccak256))
-    // cf. fd_vm/syscall/fd_vm_syscall_cryp.c:fd_vm_syscall_sol_secp256k1_recover
+    // Genuine stub — always returns 1 (invalid signature) regardless of
+    // input. Not registered by `registerAll` (dead table, see file header);
+    // the syscall a live secp256k1_recover call actually reaches is
+    // `vex_crypto.secp256k1.recoverPublicKey` via `vex_bpf2/syscalls.zig`
+    // (real pure-Zig ECDSA recovery — its failure-path error mapping is a
+    // separate, already-tracked parity item, unrelated to this dead table).
     return 1; // 1 = invalid signature (programs handle gracefully)
 }
 
@@ -441,11 +451,7 @@ fn solSecp256k1Recover(
 
 fn solCurveValidate(
     ctx: *SyscallContext,
-    curve_id: u64,
-    point_vm: u64,
-    _: u64,
-    _: u64,
-    _: u64,
+    curve_id: u64, point_vm: u64, _: u64, _: u64, _: u64,
 ) ExecutionError!u64 {
     consumeCu(ctx, ComputeBudget.CURVE25519_VALIDATE);
     const mm = sc(ctx).memory_map;
@@ -453,15 +459,13 @@ fn solCurveValidate(
     switch (curve_id) {
         0 => { // Edwards25519
             const buf = try mm.vmap(.constant, point_vm, 32);
-            var arr: [32]u8 = undefined;
-            @memcpy(&arr, buf);
+            var arr: [32]u8 = undefined; @memcpy(&arr, buf);
             const result = std.crypto.ecc.Edwards25519.fromBytes(arr);
             return @intFromBool(std.meta.isError(result));
         },
         1 => { // Ristretto255
             const buf = try mm.vmap(.constant, point_vm, 32);
-            var arr: [32]u8 = undefined;
-            @memcpy(&arr, buf);
+            var arr: [32]u8 = undefined; @memcpy(&arr, buf);
             const result = std.crypto.ecc.Ristretto255.fromBytes(arr);
             return @intFromBool(std.meta.isError(result));
         },
@@ -471,25 +475,19 @@ fn solCurveValidate(
 
 fn solCurveGroupOp(
     ctx: *SyscallContext,
-    curve_id: u64,
-    group_op: u64,
-    left_vm: u64,
-    right_vm: u64,
-    result_vm: u64,
+    curve_id: u64, group_op: u64, left_vm: u64, right_vm: u64, result_vm: u64,
 ) ExecutionError!u64 {
     consumeCu(ctx, ComputeBudget.CURVE25519_GROUP_OP);
     const mm = sc(ctx).memory_map;
 
     if (curve_id > 1) return 1; // only Edwards/Ristretto supported
 
-    const left_buf = try mm.vmap(.constant, left_vm, 32);
+    const left_buf  = try mm.vmap(.constant, left_vm,  32);
     const right_buf = try mm.vmap(.constant, right_vm, 32);
-    const out_buf = try mm.vmap(.mutable, result_vm, 32);
+    const out_buf   = try mm.vmap(.mutable,  result_vm, 32);
 
-    var la: [32]u8 = undefined;
-    @memcpy(&la, left_buf);
-    var ra: [32]u8 = undefined;
-    @memcpy(&ra, right_buf);
+    var la: [32]u8 = undefined; @memcpy(&la, left_buf);
+    var ra: [32]u8 = undefined; @memcpy(&ra, right_buf);
 
     if (curve_id == 0) {
         // Edwards25519
@@ -531,11 +529,7 @@ fn solCurveGroupOp(
 /// sig/src/vm/syscalls/ecc.zig:curveMultiscalarMul
 fn solCurveMsm(
     ctx: *SyscallContext,
-    curve_id: u64,
-    scalars_vm: u64,
-    points_vm: u64,
-    n: u64,
-    result_vm: u64,
+    curve_id: u64, scalars_vm: u64, points_vm: u64, n: u64, result_vm: u64,
 ) ExecutionError!u64 {
     if (n > 512) return 1;
     consumeCu(ctx, ComputeBudget.CURVE25519_GROUP_OP *| n);
@@ -544,8 +538,8 @@ fn solCurveMsm(
     if (curve_id > 1) return 1;
 
     const scalars_raw = try mm.vmap(.constant, scalars_vm, n * 32);
-    const points_raw = try mm.vmap(.constant, points_vm, n * 32);
-    const out_buf = try mm.vmap(.mutable, result_vm, 32);
+    const points_raw  = try mm.vmap(.constant, points_vm,  n * 32);
+    const out_buf     = try mm.vmap(.mutable,  result_vm,  32);
 
     const Edwards25519 = std.crypto.ecc.Edwards25519;
     const Ristretto255 = std.crypto.ecc.Ristretto255;
@@ -589,14 +583,21 @@ fn solCurveMsm(
 }
 
 /// alt-bn128 group operations (pairing-friendly curves, SIMD-0129).
-/// sig/src/vm/syscalls/ecc.zig:altBn128GroupOp
-/// TODO: requires a BN254 implementation.  Returns 1 (unimplemented) for now.
+/// Genuine stub — always returns 1 (unimplemented). Not registered by
+/// `registerAll` (dead table, see file header) and not the syscall a live
+/// `sol_alt_bn128_group_op` call reaches; the real pure-Zig implementation is
+/// `vex_crypto.bn254.g1Add`/`g1Mul`/`g2Add`/`g2Mul`/`pairing` via
+/// `vex_bpf2/syscalls.zig`.
 fn solAltBn128GroupOp(_: *SyscallContext, _: u64, _: u64, _: u64, _: u64, _: u64) ExecutionError!u64 {
-    return 1; // TODO: implement BN254 (cf. sig/src/vm/syscalls/ecc.zig:altBn128GroupOp)
+    return 1; // unimplemented in this dormant table (see file header)
 }
 
+/// Genuine stub — always returns 1 (unimplemented). Not registered by
+/// `registerAll` (dead table, see file header); the real pure-Zig
+/// compress/decompress implementation is `vex_crypto.bn254.g1Compress`/
+/// `g1Decompress`/`g2Compress`/`g2Decompress` via `vex_bpf2/syscalls.zig`.
 fn solAltBn128Compress(_: *SyscallContext, _: u64, _: u64, _: u64, _: u64, _: u64) ExecutionError!u64 {
-    return 1; // TODO: implement BN254 point compression
+    return 1; // unimplemented in this dormant table (see file header)
 }
 
 // ── PDA (Program Derived Addresses) ──────────────────────────────────────────
@@ -613,7 +614,7 @@ fn pdaHash(
     if (n_seeds > 16) return null;
     const SeedHdr = extern struct { ptr: u64, len: u64 };
     const hdrs_raw = try mm.vmap(.constant, seeds_vm, n_seeds * @sizeOf(SeedHdr));
-    const prog_id = try mm.vmap(.constant, program_id_vm, 32);
+    const prog_id  = try mm.vmap(.constant, program_id_vm, 32);
 
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     var i: u64 = 0;
@@ -655,7 +656,7 @@ fn solTryFindPda(ctx: *SyscallContext, seeds_vm: u64, n: u64, prog_vm: u64, out_
     while (true) {
         const hash = pdaHash(mm, seeds_vm, n, prog_vm, bump) catch return ExecutionError.AccessViolation;
         if (hash) |h| {
-            const out = try mm.vmap(.mutable, out_vm, 32);
+            const out  = try mm.vmap(.mutable, out_vm, 32);
             const bout = try mm.vmap(.mutable, bump_vm, 1);
             @memcpy(out, &h);
             bout[0] = bump;
@@ -709,13 +710,10 @@ fn solInvokeSigned(ctx: *SyscallContext, r1: u64, r2: u64, r3: u64, r4: u64, r5:
         if (mm.vmap(.constant, pid_ptr, 32)) |pid_bytes| {
             // Match against System program ID (all-zero pubkey).
             var is_system = true;
-            for (pid_bytes[0..32]) |b| if (b != 0) {
-                is_system = false;
-                break;
-            };
+            for (pid_bytes[0..32]) |b| if (b != 0) { is_system = false; break; };
             if (is_system) {
                 const data_addr = std.mem.readInt(u64, ix_raw[24..32], .little);
-                const data_len = std.mem.readInt(u64, ix_raw[32..40], .little);
+                const data_len  = std.mem.readInt(u64, ix_raw[32..40], .little);
                 return dispatchSystemCpi(ctx, mm, data_addr, data_len, r2, r3, r4, r5);
             }
         } else |_| {}
@@ -744,9 +742,9 @@ fn dispatchSystemCpi(
     _: *SyscallContext,
     mm: *mem.MemoryMap,
     data_addr: u64,
-    data_len: u64,
-    accts_vm: u64,
-    accts_n: u64,
+    data_len:  u64,
+    accts_vm:  u64,
+    accts_n:   u64,
     _: u64, // signers_seeds_ptr — Phase 1 ignores
     _: u64, // signers_seeds_len — Phase 1 ignores
 ) ExecutionError!u64 {
@@ -771,11 +769,11 @@ fn dispatchSystemCpi(
         fn one(m: *mem.MemoryMap, base: u64, idx: u64) ?sys_cpi.AccountSlice {
             const off = base + idx * SOL_ACCT_INFO_STRIDE;
             const info_raw = m.vmap(.constant, off, SOL_ACCT_INFO_STRIDE) catch return null;
-            const key_vm = std.mem.readInt(u64, info_raw[0..8], .little);
-            const lam_vm = std.mem.readInt(u64, info_raw[8..16], .little);
-            const dlen = std.mem.readInt(u64, info_raw[16..24], .little);
-            const data_vm = std.mem.readInt(u64, info_raw[24..32], .little);
-            const owner_vm = std.mem.readInt(u64, info_raw[32..40], .little);
+            const key_vm     = std.mem.readInt(u64, info_raw[0..8],   .little);
+            const lam_vm     = std.mem.readInt(u64, info_raw[8..16],  .little);
+            const dlen       = std.mem.readInt(u64, info_raw[16..24], .little);
+            const data_vm    = std.mem.readInt(u64, info_raw[24..32], .little);
+            const owner_vm   = std.mem.readInt(u64, info_raw[32..40], .little);
             const is_writable = info_raw[49] != 0;
 
             const lam_slice = m.vmap(.mutable, lam_vm, 8) catch return null;
@@ -814,33 +812,22 @@ fn dispatchSystemCpi(
     }.one;
 
     const log_n_max: u64 = 32;
-    const SystemCpiLogState = struct {
-        var n: u64 = 0;
-    };
+    const SystemCpiLogState = struct { var n: u64 = 0; };
 
     switch (disc) {
         sys_cpi.IX_TRANSFER => {
             SystemCpiDiag.transfer += 1;
-            if (accts_n < 2 or data_len < 12) {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            }
+            if (accts_n < 2 or data_len < 12) { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; }
             const lamports = std.mem.readInt(u64, ix_data[4..12], .little);
-            const from = parse(mm, accts_vm, 0) orelse {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            };
-            const to = parse(mm, accts_vm, 1) orelse {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            };
+            const from = parse(mm, accts_vm, 0) orelse { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; };
+            const to   = parse(mm, accts_vm, 1) orelse { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; };
             const rc = sys_cpi.execTransfer(from, to, lamports);
             if (SystemCpiLogState.n < log_n_max) {
                 SystemCpiLogState.n += 1;
                 std.log.debug("[CPI-SYSTEM] kind=Transfer from={x:0>2}{x:0>2}..{x:0>2}{x:0>2} to={x:0>2}{x:0>2}..{x:0>2}{x:0>2} lamports={d} rc={d}\n", .{
                     from.pubkey[0], from.pubkey[1], from.pubkey[30], from.pubkey[31],
                     to.pubkey[0],   to.pubkey[1],   to.pubkey[30],   to.pubkey[31],
-                    lamports,       rc,
+                    lamports, rc,
                 });
             }
             if (rc == 0) SystemCpiDiag.ok += 1 else SystemCpiDiag.err += 1;
@@ -849,30 +836,22 @@ fn dispatchSystemCpi(
         sys_cpi.IX_CREATE_ACCOUNT => {
             SystemCpiDiag.create_account += 1;
             // Layout: u32 disc, u64 lamports, u64 space, [32]u8 owner = 52 bytes.
-            if (accts_n < 2 or data_len < 52) {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            }
-            const lamports = std.mem.readInt(u64, ix_data[4..12], .little);
-            const space = std.mem.readInt(u64, ix_data[12..20], .little);
+            if (accts_n < 2 or data_len < 52) { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; }
+            const lamports = std.mem.readInt(u64, ix_data[4..12],  .little);
+            const space    = std.mem.readInt(u64, ix_data[12..20], .little);
             var owner: [32]u8 = undefined;
             @memcpy(&owner, ix_data[20..52]);
-            const from = parse(mm, accts_vm, 0) orelse {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            };
-            const to = parse(mm, accts_vm, 1) orelse {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            };
+            const from = parse(mm, accts_vm, 0) orelse { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; };
+            const to   = parse(mm, accts_vm, 1) orelse { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; };
             const rc = sys_cpi.execCreateAccount(from, to, lamports, space, owner);
             if (SystemCpiLogState.n < log_n_max) {
                 SystemCpiLogState.n += 1;
                 std.log.debug("[CPI-SYSTEM] kind=CreateAccount fee_payer={x:0>2}{x:0>2}..{x:0>2}{x:0>2} new={x:0>2}{x:0>2}..{x:0>2}{x:0>2} lamports={d} space={d} owner={x:0>2}{x:0>2}..{x:0>2}{x:0>2} rc={d}\n", .{
                     from.pubkey[0], from.pubkey[1], from.pubkey[30], from.pubkey[31],
                     to.pubkey[0],   to.pubkey[1],   to.pubkey[30],   to.pubkey[31],
-                    lamports,       space,          owner[0],        owner[1],
-                    owner[30],      owner[31],      rc,
+                    lamports, space,
+                    owner[0], owner[1], owner[30], owner[31],
+                    rc,
                 });
             }
             if (rc == 0) SystemCpiDiag.ok += 1 else SystemCpiDiag.err += 1;
@@ -880,15 +859,9 @@ fn dispatchSystemCpi(
         },
         sys_cpi.IX_ALLOCATE => {
             SystemCpiDiag.allocate += 1;
-            if (accts_n < 1 or data_len < 12) {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            }
+            if (accts_n < 1 or data_len < 12) { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; }
             const space = std.mem.readInt(u64, ix_data[4..12], .little);
-            const tgt = parse(mm, accts_vm, 0) orelse {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            };
+            const tgt = parse(mm, accts_vm, 0) orelse { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; };
             const rc = sys_cpi.execAllocate(tgt, space);
             if (SystemCpiLogState.n < log_n_max) {
                 SystemCpiLogState.n += 1;
@@ -901,29 +874,25 @@ fn dispatchSystemCpi(
         },
         sys_cpi.IX_ASSIGN => {
             SystemCpiDiag.assign += 1;
-            if (accts_n < 1 or data_len < 36) {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            }
+            if (accts_n < 1 or data_len < 36) { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; }
             var owner: [32]u8 = undefined;
             @memcpy(&owner, ix_data[4..36]);
-            const tgt = parse(mm, accts_vm, 0) orelse {
-                SystemCpiDiag.err += 1;
-                return sys_cpi.ERR_INVALID_INSTRUCTION;
-            };
+            const tgt = parse(mm, accts_vm, 0) orelse { SystemCpiDiag.err += 1; return sys_cpi.ERR_INVALID_INSTRUCTION; };
             const rc = sys_cpi.execAssign(tgt, owner);
             if (SystemCpiLogState.n < log_n_max) {
                 SystemCpiLogState.n += 1;
                 std.log.debug("[CPI-SYSTEM] kind=Assign target={x:0>2}{x:0>2}..{x:0>2}{x:0>2} owner={x:0>2}{x:0>2}..{x:0>2}{x:0>2} rc={d}\n", .{
                     tgt.pubkey[0], tgt.pubkey[1], tgt.pubkey[30], tgt.pubkey[31],
-                    owner[0],      owner[1],      owner[30],      owner[31],
-                    rc,
+                    owner[0], owner[1], owner[30], owner[31], rc,
                 });
             }
             if (rc == 0) SystemCpiDiag.ok += 1 else SystemCpiDiag.err += 1;
             return rc;
         },
-        sys_cpi.IX_CREATE_ACCOUNT_WITH_SEED, sys_cpi.IX_ALLOCATE_WITH_SEED, sys_cpi.IX_ASSIGN_WITH_SEED, sys_cpi.IX_TRANSFER_WITH_SEED => {
+        sys_cpi.IX_CREATE_ACCOUNT_WITH_SEED,
+        sys_cpi.IX_ALLOCATE_WITH_SEED,
+        sys_cpi.IX_ASSIGN_WITH_SEED,
+        sys_cpi.IX_TRANSFER_WITH_SEED => {
             // Phase 1: WithSeed variants need create_with_seed PDA derivation
             // (sha256(base || seed || owner)). Stub returns InstructionError
             // — NOT silent Exit — so the BPF caller's `?` propagates Err.
@@ -935,7 +904,11 @@ fn dispatchSystemCpi(
             }
             return sys_cpi.ERR_NOT_SUPPORTED;
         },
-        sys_cpi.IX_ADVANCE_NONCE, sys_cpi.IX_WITHDRAW_NONCE, sys_cpi.IX_INITIALIZE_NONCE, sys_cpi.IX_AUTHORIZE_NONCE, sys_cpi.IX_UPGRADE_NONCE => {
+        sys_cpi.IX_ADVANCE_NONCE,
+        sys_cpi.IX_WITHDRAW_NONCE,
+        sys_cpi.IX_INITIALIZE_NONCE,
+        sys_cpi.IX_AUTHORIZE_NONCE,
+        sys_cpi.IX_UPGRADE_NONCE => {
             SystemCpiDiag.nonce_stub += 1;
             SystemCpiDiag.err += 1;
             if (SystemCpiLogState.n < log_n_max) {
@@ -1005,9 +978,12 @@ fn solGetSysvar(ctx: *SyscallContext, id_vm: u64, out_vm: u64, offset: u64, leng
     const mm = sc(ctx).memory_map;
     const id_bytes = mm.vmap(.constant, id_vm, 32) catch return 2; // SYSVAR_NOT_FOUND
     // Match against known sysvar pubkeys.  For now return not-found for unknown sysvars.
-    const clock_key = [_]u8{ 6, 167, 213, 23, 25, 44, 92, 81, 33, 140, 201, 76, 61, 74, 241, 127, 88, 218, 238, 8, 195, 255, 73, 219, 180, 52, 166, 248, 195, 206, 7, 181 };
-    const rent_key = [_]u8{ 6, 167, 213, 23, 24, 199, 116, 201, 66, 86, 9, 97, 140, 226, 113, 131, 183, 125, 44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-    const epoch_sched_key = [_]u8{ 6, 167, 213, 23, 30, 5, 65, 103, 13, 140, 28, 206, 214, 174, 138, 62, 100, 197, 247, 242, 164, 99, 8, 22, 255, 119, 190, 253, 149, 13, 200, 119 };
+    const clock_key   = [_]u8{6,167,213,23,25,44,92,81,33,140,201,76,61,74,241,127,88,218,238,8,
+                               195,255,73,219,180,52,166,248,195,206,7,181};
+    const rent_key    = [_]u8{6,167,213,23,24,199,116,201,66,86,9,97,140,226,113,131,183,125,44,0,
+                               0,0,0,0,0,0,0,0,0,0,0,0};
+    const epoch_sched_key = [_]u8{6,167,213,23,30,5,65,103,13,140,28,206,214,174,138,62,100,197,
+                                   247,242,164,99,8,22,255,119,190,253,149,13,200,119};
 
     const data: []const u8 = if (std.mem.eql(u8, id_bytes, &clock_key))
         &ctx.clock_data
@@ -1100,10 +1076,10 @@ fn regionsOverlap(a: [*]const u8, b: [*]const u8, n: u64) bool {
 
 test "syscall IDs: known murmur3 values" {
     const murmur3 = @import("vm_executable.zig").murmur3;
-    try std.testing.expectEqual(ID_SOL_LOG, murmur3("sol_log_"));
-    try std.testing.expectEqual(ID_SOL_SHA256, murmur3("sol_sha256"));
+    try std.testing.expectEqual(ID_SOL_LOG,           murmur3("sol_log_"));
+    try std.testing.expectEqual(ID_SOL_SHA256,        murmur3("sol_sha256"));
     try std.testing.expectEqual(ID_SOL_INVOKE_SIGNED_R, murmur3("sol_invoke_signed_rust"));
-    try std.testing.expectEqual(ID_SOL_ALLOC_FREE, murmur3("sol_alloc_free_"));
-    try std.testing.expectEqual(ID_SOL_GET_CLOCK, murmur3("sol_get_clock_sysvar"));
-    try std.testing.expectEqual(ID_SOL_GET_RENT, murmur3("sol_get_rent_sysvar"));
+    try std.testing.expectEqual(ID_SOL_ALLOC_FREE,    murmur3("sol_alloc_free_"));
+    try std.testing.expectEqual(ID_SOL_GET_CLOCK,     murmur3("sol_get_clock_sysvar"));
+    try std.testing.expectEqual(ID_SOL_GET_RENT,      murmur3("sol_get_rent_sysvar"));
 }

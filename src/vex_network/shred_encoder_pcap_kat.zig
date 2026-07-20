@@ -14,10 +14,7 @@
 //!   - chained_merkle_root seed = 0102..0f00 (the parent block's last-FEC root).
 //!   - block_complete ⇒ the LAST set is resigned (payload 899, zeroed retransmitter sig at tail).
 //!
-//! Run: `zig build test-shred-encoder-pcap`. Read-only; reads fixtures from a local
-//! Firedancer checkout on disk (path below). Skips (not a fail) if that checkout isn't
-//! present — this KAT is an optional cross-check against upstream fixtures, not a
-//! self-contained gate.
+//! Run: `zig build test-shred-encoder-pcap`. Read-only; reads fixtures from the FD pin on disk.
 
 const std = @import("std");
 const enc = @import("shred_encoder.zig");
@@ -27,7 +24,7 @@ const hdr = @import("shred_header.zig");
 // NOTE: this KAT requires a LOCAL Firedancer checkout (not shipped in this
 // repo): fixtures from firedancer-io/firedancer tag v0.1002.40103, path
 // src/disco/shred/fixtures. Without it the test is skipped/fails to open.
-const FIX_DIR = "firedancer-v0.1002.40103/src/disco/shred/fixtures";
+const FIX_DIR = "/home/davidb/firedancer-v0.1002.40103/src/disco/shred/fixtures";
 
 // FD_SHREDDER_CHAINED_FEC_SET_PAYLOAD_SZ / _RESIGNED_ (fd_shredder.h): 32 * data_shred_payload_sz.
 const CHAINED_PSZ: usize = 30816; // 32 * 963

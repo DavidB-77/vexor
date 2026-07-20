@@ -407,8 +407,10 @@ fn postViaSubprocess(allocator: std.mem.Allocator, url: []const u8, body_bytes: 
     const result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &.{
-            "/usr/bin/curl", "-s", "-o",            "/dev/null", "-w", "%{http_code}",
-            "--max-time",    "5",  "--data-binary", body_bytes,  url,
+            "/usr/bin/curl",       "-s",  "-o", "/dev/null", "-w", "%{http_code}",
+            "--max-time",          "5",
+            "--data-binary",       body_bytes,
+            url,
         },
         .max_output_bytes = 256,
     }) catch return 0;

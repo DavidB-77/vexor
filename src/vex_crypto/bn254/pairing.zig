@@ -21,14 +21,14 @@ pub const BATCH_MAX = 16;
 /// NAF-like signed digits of the ate loop count (6x+2 recoding), LSB→MSB, as in
 /// the reference Miller loop.
 const loop_naf = [_]i2{
-    0, 0,  0,  1,  0,  1, 0,  -1,
-    0, 0,  -1, 0,  0,  0, 1,  0,
-    0, -1, 0,  -1, 0,  0, 0,  1,
-    0, -1, 0,  0,  0,  0, -1, 0,
-    0, 1,  0,  -1, 0,  0, 1,  0,
-    0, 0,  0,  0,  -1, 0, 0,  -1,
-    0, 1,  0,  -1, 0,  0, 0,  -1,
-    0, -1, 0,  0,  0,  1, 0,  -1,
+    0,  0,  0,  1,  0,  1,  0,  -1,
+    0,  0,  -1, 0,  0,  0,  1,  0,
+    0,  -1, 0,  -1, 0,  0,  0,  1,
+    0,  -1, 0,  0,  0,  0,  -1, 0,
+    0,  1,  0,  -1, 0,  0,  1,  0,
+    0,  0,  0,  0,  -1, 0,  0,  -1,
+    0,  1,  0,  -1, 0,  0,  0,  -1,
+    0,  -1, 0,  0,  0,  1,  0,  -1,
 };
 
 /// Miller loop over parallel batches of (P∈G1 affine, Q∈G2 affine).
@@ -48,9 +48,18 @@ pub fn millerLoop(ps: []const G1, qs: []const G2) Fp12 {
     acc = acc.sq();
 
     for (0..n) |i| {
-        projAddSub(&line, &t[i], ps[i], qs[i], true, false);
+        // FIX (bn254 Miller-loop T-update order, backported from zolcrypt
+        // c2762b7, 2026-07-18): the two preprocessing line evaluations must be
+        // subtract-then-add with the T-update on the ADD call (leaving T=3Q for
+        // the main NAF loop). The prior add-then-subtract with update-on-subtract
+        // left T=Q, silently corrupting every subsequent doubling/add. Both
+        // orderings multiply the same pair of lines into acc (mul is
+        // commutative), so only T changes. Ref: Firedancer Ballet
+        // fd_bn254_pairing.c:169-176. Verified by bilinearity (e(P,Q1)*e(P,Q2)
+        // == e(P,Q1+Q2)) + py_ecc cross-check.
+        projAddSub(&line, &t[i], ps[i], qs[i], false, false);
         acc = acc.mul(line);
-        projAddSub(&line, &t[i], ps[i], qs[i], false, true);
+        projAddSub(&line, &t[i], ps[i], qs[i], true, true);
         acc = acc.mul(line);
     }
 

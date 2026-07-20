@@ -126,13 +126,11 @@ pub inline fn trace(comptime fmt: []const u8, args: anytype) void {
     trace_layer.emitRaw("[VBPF2-TRACE] " ++ fmt, args);
 }
 
-// ── Pubkey constants (base58-decoded at comptime) ─────────────────────────
+// ── Pubkey constants (base58-decoded at comptime; CLAUDE.md pitfall #3) ───
 //
 // Each ID below is decoded from its canonical base58 string at comptime via
 // the embedded `decodeBase58Pubkey` function. We do NOT hand-type pubkey
-// bytes: a hand-typed/mis-counted byte array is a real, recurring source of
-// bugs (a wrong byte silently produces a different, still-valid-looking
-// pubkey) — always derive from the canonical base58 string instead.
+// bytes (per CLAUDE.md "Common Pitfalls" #3 — that has caused real bugs).
 //
 // The base58 strings themselves are the *Solana on-chain canonical names*
 // that appear identically in:

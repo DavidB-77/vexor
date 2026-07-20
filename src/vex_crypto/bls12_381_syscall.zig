@@ -61,6 +61,7 @@ const BLST_SUCCESS: c_int = 0;
 extern fn blst_p1_deserialize(out: *blst_p1_affine, in: *const [96]u8) c_int;
 extern fn blst_p1_affine_serialize(out: *[96]u8, in: *const blst_p1_affine) void;
 extern fn blst_p1_affine_in_g1(p: *const blst_p1_affine) bool;
+extern fn blst_p1_affine_is_inf(p: *const blst_p1_affine) bool;
 extern fn blst_p1_from_affine(out: *blst_p1, in: *const blst_p1_affine) void;
 extern fn blst_p1_to_affine(out: *blst_p1_affine, in: *const blst_p1) void;
 extern fn blst_p1_add_or_double(out: *blst_p1, a: *const blst_p1, b: *const blst_p1) void;
@@ -71,6 +72,7 @@ extern fn blst_p1_mult(out: *blst_p1, p: *const blst_p1, scalar: [*]const u8, nb
 extern fn blst_p2_deserialize(out: *blst_p2_affine, in: *const [192]u8) c_int;
 extern fn blst_p2_affine_serialize(out: *[192]u8, in: *const blst_p2_affine) void;
 extern fn blst_p2_affine_in_g2(p: *const blst_p2_affine) bool;
+extern fn blst_p2_affine_is_inf(p: *const blst_p2_affine) bool;
 extern fn blst_p2_from_affine(out: *blst_p2, in: *const blst_p2_affine) void;
 extern fn blst_p2_to_affine(out: *blst_p2_affine, in: *const blst_p2) void;
 extern fn blst_p2_add_or_double(out: *blst_p2, a: *const blst_p2, b: *const blst_p2) void;
@@ -359,18 +361,48 @@ pub fn pairingMap(
     var ps: [MAX_PAIRING_LENGTH]*const blst_p1_affine = undefined;
     var qs: [MAX_PAIRING_LENGTH]*const blst_p2_affine = undefined;
 
+    // n_eff/ps/qs below only include pairs where BOTH operands decoded (any
+    // decode failure on either side still aborts the whole call, matching
+    // pairing.rs's `.ok_or(...)?` per-point — decode success/failure is
+    // unrelated to infinity-filtering, checked in this same pass).
+    var n_eff: usize = 0;
     var i: usize = 0;
     while (i < num_pairs) : (i += 1) {
         const g1_pt: *const [96]u8 = @ptrCast(g1_bytes[i * 96 .. i * 96 + 96].ptr);
         const g2_pt: *const [192]u8 = @ptrCast(g2_bytes[i * 192 .. i * 192 + 192].ptr);
-        g1_affines[i] = g1ToAffine(g1_pt, endianness) orelse return false;
-        g2_affines[i] = g2ToAffine(g2_pt, endianness) orelse return false;
-        ps[i] = &g1_affines[i];
-        qs[i] = &g2_affines[i];
+        const g1_aff = g1ToAffine(g1_pt, endianness) orelse return false;
+        const g2_aff = g2ToAffine(g2_pt, endianness) orelse return false;
+
+        // blst_miller_loop_n (unlike the single-pair blst_miller_loop, which
+        // wraps an internal helper that special-cases an all-zero affine
+        // operand) does NOT special-case the point at infinity -- its affine
+        // (0,0) sentinel isn't a real curve point, so feeding it straight
+        // into the Miller loop's line-evaluation arithmetic propagates zeros
+        // through the accumulated product and yields the ZERO fp12 element
+        // (not the multiplicative identity `1`) after final exponentiation.
+        // Mathematically, e(P, O) = e(O, Q) = 1 (the pairing of any point
+        // with the identity is the Gt identity) -- so a pair with either
+        // operand at infinity contributes NOTHING to the product and is
+        // correctly dropped before the Miller loop, exactly like Agave's own
+        // blstrs-backed pairing (pairing.rs's `multi_miller_loop` receives
+        // blstrs `G1Affine`/`G2Affine`, whose `MillerLoopResult` combinator
+        // is defined via the same "identity contributes nothing" group law).
+        if (blst_p1_affine_is_inf(&g1_aff) or blst_p2_affine_is_inf(&g2_aff)) continue;
+
+        g1_affines[n_eff] = g1_aff;
+        g2_affines[n_eff] = g2_aff;
+        ps[n_eff] = &g1_affines[n_eff];
+        qs[n_eff] = &g2_affines[n_eff];
+        n_eff += 1;
+    }
+
+    if (n_eff == 0) {
+        serializeGt(blst_fp12_one(), endianness, out);
+        return true;
     }
 
     var miller: blst_fp12 = undefined;
-    blst_miller_loop_n(&miller, &qs, &ps, num_pairs);
+    blst_miller_loop_n(&miller, &qs, &ps, n_eff);
     var gt: blst_fp12 = undefined;
     blst_final_exp(&gt, &miller);
     serializeGt(&gt, endianness, out);

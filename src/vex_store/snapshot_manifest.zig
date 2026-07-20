@@ -38,9 +38,7 @@ const bincode = struct {
         data: []const u8,
         pos: usize,
         const Self = @This();
-        pub fn init(data: []const u8) Self {
-            return .{ .data = data, .pos = 0 };
-        }
+        pub fn init(data: []const u8) Self { return .{ .data = data, .pos = 0 }; }
         pub fn readU64LE(self: *Self) !u64 {
             if (self.pos + 8 > self.data.len) return error.BincodeParseError;
             const val = std.mem.readInt(u64, self.data[self.pos..][0..8], .little);
@@ -49,13 +47,11 @@ const bincode = struct {
         }
         pub fn readBytes(self: *Self, len: usize) ![]const u8 {
             if (self.pos + len > self.data.len) return error.BincodeParseError;
-            const slice = self.data[self.pos .. self.pos + len];
+            const slice = self.data[self.pos..self.pos + len];
             self.pos += len;
             return slice;
         }
-        pub fn readU64(self: *Self) !u64 {
-            return self.readU64LE();
-        }
+        pub fn readU64(self: *Self) !u64 { return self.readU64LE(); }
         pub fn readU32(self: *Self) !u32 {
             if (self.pos + 4 > self.data.len) return error.BincodeParseError;
             const val = std.mem.readInt(u32, self.data[self.pos..][0..4], .little);
@@ -68,11 +64,8 @@ const bincode = struct {
             self.pos += 1;
             return val;
         }
-        pub fn readVecLength(self: *Self) !u64 {
-            return self.readU64LE();
-        }
-        pub fn skip(self: *Self, len: usize) !void {
-            self.pos = @min(self.pos + len, self.data.len);
+        pub fn readVecLength(self: *Self) !u64 { return self.readU64LE(); }
+        pub fn skip(self: *Self, len: usize) !void { self.pos = @min(self.pos + len, self.data.len);
         }
     };
 };
@@ -303,15 +296,12 @@ fn parseManifestFromBytes(allocator: std.mem.Allocator, cur: *Deserializer) Pars
     // base can be accepted by either path.
     const lt_and_bid = readLtHashAndBlockIdForward(cur) catch
         readLtHashAndBlockId(cur) catch LtHashAndBlockId{
-        .lthash = [_]u8{0} ** 2048,
-        .block_id = null,
-    };
+            .lthash = [_]u8{0} ** 2048,
+            .block_id = null,
+        };
     const lthash_present = blk: {
         var any_nonzero: bool = false;
-        for (lt_and_bid.lthash) |b| if (b != 0) {
-            any_nonzero = true;
-            break;
-        };
+        for (lt_and_bid.lthash) |b| if (b != 0) { any_nonzero = true; break; };
         break :blk any_nonzero;
     };
     const lthash: ?[2048]u8 = if (lthash_present) lt_and_bid.lthash else null;
@@ -569,9 +559,7 @@ fn readLtHashAndBlockId(cur: *Deserializer) ParseError!LtHashAndBlockId {
         if (file_data[c.lt_off] != 0x01) continue; // lt_hash Option must be Some
         const win = file_data[c.lt_off + 1 .. c.lt_off + 2049];
         var nonzero: usize = 0;
-        for (win) |b| {
-            if (b != 0) nonzero += 1;
-        }
+        for (win) |b| { if (b != 0) nonzero += 1; }
         if (nonzero <= 64) continue;
         const tail_off = c.lt_off + 2049; // first byte after the lt_hash window
         // Trailing structure must match the layout exactly AND end at EOF.
@@ -615,7 +603,7 @@ fn readStorages(allocator: std.mem.Allocator, cur: *Deserializer) ParseError!Fil
 
         var v: u64 = 0;
         while (v < vec_count) : (v += 1) {
-            const id = cur.readU64() catch return error.MalformedManifest;
+            const id      = cur.readU64() catch return error.MalformedManifest;
             const file_sz = cur.readU64() catch return error.MalformedManifest;
             map.put(fileKey(slot, id), file_sz) catch return error.OutOfMemory;
         }
@@ -670,7 +658,7 @@ fn skipBank(allocator: std.mem.Allocator, cur: *Deserializer) ParseError!BankFie
     var fields = BankFields{};
     if (try parseBlockhashQueue(cur)) |lbh| fields.last_blockhash = lbh;
     std.log.debug("[Debug] parseBlockhashQueue passed (last_blockhash captured)\n", .{});
-    try skipVec(cur, skipSlotPair); // ancestors: Vec<(u64, u64)>
+    try skipVec(cur, skipSlotPair);       // ancestors: Vec<(u64, u64)>
     std.log.debug("[Debug] ancestors passed\n", .{});
     // READ bank hash instead of skipping — critical for parent_hash chain
     const hash_bytes = cur.readBytes(32) catch return error.MalformedManifest;
@@ -678,27 +666,18 @@ fn skipBank(allocator: std.mem.Allocator, cur: *Deserializer) ParseError!BankFie
     std.log.debug("[Manifest] bank_hash: {x:0>2}{x:0>2}{x:0>2}{x:0>2}...\n", .{
         fields.bank_hash[0], fields.bank_hash[1], fields.bank_hash[2], fields.bank_hash[3],
     });
-    try skipHash(cur); // parent_hash: [32]u8
-    cur.skip(8) catch {
-        std.log.debug("[Debug] parent_slot failed\n", .{});
-        return error.MalformedManifest;
-    }; // parent_slot: u64
+    try skipHash(cur);                    // parent_hash: [32]u8
+    cur.skip(8) catch { std.log.debug("[Debug] parent_slot failed\n", .{}); return error.MalformedManifest; };   // parent_slot: u64
     // F1 (HARD-FORK-FAMILY-DESIGN-2026-06-17): CAPTURE hard_forks instead of
     // skipping. parseHardForks reads the IDENTICAL bytes skipHardForks did
     // (8-byte len + len×16) so every downstream field (transaction_count@512,
     // capitalization@515, hashes_per_tick@517 …) stays byte-aligned. Verified
     // by the test-hard-fork F1 cursor KAT (cursor advances 8+len×16 exactly,
     // matching skipHardForks). Allocator-owned; moved into ManifestResult.
-    fields.hard_forks = try parseHardForks(allocator, cur); // hard_forks
+    fields.hard_forks = try parseHardForks(allocator, cur);   // hard_forks
     std.log.debug("[Debug] hard_forks passed ({d} forks)\n", .{fields.hard_forks.len});
-    cur.skip(8) catch {
-        std.log.debug("[Debug] transaction_count failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(8) catch {
-        std.log.debug("[Debug] tick_height failed\n", .{});
-        return error.MalformedManifest;
-    };
+    cur.skip(8) catch { std.log.debug("[Debug] transaction_count failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(8) catch { std.log.debug("[Debug] tick_height failed\n", .{}); return error.MalformedManifest; };
     // CAPTURE signature_count (was skipped). Same cursor advance (8 bytes). The
     // root bank's signature_count seeds the FIRST post-boot per-slot governor
     // derivation (newDerived(root.governor, root.signature_count)); without it
@@ -706,92 +685,47 @@ fn skipBank(allocator: std.mem.Allocator, cur: *Deserializer) ParseError!BankFie
     // whenever the snapshot slot itself saw a signature spike (>10000 sigs at
     // the canonical testnet target). It NEVER feeds a bank_hash (root bank_hash
     // is loaded from the manifest, not recomputed; child banks reset to 0).
-    fields.signature_count = cur.readU64() catch {
-        std.log.debug("[Debug] signature_count failed\n", .{});
-        return error.MalformedManifest;
-    };
-    fields.capitalization = cur.readU64() catch {
-        std.log.debug("[Debug] capitalization failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(8) catch {
-        std.log.debug("[Debug] max_tick_height failed\n", .{});
-        return error.MalformedManifest;
-    };
-    fields.hashes_per_tick = readOptionU64(cur) catch {
-        std.log.debug("[Debug] hashes_per_tick failed\n", .{});
-        return error.MalformedManifest;
-    }; // Option<u64> — CAPTURE (task #28: was discarded; effective testnet=62500, genesis=12500)
-    fields.ticks_per_slot = cur.readU64() catch {
-        std.log.debug("[Debug] ticks_per_slot failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(16) catch {
-        std.log.debug("[Debug] ns_per_slot failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(8) catch {
-        std.log.debug("[Debug] genesis_creation_time failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(8) catch {
-        std.log.debug("[Debug] slots_per_year failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(8) catch {
-        std.log.debug("[Debug] accounts_data_len failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(8) catch {
-        std.log.debug("[Debug] slot failed\n", .{});
-        return error.MalformedManifest;
-    };
-    cur.skip(8) catch {
-        std.log.debug("[Debug] epoch failed\n", .{});
-        return error.MalformedManifest;
-    };
-    fields.block_height = cur.readU64() catch {
-        std.log.debug("[Debug] block_height failed\n", .{});
-        return error.MalformedManifest;
-    };
-    try skipPubkey(cur); // collector_id: Pubkey
-    cur.skip(8) catch {
-        std.log.debug("[Debug] collector_fees failed\n", .{});
-        return error.MalformedManifest;
-    };
+    fields.signature_count = cur.readU64() catch { std.log.debug("[Debug] signature_count failed\n", .{}); return error.MalformedManifest; };
+    fields.capitalization = cur.readU64() catch { std.log.debug("[Debug] capitalization failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(8) catch { std.log.debug("[Debug] max_tick_height failed\n", .{}); return error.MalformedManifest; };
+    fields.hashes_per_tick = readOptionU64(cur) catch { std.log.debug("[Debug] hashes_per_tick failed\n", .{}); return error.MalformedManifest; }; // Option<u64> — CAPTURE (task #28: was discarded; effective testnet=62500, genesis=12500)
+    fields.ticks_per_slot = cur.readU64() catch { std.log.debug("[Debug] ticks_per_slot failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(16) catch { std.log.debug("[Debug] ns_per_slot failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(8) catch { std.log.debug("[Debug] genesis_creation_time failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(8) catch { std.log.debug("[Debug] slots_per_year failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(8) catch { std.log.debug("[Debug] accounts_data_len failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(8) catch { std.log.debug("[Debug] slot failed\n", .{}); return error.MalformedManifest; };
+    cur.skip(8) catch { std.log.debug("[Debug] epoch failed\n", .{}); return error.MalformedManifest; };
+    fields.block_height = cur.readU64() catch { std.log.debug("[Debug] block_height failed\n", .{}); return error.MalformedManifest; };
+    try skipPubkey(cur);                  // collector_id: Pubkey
+    cur.skip(8) catch { std.log.debug("[Debug] collector_fees failed\n", .{}); return error.MalformedManifest; };
     // CAPTURE the bank-level fee_calculator (u64 = the seed/current
     // lamports_per_signature) instead of skipping (same 8-byte advance).
-    fields.fee_rate_governor.lamports_per_signature = cur.readU64() catch {
-        std.log.debug("[Debug] fee_calculator failed\n", .{});
-        return error.MalformedManifest;
-    };
+    fields.fee_rate_governor.lamports_per_signature = cur.readU64() catch { std.log.debug("[Debug] fee_calculator failed\n", .{}); return error.MalformedManifest; };
     // CAPTURE the 5 fee_rate_governor fields (same 33-byte advance as the old
     // skipFeeRateGovernor — byte alignment is parity-critical and KAT-validated).
-    try readFeeRateGovernor(cur, &fields.fee_rate_governor); // fee_rate_governor
+    try readFeeRateGovernor(cur, &fields.fee_rate_governor);   // fee_rate_governor
     std.log.debug("[Debug] fee_rate_governor passed (target_lps={d} target_sps={d})\n", .{
         fields.fee_rate_governor.target_lamports_per_signature,
         fields.fee_rate_governor.target_signatures_per_slot,
     });
-    cur.skip(8) catch {
-        std.log.debug("[Debug] collected_rent failed\n", .{});
-        return error.MalformedManifest;
-    };
-    try skipRentCollector(cur); // rent_collector
+    cur.skip(8) catch { std.log.debug("[Debug] collected_rent failed\n", .{}); return error.MalformedManifest; };
+    try skipRentCollector(cur);           // rent_collector
     std.log.debug("[Debug] rent_collector passed\n", .{});
-    try skipEpochSchedule(cur); // epoch_schedule
+    try skipEpochSchedule(cur);           // epoch_schedule
     std.log.debug("[Debug] epoch_schedule passed\n", .{});
-    try skipInflation(cur); // inflation
+    try skipInflation(cur);               // inflation
     std.log.debug("[Debug] inflation passed\n", .{});
     fields.vote_account_stakes = try readStakesCapturingVoteAccounts(allocator, cur, &fields.vote_frozen_data);
     std.log.debug("[Debug] stakes passed ({d} staked vote accounts)\n", .{fields.vote_account_stakes.len});
-    try skipUnusedAccounts(cur); // unused_accounts
+    try skipUnusedAccounts(cur);          // unused_accounts
     // d16 (2026-05-10) NOTE: in Agave 4.0+ the bank section's analogue is
     // `unused_epoch_stakes: HashMap<Epoch, ()>` — always empty. The REAL
     // `versioned_epoch_stakes: Vec<(u64, DeserializableVersionedEpochStakes)>`
     // is in ExtraFields. We capture it via `readVersionedEpochStakesFromTail`
     // after the ExtraFields lthash tail-seek runs.
     try skipVec(cur, skipEpochStakesPair); // epoch_stakes: HashMap<Epoch, ()> (empty in v4.0)
-    cur.skip(1) catch return error.MalformedManifest; // is_delta: bool
+    cur.skip(1) catch return error.MalformedManifest;   // is_delta: bool
     return fields;
 }
 
@@ -804,7 +738,7 @@ fn skipBank(allocator: std.mem.Allocator, cur: *Deserializer) ParseError!BankFie
 /// bank's inherited poh_hash — it is NOT the same as the bank_hash (the prior
 /// r66 shortcut conflated them).
 fn parseBlockhashQueue(cur: *Deserializer) ParseError!?[32]u8 {
-    cur.skip(8) catch return error.MalformedManifest; // last_hash_index: u64
+    cur.skip(8) catch return error.MalformedManifest;       // last_hash_index: u64
     var last_hash: ?[32]u8 = null;
     const present = cur.readU8() catch return error.MalformedManifest; // last_hash: Option<Hash>
     if (present != 0) {
@@ -817,7 +751,7 @@ fn parseBlockhashQueue(cur: *Deserializer) ParseError!?[32]u8 {
     // Each entry = 32 + 24 = 56 bytes
     const count = cur.readVecLength() catch return error.MalformedManifest;
     cur.skip(@intCast(count * 56)) catch return error.MalformedManifest;
-    cur.skip(8) catch return error.MalformedManifest; // max_age: u64
+    cur.skip(8) catch return error.MalformedManifest;       // max_age: u64
     return last_hash;
 }
 
@@ -876,10 +810,10 @@ fn readFeeRateGovernor(cur: *Deserializer, gov: *FeeRateGovernor) ParseError!voi
 }
 
 fn skipRentCollector(cur: *Deserializer) ParseError!void {
-    cur.skip(8) catch return error.MalformedManifest; // epoch: u64
-    try skipEpochSchedule(cur); // epoch_schedule
-    cur.skip(8) catch return error.MalformedManifest; // slots_per_year: f64
-    try skipRent(cur); // rent
+    cur.skip(8) catch return error.MalformedManifest;    // epoch: u64
+    try skipEpochSchedule(cur);                          // epoch_schedule
+    cur.skip(8) catch return error.MalformedManifest;    // slots_per_year: f64
+    try skipRent(cur);                                   // rent
 }
 
 fn skipEpochSchedule(cur: *Deserializer) ParseError!void {
@@ -990,13 +924,13 @@ fn skipUnusedAccounts(cur: *Deserializer) ParseError!void {
 fn skipEpochStakesPair(cur: *Deserializer) ParseError!void {
     cur.skip(8) catch return error.MalformedManifest; // key: u64 (epoch)
     // EpochStakes:
-    try skipStakes(cur); // stakes: Stakes
+    try skipStakes(cur);            // stakes: Stakes
     cur.skip(8) catch return error.MalformedManifest; // total_stake: u64
     // node_id_to_vote_accounts: Vec<(Pubkey, NodeVoteAccounts{Vec<Pubkey>, u64})>
     const niva_count = cur.readVecLength() catch return error.MalformedManifest;
     var i: u64 = 0;
     while (i < niva_count) : (i += 1) {
-        try skipPubkey(cur); // key: Pubkey
+        try skipPubkey(cur);         // key: Pubkey
         // NodeVoteAccounts: { vote_accounts: Vec<Pubkey>, total_stake: u64 }
         const va_count = cur.readVecLength() catch return error.MalformedManifest;
         cur.skip(@intCast(va_count * 32)) catch return error.MalformedManifest;
@@ -1121,20 +1055,20 @@ fn readVersionedEpochStakesVecCapturing(
         }
         // stake_delegations: per Agave existing skipStakes pattern (u64 unused header + count*entry_size)
         const sd_count = cur.readVecLength() catch return error.MalformedManifest;
-        cur.skip(8) catch return error.MalformedManifest; // unused: u64 header
+        cur.skip(8) catch return error.MalformedManifest;            // unused: u64 header
         cur.skip(@intCast(sd_count * (32 + 72))) catch return error.MalformedManifest;
-        cur.skip(8) catch return error.MalformedManifest; // epoch: u64
+        cur.skip(8) catch return error.MalformedManifest;            // epoch: u64
         const sh_count = cur.readVecLength() catch return error.MalformedManifest;
         cur.skip(@intCast(sh_count * 32)) catch return error.MalformedManifest;
         // After DeserializableStakes: total_stake + node_id_to_vote_accounts + epoch_authorized_voters
-        cur.skip(8) catch return error.MalformedManifest; // total_stake: u64
+        cur.skip(8) catch return error.MalformedManifest;            // total_stake: u64
         const niva_count = cur.readVecLength() catch return error.MalformedManifest;
         var ni: u64 = 0;
         while (ni < niva_count) : (ni += 1) {
             try skipPubkey(cur);
             const inner_va_count = cur.readVecLength() catch return error.MalformedManifest;
             cur.skip(@intCast(inner_va_count * 32)) catch return error.MalformedManifest;
-            cur.skip(8) catch return error.MalformedManifest; // node total_stake
+            cur.skip(8) catch return error.MalformedManifest;        // node total_stake
         }
         const eav_count = cur.readVecLength() catch return error.MalformedManifest;
         cur.skip(@intCast(eav_count * 64)) catch return error.MalformedManifest;
@@ -1170,24 +1104,24 @@ fn readEpochStakesVecCapturing(
             const pk_bytes = cur.readBytes(32) catch return error.MalformedManifest;
             @memcpy(&stakes[v].vote_pubkey, pk_bytes[0..32]);
             stakes[v].stake = cur.readU64() catch return error.MalformedManifest;
-            try skipSolanaAccount(cur); // value.1: SolanaAccount — data not needed
+            try skipSolanaAccount(cur);   // value.1: SolanaAccount — data not needed
         }
         // stake_delegations: Vec<(Pubkey, Delegation=64)>; layout = u64 + count*96
         const sd_count = cur.readVecLength() catch return error.MalformedManifest;
         cur.skip(8) catch return error.MalformedManifest;
         cur.skip(@intCast(sd_count * 96)) catch return error.MalformedManifest;
-        cur.skip(8) catch return error.MalformedManifest; // epoch: u64
+        cur.skip(8) catch return error.MalformedManifest;       // epoch: u64
         const sh_count = cur.readVecLength() catch return error.MalformedManifest;
         cur.skip(@intCast(sh_count * 32)) catch return error.MalformedManifest;
         // EpochStakes wrapper continues with total_stake + node_id_to_vote_accounts + epoch_authorized_voters
-        cur.skip(8) catch return error.MalformedManifest; // total_stake: u64
+        cur.skip(8) catch return error.MalformedManifest;       // total_stake: u64
         const niva_count = cur.readVecLength() catch return error.MalformedManifest;
         var ni: u64 = 0;
         while (ni < niva_count) : (ni += 1) {
-            try skipPubkey(cur); // key: Pubkey
+            try skipPubkey(cur);                                // key: Pubkey
             const inner_va_count = cur.readVecLength() catch return error.MalformedManifest;
             cur.skip(@intCast(inner_va_count * 32)) catch return error.MalformedManifest;
-            cur.skip(8) catch return error.MalformedManifest; // node total_stake
+            cur.skip(8) catch return error.MalformedManifest;   // node total_stake
         }
         const eav_count = cur.readVecLength() catch return error.MalformedManifest;
         cur.skip(@intCast(eav_count * 64)) catch return error.MalformedManifest;
@@ -1199,13 +1133,13 @@ fn readEpochStakesVecCapturing(
 
 fn skipSolanaAccount(cur: *Deserializer) ParseError!void {
     // { lamports: u64, data: Vec<u8>, owner: Pubkey, executable: bool, rent_epoch: u64 }
-    cur.skip(8) catch return error.MalformedManifest; // lamports
+    cur.skip(8) catch return error.MalformedManifest;   // lamports
     const data_len = cur.readVecLength() catch return error.MalformedManifest;
     if (data_len > 10 * 1024 * 1024) return error.MalformedManifest;
     cur.skip(@intCast(data_len)) catch return error.MalformedManifest;
-    try skipPubkey(cur); // owner
-    cur.skip(1) catch return error.MalformedManifest; // executable: bool
-    cur.skip(8) catch return error.MalformedManifest; // rent_epoch: u64
+    try skipPubkey(cur);                                // owner
+    cur.skip(1) catch return error.MalformedManifest;   // executable: bool
+    cur.skip(8) catch return error.MalformedManifest;   // rent_epoch: u64
 }
 
 /// Variant of skipSolanaAccount that captures bytes 4..36 of the data field as
@@ -1233,7 +1167,7 @@ fn skipSolanaAccountCapturingVoteFields(cur: *Deserializer, out: *[32]u8, commis
     @memset(out, 0);
     commission_out.* = 0;
     commission_bps_out.* = 0;
-    cur.skip(8) catch return error.MalformedManifest; // lamports
+    cur.skip(8) catch return error.MalformedManifest;   // lamports
     const data_len = cur.readVecLength() catch return error.MalformedManifest;
     if (data_len > 10 * 1024 * 1024) return error.MalformedManifest;
     if (data_len >= 134) {
@@ -1256,9 +1190,9 @@ fn skipSolanaAccountCapturingVoteFields(cur: *Deserializer, out: *[32]u8, commis
     } else {
         cur.skip(@intCast(data_len)) catch return error.MalformedManifest;
     }
-    try skipPubkey(cur); // owner
-    cur.skip(1) catch return error.MalformedManifest; // executable: bool
-    cur.skip(8) catch return error.MalformedManifest; // rent_epoch: u64
+    try skipPubkey(cur);                                // owner
+    cur.skip(1) catch return error.MalformedManifest;   // executable: bool
+    cur.skip(8) catch return error.MalformedManifest;   // rent_epoch: u64
 }
 
 // ── Primitive skippers ────────────────────────────────────────────────────────
@@ -1294,7 +1228,7 @@ fn skipSlotPair(cur: *Deserializer) ParseError!void {
     cur.skip(16) catch return error.MalformedManifest;
 }
 
-fn skipVec(cur: *Deserializer, skipElem: fn (*Deserializer) ParseError!void) ParseError!void {
+fn skipVec(cur: *Deserializer, skipElem: fn(*Deserializer) ParseError!void) ParseError!void {
     const count = cur.readVecLength() catch return error.MalformedManifest;
     var i: u64 = 0;
     while (i < count) : (i += 1) {

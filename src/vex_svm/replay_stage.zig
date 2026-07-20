@@ -144,6 +144,19 @@ const evalRootGuards = root_guards.evalRootGuards;
 // comment). sweepPendingTickGateSlots / fetchSlotHashesRemote below are thin
 // callers into this leaf's pure functions.
 const revive_detect = @import("revive_detect.zig");
+// Switch-proof Part 2, M2 — Shape-A dead-slot revive DECISION core (pure leaf,
+// unit-KAT'd via `zig build test-revive-repair`). Same extract-the-decision
+// pattern as revive_detect.zig / root_guards.zig: this file's sweep-path caller
+// does ALL mutation (banks.remove, dead_slots.remove, clearCompletedSlot, the
+// requestHighestWindowIndex kick); revive_repair.zig only decides WHAT to do.
+const revive_repair = @import("revive_repair.zig");
+
+// Tx-bearing block production, Milestone 3 — auto-safe-off tripwire pure
+// predicate + tracked-state bundle, same extraction discipline as
+// revive_detect.zig immediately above (own file, unit-KAT'd via
+// `zig build test-txbearing-tripwire`). See that file's header for the full
+// signal-choice / threshold / latch reasoning.
+const txbearing_tripwire = @import("txbearing_tripwire.zig");
 
 // ── CPU pinning helper ───────────────────────────────────────────────────────
 
@@ -746,6 +759,19 @@ pub const ReplayStage = struct {
     /// own votes carry consensus on our broadcast block). shred_version_bp = the live shred_version.
     produce_broadcast_ctx: ?*anyopaque = null,
     produce_broadcast_fn: ?*const fn (ctx: *anyopaque, slot: u64, parent_slot: u64, entry_bytes: []const u8, chained_root: [32]u8, secret: [64]u8, shred_version: u16) void = null,
+    /// Switch-proof Part 2, M2 — replay→repair kick (the missing reverse link).
+    /// replay_stage has NO handle to the TVU repair subsystem: the replay↔tvu link
+    /// is one-way (main.zig `tvu_svc.setSlotSink(replay.slotSink())` pushes completed
+    /// slots INTO replay; there is no reverse path). The dead-slot revive DUMP's
+    /// mandatory follow-on (re-request the slot's shreds so a dumped slot refills)
+    /// is therefore wired here as a nullable callback, set in main.zig
+    /// (`setRepairKick`) to `TvuService.requestHighestWindowIndex` — same opaque-ctx
+    /// circular-dep-avoidance as produce_broadcast_fn. INERT until the
+    /// VEX_REVIVE_DEAD_SLOTS-armed dump path invokes it; when unwired (null) the
+    /// armed dump path SKIPS the dump entirely (a dump without a kick is strictly
+    /// worse than the stall — a dumped slot never refills).
+    repair_kick_ctx: ?*anyopaque = null,
+    repair_kick_fn: ?*const fn (ctx: *anyopaque, slot: u64, shred_idx: u64) void = null,
     /// Geyser streaming sink (Stage 1a). Opaque ctx + fn-ptr to avoid a vex_svm↔vex_network module
     /// cycle — main.zig wires the typed GeyserService. `status` is the SlotStatus u8 (processed=0,
     /// rooted=2, dead=3). comptime-gated: the call sites (emitGeyserSlot) are dead unless
@@ -763,6 +789,29 @@ pub const ReplayStage = struct {
     /// slot's bank.block_id at freeze so the next slot of our leader window can chain (see
     /// produce_blockid_fn). Replay-worker-owned only (tile never touches it); fetchRemove'd on consume.
     self_produced_block_id: std.AutoHashMapUnmanaged(u64, [32]u8) = .{},
+    /// M3 auto-safe-off tripwire (2026-07-17): parallel to self_produced — the
+    /// SUBSET of self-produced slots that actually packed drained txs (as
+    /// opposed to an empty tick-only block). Set on the inline path when
+    /// `pack_tx_bearing` is decided (replay-thread-owned) and on the tile path
+    /// from `SlotDoneRecord.tx_bearing` when Ring B is drained (also
+    /// replay-thread-owned — the tile never touches this map, same discipline
+    /// as self_produced itself). Consulted (read-only) at freeze completion to
+    /// decide whether a frozen self-produced slot is in-scope for the tripwire
+    /// counter at all (an empty self-produced slot is neither a failure nor a
+    /// clean reset — see txbearing_tripwire.zig).
+    self_produced_tx_bearing: std.AutoHashMapUnmanaged(u64, void) = .{},
+    /// M3: slots for which the EXISTING [PRODUCE-PARITY-FAIL] self-check
+    /// (below, ~:9202) fired at least once during this block's loopback
+    /// replay. Populated on the replay thread at the same point that log line
+    /// fires (same thread that processes bank.slot's txs); consulted at freeze
+    /// completion alongside self_produced_tx_bearing to feed
+    /// `txbearing_tripwire.recordSlotOutcome`.
+    produce_parity_fail_slots: std.AutoHashMapUnmanaged(u64, void) = .{},
+    /// M3 auto-safe-off tripwire state. See txbearing_tripwire.zig for the
+    /// full design; `.tripped` is the only cross-thread-read field (the
+    /// produce tile consults it via `effectiveArmed`), mirroring the existing
+    /// `produce_tile_active` atomic-bool pattern.
+    txbearing_tripwire_state: txbearing_tripwire.TripwireState = .{},
     shred_version_bp: u16 = 0,
     /// task #13 LOOPBACK: the TPU mempool (owned by main.zig, outlives replay). When set AND
     /// VEX_TPU_INGEST is on, produceAndBroadcastEmptySlot packs drained txs into the produced block
@@ -895,6 +944,32 @@ pub const ReplayStage = struct {
     /// at sweepPendingFecGateSlots. Closes Carrier L (sibling to Carrier K).
     pending_fec_gate_slots: std.ArrayListUnmanaged(FecGateEntry) = .{},
     cached_slot_hashes_time: i64 = 0,
+
+    /// ── G0 FIRST-ROOT POSITIVE-ATTESTATION LATCH (incident 423083743, 2026-07-19) ──
+    /// Per-process latch: false until one candidate root POSITIVELY matches a
+    /// cluster-attested bank_hash (or is duplicate-confirmed). While false (and
+    /// VEX_FIRST_ROOT_LATCH not disabled, and not in offline replay), a
+    /// HASH-SILENT root advance additionally requires fetchProducedSlots to
+    /// confirm the slot was cluster-produced — the exact refusal that would have
+    /// blocked rooting cluster-SKIPPED slot 423083742. Replay-thread-only
+    /// (doRootAdvance runs on the replay thread for both its callers); no lock.
+    first_root_attested: bool = false,
+    /// Per-candidate cache for the G0 produced-slot probe (the candidate root
+    /// repeats on every vote while refused; without this each retry would fork a
+    /// curl). produced-ness of a historical slot is immutable, so a definitive
+    /// true/false is cached until the candidate changes; a failed probe (null)
+    /// is retried at most once per 2s. Replay-thread-only; no lock.
+    first_root_probe_slot: Slot = 0,
+    first_root_probe_result: ?bool = null,
+    first_root_probe_at_ms: i64 = 0,
+
+    /// ── VOTE-THRESHOLD depth-8 stake wiring (423083743 companion fix) ──
+    /// Per-epoch cache of total epoch stake for the threshold check (the same
+    /// epoch_stakes walk the PROP-GATE/switch-proof sites do inline, cached here
+    /// because this runs on EVERY vote decision). Replay-thread-only (submitVote);
+    /// no lock, no cross-thread sync (TVU hot-path standing rule).
+    thr_total_stake_epoch: u64 = std.math.maxInt(u64),
+    thr_total_stake_cached: u64 = 0,
 
     /// Statistics
     stats: ReplayStats,
@@ -1050,6 +1125,29 @@ pub const ReplayStage = struct {
     /// See SWITCHPROOF-PART2-IMPLEMENTATION-PLAN-2026-07-16.md §2 M1.
     revive_would_fire_logged: std.AutoHashMap(u64, void) = undefined,
 
+    /// Switch-proof Part 2, M2 — bounded-retry attempt counter per revived slot.
+    /// Persists ACROSS a dump (deliberately NOT cleared on dump) so a repaired-but-
+    /// still-truncated slot that re-fails the tick-gate and is re-marked dead is
+    /// eventually driven to give_up_exhausted at MAX_REVIVE_ATTEMPTS — the
+    /// termination guarantee (never an unbounded dump→re-fail→dump loop). Only
+    /// touched under VEX_REVIVE_DEAD_SLOTS on the replay/sweep thread. See
+    /// revive_repair.recordAttempt (saturating).
+    revive_attempts: std.AutoHashMap(u64, u8) = undefined,
+    /// Switch-proof Part 2, M2 — permanent give-up latch: slots whose bounded
+    /// retry is exhausted. Kept dead forever; the M2 sweep skips them so no further
+    /// dump/repair is ever issued. Same lock/lifetime discipline as
+    /// revive_would_fire_logged (freed alongside dead_slots in deinit).
+    revive_gave_up: std.AutoHashMap(u64, void) = undefined,
+
+    /// OFFLINE-ONLY diag single-shot latch for the VEX_FORCE_DEAD_SLOT synthetic
+    /// Shape-A kill (build_options.force_dead_slot; comptime-dead in prod). The
+    /// injector must fire EXACTLY ONCE per target slot: after it kills the slot
+    /// pre-freeze and the revive dump re-feeds the (complete) shreds, the slot
+    /// MUST replay+freeze normally so the offline gate can observe last_vote
+    /// advancing past it — a re-fire would loop straight to give_up_exhausted and
+    /// the gate could never pass. `swap(true)` on first hit gates all re-hits.
+    force_dead_fired: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
     /// verify_ticks canonical (feat/verify-ticks-canonical-zig-2026-06-19):
     /// EFFECTIVE PoH cadence read from the snapshot manifest, set ONCE at
     /// bootstrap via `setPohParams`. Stamped onto each newly-acquired Bank
@@ -1063,6 +1161,12 @@ pub const ReplayStage = struct {
     poh_ticks_per_slot: u64 = 64,
 
     const Self = @This();
+
+    /// Switch-proof Part 2, M2 — bounded-retry ceiling for Shape-A dead-slot revive.
+    /// At attempt_count >= this the decision is give_up_exhausted (slot stays dead,
+    /// guardian escalation). 3 = repair gets a few chances to refill the truncated
+    /// slot before we conclude the cluster version is genuinely unavailable.
+    const MAX_REVIVE_ATTEMPTS: u8 = 3;
 
     // posix_spawn extern (perf, 2026-07-08): spawn curl WITHOUT fork()'s
     // ~30GB account-heap page-table COW copy. Zig's std.process.Child.spawn
@@ -1223,6 +1327,8 @@ pub const ReplayStage = struct {
             .dead_slots = std.AutoHashMap(u64, void).init(allocator),
             .dead_slots_lock = .{},
             .revive_would_fire_logged = std.AutoHashMap(u64, void).init(allocator),
+            .revive_attempts = std.AutoHashMap(u64, u8).init(allocator),
+            .revive_gave_up = std.AutoHashMap(u64, void).init(allocator),
         };
 
         // svm_pool removed — was dead code (zero spawn calls), 8 idle threads on core 4
@@ -1326,6 +1432,9 @@ pub const ReplayStage = struct {
             // Switch-proof Part 2, M1: free the REVIVE-WOULD-FIRE dedup latch
             // alongside dead_slots (same lock, same lifetime).
             self.revive_would_fire_logged.deinit();
+            // Switch-proof Part 2, M2: free the revive bounded-retry + give-up maps.
+            self.revive_attempts.deinit();
+            self.revive_gave_up.deinit();
         }
 
         // PR-5z: free pending-shadow tracker
@@ -1334,6 +1443,9 @@ pub const ReplayStage = struct {
         // leader_mode: free the multi-slot-window block_id stash + self-produced set.
         self.self_produced_block_id.deinit(self.allocator);
         self.self_produced.deinit(self.allocator);
+        // M3 tripwire: free its two tracking sets alongside self_produced (same lifetime).
+        self.self_produced_tx_bearing.deinit(self.allocator);
+        self.produce_parity_fail_slots.deinit(self.allocator);
 
         // PR-5ae: free pending-tick-gate tracker
         self.pending_tick_gate_slots.deinit(self.allocator);
@@ -1562,6 +1674,21 @@ pub const ReplayStage = struct {
         self.produce_broadcast_ctx = ctx;
         self.produce_broadcast_fn = f;
         self.shred_version_bp = shred_version;
+    }
+
+    /// Switch-proof Part 2, M2 — wire the replay→repair kick
+    /// (TvuService.requestHighestWindowIndex). Call from main.zig after TVU exists,
+    /// mirroring setProduceBroadcast's opaque-ctx pattern. Enables the dead-slot
+    /// revive dump to re-request a dumped slot's shreds from peers so the slot
+    /// refills. Purely wires the callback; INERT until the VEX_REVIVE_DEAD_SLOTS
+    /// revive path is armed (nothing invokes repair_kick_fn otherwise).
+    pub fn setRepairKick(
+        self: *Self,
+        ctx: *anyopaque,
+        f: *const fn (ctx: *anyopaque, slot: u64, shred_idx: u64) void,
+    ) void {
+        self.repair_kick_ctx = ctx;
+        self.repair_kick_fn = f;
     }
 
     /// leader_mode (2026-06-19, multi-slot leader-window chaining): wire the compute-block_id callback
@@ -1823,13 +1950,6 @@ pub const ReplayStage = struct {
         var skey: [tx_ingest_mod.MAX_SIGNATURES][32]u8 = undefined;
         const parsed = tx_ingest_mod.parse(tx_wire, &ssig, &skey) catch return false;
 
-        // Cross-block AlreadyProcessed: drop a tx whose signature was committed in a recent block
-        // (within the 150-slot window) — the cluster would mark our block dead. Conservative (see
-        // RecentSigCache). null when the status cache is dormant.
-        if (gctx.recent_sigs) |rsc| {
-            if (rsc.isRecent(&parsed.signatures[0], gctx.producing_slot)) return false;
-        }
-
         // Extract the producing bank's recent (≤150) blockhash set into a stack buffer.
         var bh_buf: [150][32]u8 = undefined;
         const entries = bank.recent_blockhashes.constSlice();
@@ -1849,7 +1969,44 @@ pub const ReplayStage = struct {
             }
         }
 
-        return block_produce.admitTxSeq(gctx.allocator, gctx.state, parsed, tx_wire, bh_set, fpv);
+        // Delegate to the single test-rootable composed decision: cross-block AlreadyProcessed dedup
+        // (gctx.recent_sigs, null when the status cache is dormant) THEN the sequential load/fee gate.
+        // Centralizing the dedup in block_produce.admitTxSeqBroadcast is what makes it offline-KAT-
+        // provable; the (rare) extra accounts_db lookup above on a duplicate tx is negligible.
+        return block_produce.admitTxSeqBroadcast(gctx.allocator, gctx.state, parsed, tx_wire, bh_set, fpv, gctx.recent_sigs, gctx.producing_slot);
+    }
+
+    // ── PASS 3 (durable execute-once-and-record) LIVE adapters ────────────────────────────────────────
+    // Feed block_produce.InclusionGate.execute a REAL accounts_db-backed executor so produceSlotBytes
+    // packs a tx IFF it truly was_processed against live parent state (inclusion == execution), closing
+    // the drain-chain + third-party-mover dead-block residuals the static whitelist path leaves open.
+    // Wired ONLY on the inline/loopback produce path (the tile has no accounts_db reach — see :5353).
+    // INERT while VEX_TPU_INGEST is unset (the tx-bearing pack branch is never entered).
+
+    /// Load-on-demand backing for the produce-time BlockExecutor: fetch a touched account read-only from
+    /// the producing (parent) bank's accounts_db at its slot — the SAME proven-safe read
+    /// bankAdmitTxForBroadcast uses. `ctx` = *Bank (parent_bank). Returns null when the account is absent
+    /// (no DB, or getAccountInSlot null on lamports==0) ⇒ the executor treats it as NotLoaded. `data` is
+    /// intentionally EMPTY: the executor's System Transfer/CreateAccount(space=0) path never reads account
+    /// data, so we avoid borrowing an AccountView.data slice whose lifetime we don't own. ISOLATION: this
+    /// is read-only — the executor commits ONLY into its private overlay, never back to accounts_db.
+    fn bankLoadAccountForBroadcast(ctx: ?*anyopaque, pubkey: [32]u8) ?@import("block_executor.zig").Account {
+        const bank: *Bank = @ptrCast(@alignCast(ctx.?));
+        const adb = bank.accounts_db orelse return null;
+        const pk = core.Pubkey{ .data = pubkey };
+        const acct = adb.getAccountInSlot(&pk, bank.slot, bank.ancestors()) orelse return null;
+        return .{ .lamports = acct.lamports, .owner = acct.owner.data, .executable = acct.executable, .data = &.{} };
+    }
+
+    /// InclusionGate.execute adapter: execute-and-commit one candidate against the per-block overlay and
+    /// return Agave was_processed() (the pack decision). `ctx` = *block_executor.BlockExecutor (per block).
+    fn bankExecuteForBroadcast(ctx: *anyopaque, tx_wire: []const u8) bool {
+        const block_executor = @import("block_executor.zig");
+        const ex: *block_executor.BlockExecutor = @ptrCast(@alignCast(ctx));
+        var ssig: [tx_ingest_mod.MAX_SIGNATURES][64]u8 = undefined;
+        var skey: [tx_ingest_mod.MAX_SIGNATURES][32]u8 = undefined;
+        const parsed = tx_ingest_mod.parse(tx_wire, &ssig, &skey) catch return false;
+        return ex.executeAndCommit(parsed, tx_wire).wasProcessed();
     }
 
     /// leader_mode: produce an EMPTY (tick-only) block for our leader slot `next_slot`, broadcast it as
@@ -1893,13 +2050,27 @@ pub const ReplayStage = struct {
         // persistent. WITHOUT the explicit gate the original safe interlock holds (force EMPTY). Requires
         // the inline producer (VEX_FORCE_INLINE_PRODUCE); the produce TILE keeps its own force-empty
         // interlock (it has no live-bank deref for the gate; see :4163).
-        const txbearing_broadcast = std.posix.getenv("VEX_TXBEARING_BROADCAST") != null;
+        // M3 (2026-07-17): the effective arm state is the operator's env flag AND NOT the auto-safe-off
+        // tripwire (txbearing_tripwire.zig) — see that file for the full signal/threshold/latch design.
+        // When the tripwire is tripped this collapses to the SAME force-EMPTY interlock as the flag
+        // simply being unset, so a tripped process behaves byte-identically to a never-armed one from
+        // this point on (until an operator restarts with the flags re-set).
+        const txbearing_broadcast_env = std.posix.getenv("VEX_TXBEARING_BROADCAST") != null;
+        const txbearing_broadcast = self.txbearing_tripwire_state.effectiveArmed(txbearing_broadcast_env);
         if (want_tx_bearing and broadcast_enabled and !txbearing_broadcast) {
-            std.log.err("[LEADER-PRODUCE] slot={d} tx-bearing+broadcast BLOCKED (set VEX_TXBEARING_BROADCAST=1 to flip) — producing EMPTY block instead", .{next_slot});
+            if (txbearing_broadcast_env) {
+                std.log.err("[LEADER-PRODUCE] slot={d} tx-bearing+broadcast SUPPRESSED — M3 tripwire is TRIPPED (tripped_at_slot={d}) — producing EMPTY block instead. Re-arm requires an operator restart.", .{ next_slot, self.txbearing_tripwire_state.tripped_at_slot });
+            } else {
+                std.log.err("[LEADER-PRODUCE] slot={d} tx-bearing+broadcast BLOCKED (set VEX_TXBEARING_BROADCAST=1 to flip) — producing EMPTY block instead", .{next_slot});
+            }
         }
         const pack_tx_bearing = want_tx_bearing and (!broadcast_enabled or txbearing_broadcast);
+        // M3: track which self-produced slots actually packed drained txs (as opposed to an empty
+        // tick-only block) — the tripwire's consecutive-fail counter only considers these (see
+        // self_produced_tx_bearing's doc comment / txbearing_tripwire.zig's threshold reasoning).
+        if (pack_tx_bearing) self.self_produced_tx_bearing.put(self.allocator, next_slot, {}) catch {};
         if (pack_tx_bearing and broadcast_enabled)
-            std.log.warn("[LEADER-PRODUCE] slot={d} TX-BEARING BROADCAST ARMED — inline gate (pre-filter+cost); transfer-drain residual monitored via [PRODUCE-PARITY-FAIL]", .{next_slot});
+            std.log.warn("[LEADER-PRODUCE] slot={d} TX-BEARING BROADCAST ARMED — inline gate (pre-filter+cost); transfer-drain residual monitored via [PRODUCE-PARITY-FAIL] + M3 auto-safe-off tripwire", .{next_slot});
         const bytes = if (pack_tx_bearing) blk: {
             // Loopback-only tx-bearing path: pack drained txs through the SEQUENTIAL pre-filter
             // (sigverify + blockhash-age + fee-payer-can-pay using a RUNNING per-block balance, so the
@@ -1911,9 +2082,30 @@ pub const ReplayStage = struct {
             defer seq_state.deinit(self.allocator);
             const sc: ?*const block_produce.RecentSigCache = if (self.statusCacheActive()) &self.recent_sig_cache else null;
             var gctx = ProduceGateCtx{ .bank = parent_bank, .state = &seq_state, .allocator = self.allocator, .recent_sigs = sc, .producing_slot = next_slot };
+            // PASS 3 durable executor: a per-block execute-once-and-record overlay over parent_bank's
+            // accounts_db (load-on-demand, read-only → isolation). When `.execute` is set, produceSlotBytes
+            // packs a tx IFF was_processed after REAL execution (bypassing the static whitelist/admit),
+            // closing the drain-chain + third-party-mover dead-block residuals. `admit` is retained as the
+            // (unused-while-execute≠null) fallback shape. bh_buf/block_exec live through produceSlotBytes
+            // below; block_exec.deinit frees the overlay when this block's production completes.
+            const block_executor = @import("block_executor.zig");
+            var block_exec = block_executor.BlockExecutor.init(self.allocator);
+            defer block_exec.deinit();
+            block_exec.load_ctx = parent_bank;
+            block_exec.load_fn = bankLoadAccountForBroadcast;
+            block_exec.recent_sigs = sc;
+            block_exec.producing_slot = next_slot;
+            // Arm blockhash-age validation from the producing bank's recent (≤150) blockhashes (a
+            // stale-blockhash tx the cluster rejects would otherwise be packed → dead block).
+            var bh_buf: [150][32]u8 = undefined;
+            const bh_entries = parent_bank.recent_blockhashes.constSlice();
+            for (bh_entries, 0..) |e, i| bh_buf[i] = e.blockhash.data;
+            block_exec.known_blockhashes = bh_buf[0..bh_entries.len];
             const gate = block_produce.InclusionGate{
                 .ctx = &gctx,
                 .admit = bankAdmitTxForBroadcast,
+                .exec_ctx = &block_exec,
+                .execute = bankExecuteForBroadcast,
             };
             break :blk block_produce.produceSlotBytes(
                 self.allocator,
@@ -2013,7 +2205,7 @@ pub const ReplayStage = struct {
         // bytes (-d body, URL, -m 3) are IDENTICAL to the prior fork+exec path.
         const out_path = "/dev/shm/vex-bh.json";
         const argv = [_][]const u8{
-            "/usr/bin/curl", "-s",                             "-o", out_path,                                                           "-m",   "3", "-X", "POST",
+            "/usr/bin/curl", "-s",                             "-o", out_path, "-m", "3",                                                                "-X",   "POST",
             "-H",            "Content-Type: application/json", "-d", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getLatestBlockhash\"}", rpc_bh,
         };
         // Null-terminate each arg (runtime rpc_bh included) into a c_argv; free
@@ -2170,9 +2362,9 @@ pub const ReplayStage = struct {
     /// used. The file is filtered to [lo, hi] so the caller's coverage logic is
     /// identical to the live path.
     ///
-    /// The live RPC endpoint is `self.genesis_rpc_fallback orelse
-    /// "https://api.testnet.solana.com"` — the PUBLIC testnet RPC ONLY, never
-    /// a deny-listed reference/oracle host. Identical to fetchSlotHashesRemote.
+    /// RULE #1: the live RPC endpoint is `self.genesis_rpc_fallback orelse
+    /// "https://api.testnet.solana.com"` — the PUBLIC testnet RPC ONLY, NEVER
+    /// oracle-node (38.92.24.174). Identical to fetchSlotHashesRemote.
     pub fn fetchProducedSlots(self: *Self, lo: u64, hi: u64) ?[]u64 {
         if (hi < lo) return null;
 
@@ -2203,7 +2395,7 @@ pub const ReplayStage = struct {
             .{ lo, hi },
         ) catch return null;
         const argv = [_][]const u8{
-            "/usr/bin/curl", "-s",                             "-m", "3",  "-X", "POST",
+            "/usr/bin/curl", "-s",                             "-m", "3", "-X",   "POST",
             "-H",            "Content-Type: application/json", "-d", body, rpc,
         };
         var child = std.process.Child.init(&argv, self.allocator);
@@ -2322,8 +2514,8 @@ pub const ReplayStage = struct {
         // bytes (-d req, URL, -m 3) are IDENTICAL to the prior fork+exec path.
         const out_path = "/dev/shm/vex-sh.json";
         const argv = [_][]const u8{
-            "/usr/bin/curl", "-s",                             "-o", out_path, "-m",   "3", "-X", "POST",
-            "-H",            "Content-Type: application/json", "-d", req,      rpc_sh,
+            "/usr/bin/curl", "-s",                             "-o", out_path, "-m", "3", "-X",   "POST",
+            "-H",            "Content-Type: application/json", "-d", req, rpc_sh,
         };
         // Null-terminate each arg (runtime rpc_sh included) into a c_argv; free
         // the z-copies after waitpid. Any failure (dupe/spawn/curl-exit/read) →
@@ -2602,6 +2794,101 @@ pub const ReplayStage = struct {
                 self.revive_would_fire_logged.put(dead_slot, {}) catch {};
             }
         }
+
+        // ── SWITCH-PROOF PART 2, M2 (2026-07-19) — ARMED Shape-A dead-slot REVIVE.
+        // Consumes revive_repair.decideRevive at this same mandatory seam (the M1
+        // dark tap above is detection-only). Gated by VEX_REVIVE_DEAD_SLOTS: when
+        // OFF, reviveEnabled()==false → this whole block is skipped → the binary is
+        // behavior-identical to M1 and the M1 KAT's zero-mutation invariant holds.
+        //
+        // Two PHASES, to avoid (a) mutating dead_slots under its own keyIterator and
+        // (b) a reentrant dead_slots_lock (Mutex, non-reentrant → the dump's
+        // dead_slots.remove under the same held lock would deadlock):
+        //   PHASE A (collect): under dead_slots_lock, snapshot candidate (slot,
+        //     resolved cluster hash) pairs. No mutation; lock released after.
+        //   PHASE B (decide+act): OUTSIDE dead_slots_lock, read each slot's local
+        //     bank (banks_lock.lockShared), run the PURE decision, and dispatch.
+        //     reviveDeadSlotDump re-acquires banks_lock exclusive + dead_slots_lock
+        //     FRESH (no nesting) — same collect-then-mutate discipline as the
+        //     markSlotDeadOne cascade.
+        if ((comptime build_options.verify_ticks != .off) and self.reviveEnabled()) {
+            const Cand = struct { slot: u64, cluster_hash: ?[32]u8 };
+            var candidates = std.ArrayList(Cand){};
+            defer candidates.deinit(self.allocator);
+            {
+                self.dead_slots_lock.lock();
+                defer self.dead_slots_lock.unlock();
+                var dead_it = self.dead_slots.keyIterator();
+                while (dead_it.next()) |slot_ptr| {
+                    const ds = slot_ptr.*;
+                    if (self.revive_gave_up.contains(ds)) continue; // permanently latched
+                    const ch: ?[32]u8 = if (self.scanCachedSlotHash(ds)) |h| h.data else null;
+                    candidates.append(self.allocator, .{ .slot = ds, .cluster_hash = ch }) catch continue;
+                }
+            }
+            for (candidates.items) |cand| {
+                const slot = cand.slot;
+                // Read local bank state → LocalBank (banks_lock shared: mirrors
+                // onSlotCompleted's lockShared read; the dump re-locks exclusive).
+                const local: revive_repair.LocalBank = blk: {
+                    self.banks_lock.lockShared();
+                    defer self.banks_lock.unlockShared();
+                    if (self.banks.get(slot)) |b| {
+                        if (b.is_frozen) break :blk .{ .frozen = b.bank_hash.data };
+                        break :blk .unfrozen;
+                    }
+                    break :blk .absent;
+                };
+                const attempts: u8 = self.revive_attempts.get(slot) orelse 0;
+                const decision = revive_repair.decideRevive(.{
+                    .flag_enabled = true,
+                    .is_dead = true,
+                    .cluster_hash = cand.cluster_hash,
+                    .local = local,
+                    .attempt_count = attempts,
+                    .max_attempts = MAX_REVIVE_ATTEMPTS,
+                });
+                switch (decision) {
+                    .proceed_dump_repair => {
+                        // Structurally enforce "never dump without a wired kick":
+                        // a dumped slot that can't be re-requested never refills, so
+                        // an unwired kick makes the dump strictly worse than the stall.
+                        const kick_fn = self.repair_kick_fn;
+                        const kick_ctx = self.repair_kick_ctx;
+                        if (kick_fn == null or kick_ctx == null) {
+                            std.log.warn("[REVIVE-SKIP-NO-KICK] slot={d} — repair kick unwired; refusing dump (dump without kick is worse than the stall)", .{slot});
+                            continue;
+                        }
+                        std.log.warn("[REVIVE-DUMP] slot={d} attempt={d}/{d} — Shape-A dump (banks.remove+clearCompletedSlot+dead_slots.remove) + requestHighestWindowIndex kick", .{ slot, attempts, MAX_REVIVE_ATTEMPTS });
+                        self.reviveDeadSlotDump(slot);
+                        kick_fn.?(kick_ctx.?, slot, 0);
+                        self.revive_attempts.put(slot, revive_repair.recordAttempt(attempts)) catch {};
+                    },
+                    .give_up_exhausted => {
+                        self.revive_gave_up.put(slot, {}) catch {};
+                        std.log.warn("[REVIVE-GAVE-UP] slot={d} attempts={d}/{d} — bounded-retry exhausted; slot stays dead (guardian escalation)", .{ slot, attempts, MAX_REVIVE_ATTEMPTS });
+                    },
+                    .matches_cluster_no_repair => {
+                        // Escape hatch (Agave DuplicateConfirmedSlotMatchesCluster):
+                        // frozen local hash already == cluster → mark-dead was wrongly
+                        // conservative. M2 = log only (un-dead is a fork-choice touch
+                        // deferred with Shape B). Latch into revive_gave_up to suppress
+                        // per-sweep re-logging (M2 will never act on it either way).
+                        self.revive_gave_up.put(slot, {}) catch {};
+                        std.log.warn("[REVIVE-MATCHES-CLUSTER] slot={d} — frozen local hash == cluster; M2 log-only (un-dead deferred with Shape B)", .{slot});
+                    },
+                    .refuse_not_shape_a => {
+                        // Frozen local hash != cluster = genuine Shape B (equivocation /
+                        // wrong-version), OUT of M2 scope. Refuse (never dump a frozen
+                        // bank). Latch to suppress per-sweep re-logging; Shape-B recovery
+                        // is the deferred Part 2b line.
+                        self.revive_gave_up.put(slot, {}) catch {};
+                        std.log.warn("[REVIVE-REFUSE-NOT-SHAPE-A] slot={d} — frozen local hash != cluster (Shape B); M2 refuses (no dump of frozen bank)", .{slot});
+                    },
+                    .no_action => {},
+                }
+            }
+        }
     }
 
     /// PR-5ai (2026-05-20) — retroactive ENFORCE sweep for d27mm FEC-GATE
@@ -2823,6 +3110,19 @@ pub const ReplayStage = struct {
         return self.frozen_history.contains(slot);
     }
 
+    /// True iff `slot` is currently in the dead_slots set. pub for the offline
+    /// self-recovery gate (main.zig's VEX_LEDGER_REPLAY drive loop): after a
+    /// force-dead kill the slot enters dead_slots, and the armed revive sweep's
+    /// reviveDeadSlotDump removes it (its LAST of three dump steps, after
+    /// banks.remove + clearCompletedSlot). The drive loop uses the
+    /// dead→not-dead transition as the "dumped, safe to re-feed" signal. Same
+    /// dead_slots_lock the sweep/dump use — no new synchronization.
+    pub fn slotDead(self: *Self, slot: Slot) bool {
+        self.dead_slots_lock.lock();
+        defer self.dead_slots_lock.unlock();
+        return self.dead_slots.contains(slot);
+    }
+
     /// Build a SlotSink (Phase B.2 seam, 2026-07-08) — the narrow type-erased
     /// interface tvu holds instead of a raw *ReplayStage. See vex_network.SlotSink.
     /// Behavior-identical to the direct pointer; lets Phase C relocate the fields
@@ -2954,6 +3254,31 @@ pub const ReplayStage = struct {
         return false;
     }
 
+    /// OFFLINE-ONLY diag (build_options.force_dead_slot; comptime-dead in prod):
+    /// parse VEX_FORCE_DEAD_SLOT once (cached) into the target slot to synthetically
+    /// mark dead+truncated (Shape A) so the switch-proof Part-2 offline self-recovery
+    /// gate is runnable on a CLEAN slot without a fresh live incident. When the build
+    /// flag is off this is comptime `return null` and the sole caller's `if (comptime
+    /// build_options.force_dead_slot)` guard makes the whole hook comptime-dead — the
+    /// deploy binary never carries the slot-killer. Same cached-parse shape as
+    /// switchProofVoterDiagEnabled; unset/blank/unparseable → null (no injection).
+    fn forceDeadSlotTarget(self: *Self) ?u64 {
+        _ = self;
+        if (comptime !build_options.force_dead_slot) return null;
+        const Cache = struct {
+            var parsed = std.atomic.Value(u8).init(0);
+            var target: ?u64 = null;
+        };
+        if (Cache.parsed.load(.monotonic) == 0) {
+            if (std.posix.getenv("VEX_FORCE_DEAD_SLOT")) |s| {
+                const trimmed = std.mem.trim(u8, s, " \t\r\n");
+                Cache.target = std.fmt.parseInt(u64, trimmed, 10) catch null;
+            }
+            Cache.parsed.store(1, .monotonic);
+        }
+        return Cache.target;
+    }
+
     /// pub for the live-path regression gate (kat_mark_dead_cascade.zig):
     /// exercises the REAL verify_ticks driving path (verifyTicksKill →
     /// markSlotDead → cascade) on an unfrozen slot, not just the pure Verifier.
@@ -2963,6 +3288,40 @@ pub const ReplayStage = struct {
             .{ bank.slot, bank.parent_slot, bank.hashes_per_tick, bank.ticks_per_slot, reason },
         );
         self.markSlotDead(bank.slot, reason);
+    }
+
+    /// Switch-proof Part 2, M2 — the 3-action Shape-A dead-slot DUMP (plan §1.2;
+    /// armed VEX_REVIVE_DEAD_SLOTS path only). The caller has already confirmed
+    /// decideRevive == .proceed_dump_repair (so the local bank is unfrozen-or-absent,
+    /// never frozen) AND that a repair kick is wired (a dump without a kick is
+    /// strictly worse than the stall). Runs on the replay/sweep thread. Three
+    /// removals:
+    ///   1. banks.remove under EXCLUSIVE banks_lock — must not race
+    ///      onSlotCompleted's banks_lock.lockShared read. The removed *Bank is
+    ///      intentionally NOT returned to the pool / destroyed: an aborted unfrozen
+    ///      bank is cheap, this path is rare + bounded (<= MAX_REVIVE_ATTEMPTS), and
+    ///      reusing/freeing a bank that a since-released reader saw is riskier than
+    ///      the small leak. (Under the exclusive lock no reader holds it now.)
+    ///   2. assembler.clearCompletedSlot — drops the truncated assembly state so
+    ///      repair re-collects fresh (internally mutexed; thread-agnostic).
+    ///   3. dead_slots.remove under dead_slots_lock.
+    /// These three removals ARE the single-shot re-arm: onSlotCompleted's
+    /// banks.get + dead_slots.contains terminal guards both pass again on
+    /// re-delivery, so the repaired slot re-replays through the UNMODIFIED Part-1
+    /// tick-gate/contiguity gates. revive_attempts is NOT touched here (the caller
+    /// bumps it) so a repaired-but-still-truncated re-fail is bounded toward give-up.
+    fn reviveDeadSlotDump(self: *Self, slot: Slot) void {
+        {
+            self.banks_lock.lock();
+            defer self.banks_lock.unlock();
+            _ = self.banks.remove(slot);
+        }
+        if (self.shred_assembler) |sa| sa.clearCompletedSlot(slot);
+        {
+            self.dead_slots_lock.lock();
+            defer self.dead_slots_lock.unlock();
+            _ = self.dead_slots.remove(slot);
+        }
     }
 
     /// d21: defer a slot whose parent isn't connected yet.
@@ -3693,7 +4052,8 @@ pub const ReplayStage = struct {
     /// fix/chain-defer-tip-guard (wedge @422050470): re-attach any CHAIN-DEFER
     /// continuation that the GC backstop evicted before its parent froze. Called
     /// at the tail of checkPendingChain (holds NO locks on entry). See
-    /// chain_wake_fallback.zig for the pure decision.
+    /// chain_wake_fallback.zig for the pure decision; RCA in
+    /// forensics/incident-wedge-422050470/RCA-DATA.md.
     fn chainWakeFallback(self: *Self, frozen_slot: Slot) void {
         // Snapshot the evicted set under the lock (empty ⇒ nothing to do — the
         // common, healthy case, one uncontended lock/count()/unlock).
@@ -4672,10 +5032,28 @@ pub const ReplayStage = struct {
                 };
                 const bh_ctx = BankHashCtx{ .rs = self };
 
+                // FIX (switch-proof gossip-arming wedge, live specimen slot 422521275,
+                // 2026-07-17, fix/switchproof-gossip-arming-2026-07-17): switched from
+                // `buildVoteAccountBatch` (sourced `db.top_votes`, a side cache upserted
+                // only by AccountsDb.refreshTopVoteForWrite from the flush chokepoints)
+                // to `buildVoteAccountBatchFresh` (reads EVERY staked voter's
+                // vote-account state directly off `db`, fork-aware, at THIS bank —
+                // no persistent cache in the path to go stale). See
+                // fork_choice_feed.zig `buildVoteAccountBatchFresh` doc for the full
+                // root-cause writeup + Agave citation (consensus.rs:407
+                // collect_vote_lockouts / replay_stage.rs:4391 compute_bank_stats) and
+                // the in-repo precedent (bank.zig:1308 carrier #15, the Clock estimator
+                // hit the identical top_votes-staleness bug class and was fixed the
+                // same way).
+                const current_epoch = bank.epoch_schedule.getEpoch(bank.slot);
                 const ffeed = @import("fork_choice_feed.zig");
-                const out = ffeed.buildVoteAccountBatch(
+                const out = ffeed.buildVoteAccountBatchFresh(
                     self.allocator,
                     db_ptr,
+                    db_ptr.epoch_stakes,
+                    current_epoch,
+                    bank.slot,
+                    bank.ancestors(),
                     bh_ctx,
                 ) catch break :phase2_delta;
                 defer self.allocator.free(out.votes);
@@ -4691,10 +5069,11 @@ pub const ReplayStage = struct {
                     _ = fc.addVotes(out.votes, stake_lookup) catch |e| {
                         std.log.warn(
                             "[FORK-CHOICE-DELTA] addVotes failed at slot {d}: {any} " ++
-                                "(votes={d} vote_accounts={d} dups={d} no_lv={d} no_bh={d})",
+                                "(votes={d} candidates={d} no_account={d} no_lv={d} no_bh={d})",
                             .{
-                                slot,                 e,                      out.votes.len,          out.stats.vote_accounts,
-                                out.stats.duplicates, out.stats.no_last_vote, out.stats.no_bank_hash,
+                                slot,                 e,                     out.votes.len,
+                                out.stats.candidates, out.stats.no_account, out.stats.no_last_vote,
+                                out.stats.no_bank_hash,
                             },
                         );
                         break :phase2_delta;
@@ -4707,12 +5086,12 @@ pub const ReplayStage = struct {
                 const tr = self.stats.slots_replayed.load(.monotonic);
                 if (tr <= 50 or tr % 25 == 0 or out.stats.no_bank_hash > 0) {
                     std.log.warn(
-                        "[FORK-CHOICE-DELTA] slot={d} vote_accounts={d} emitted={d} " ++
-                            "dups={d} no_lv={d} no_bh={d} recent={d} recent_resolved={d} max_voted={d}",
+                        "[FORK-CHOICE-DELTA] slot={d} candidates={d} emitted={d} " ++
+                            "no_account={d} no_lv={d} no_bh={d} parse_fail={d}",
                         .{
-                            slot,                 out.stats.vote_accounts,   out.stats.emitted,
-                            out.stats.duplicates, out.stats.no_last_vote,    out.stats.no_bank_hash,
-                            out.stats.recent,     out.stats.recent_resolved, out.stats.max_voted,
+                            slot,                  out.stats.candidates, out.stats.emitted,
+                            out.stats.no_account,  out.stats.no_last_vote, out.stats.no_bank_hash,
+                            out.stats.parse_fail,
                         },
                     );
                 }
@@ -4906,6 +5285,53 @@ pub const ReplayStage = struct {
             ReplayStats.inc(&self.stats.votes_sent);
         }
 
+        // ── M3 auto-safe-off tripwire evaluation (2026-07-17) ────────────────
+        // Latch-first (mirrors revive_detect's "check the latch BEFORE the [there:
+        // expensive scan; here: the two extra map lookups] work" discipline): once
+        // tripped, skip re-evaluating forever. Only self-produced TX-BEARING slots
+        // are in scope (self_produced_tx_bearing) — an empty self-produced slot has
+        // nothing to fail on and deliberately does not touch the counter (see
+        // txbearing_tripwire.zig's threshold-reasoning doc). NOTE: skipping empty
+        // slots entirely (rather than treating them as a "clean" reset) means the
+        // tripwire's "2" is really "2 fails with no SUCCESSFUL tx-bearing slot in
+        // between", which can span many empty leader slots — see txbearing_tripwire.
+        // zig's "HONEST NAMING" note for why this (safe-direction) looseness is
+        // deliberate, not a bug.
+        if (comptime build_options.leader_mode) {
+            if (!self.txbearing_tripwire_state.tripped.load(.acquire) and is_own_produced and
+                self.self_produced_tx_bearing.contains(slot))
+            {
+                const had_fail = self.produce_parity_fail_slots.contains(slot);
+                const env_armed = std.posix.getenv("VEX_TXBEARING_BROADCAST") != null;
+                if (self.txbearing_tripwire_state.recordSlotOutcome(slot, had_fail)) {
+                    if (env_armed) {
+                        // REAL trip: broadcast was actually armed, so this slot (and the ONE before
+                        // it, per TRIP_THRESHOLD=2) were genuinely at risk of being broadcast dead
+                        // blocks. From the NEXT self-produced slot onward, effectiveArmed() forces
+                        // empty-block production in-process — no restart.
+                        std.log.err(
+                            "[TXBEARING-TRIPWIRE-FIRED] slot={d} consecutive_produce_parity_fails={d} >= threshold={d} — AUTO-SAFE-OFF: tx-bearing broadcast DISABLED in-process (falling back to empty-block production, the known-good mode). This process will NOT auto-re-arm; an operator restart with the flags re-set is required to try again after investigating.",
+                            .{ slot, txbearing_tripwire.TRIP_THRESHOLD, txbearing_tripwire.TRIP_THRESHOLD },
+                        );
+                    } else {
+                        // Dark tap (mirrors [REVIVE-WOULD-FIRE]): VEX_TXBEARING_BROADCAST is unset, so
+                        // nothing was actually being broadcast (either today's live default, or a
+                        // deliberate loopback-only soak per plan §4 M1 item 3) — detection-only, no
+                        // production-behavior consequence (effectiveArmed(false) is false either way,
+                        // tripped or not). The internal latch still sets for consistency with the
+                        // real-trip branch (one code path, one state machine) — in practice this has no
+                        // separate observable effect, since arming the flag requires a process restart
+                        // (see the ROLLBACK section of the runbook), which always starts a fresh
+                        // TripwireState anyway.
+                        std.log.warn(
+                            "[TXBEARING-WOULD-TRIP] slot={d} consecutive_produce_parity_fails={d} >= threshold={d} — dark tap: VEX_TXBEARING_BROADCAST is unset (nothing was actually broadcasting), but the tripwire WOULD have fired here if it had been armed",
+                            .{ slot, txbearing_tripwire.TRIP_THRESHOLD, txbearing_tripwire.TRIP_THRESHOLD },
+                        );
+                    }
+                }
+            }
+        }
+
         // ── Snapshot generation ──────────────────────────────────────────
         if (self.snapshot_service) |*ss| {
             const snap_mod = @import("snapshot_service.zig");
@@ -4942,6 +5368,39 @@ pub const ReplayStage = struct {
         }
     }
 
+    /// Scratch collector for `dispatchLeaderToProduceTile`'s mempool peek (M2b). Populated entirely
+    /// INSIDE `banking_stage.peekEach`'s lock (parsing is cheap/pure — no nested lock acquisition,
+    /// per that method's contract); `payer_pubkeys`/`sigs` are VALUE copies, safe to read after
+    /// `peekEach` returns and the lock is released. Bounded by `produce_ring_mod.FEE_SNAPSHOT_CAP`.
+    const FeeSnapshotCollector = struct {
+        payer_pubkeys: [produce_ring_mod.FEE_SNAPSHOT_CAP][32]u8 = undefined,
+        payer_count: usize = 0,
+        sigs: [produce_ring_mod.FEE_SNAPSHOT_CAP][64]u8 = undefined,
+        sig_count: usize = 0,
+
+        fn addPayer(self: *@This(), pk: [32]u8) void {
+            for (self.payer_pubkeys[0..self.payer_count]) |existing| {
+                if (std.mem.eql(u8, &existing, &pk)) return; // already have it
+            }
+            if (self.payer_count < self.payer_pubkeys.len) {
+                self.payer_pubkeys[self.payer_count] = pk;
+                self.payer_count += 1;
+            }
+        }
+
+        fn cb(ctx: *anyopaque, tx_wire: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            var ssig: [tx_ingest_mod.MAX_SIGNATURES][64]u8 = undefined;
+            var skey: [tx_ingest_mod.MAX_SIGNATURES][32]u8 = undefined;
+            const parsed = tx_ingest_mod.parse(tx_wire, &ssig, &skey) catch return; // malformed — skip
+            if (self.sig_count < self.sigs.len) {
+                self.sigs[self.sig_count] = parsed.signatures[0];
+                self.sig_count += 1;
+            }
+            self.addPayer(parsed.signer_keys[0]);
+        }
+    };
+
     /// 2026-06-16 TILE ISOLATION (replay side, "become-leader" emit). Runs on the REPLAY thread.
     /// Snapshots every build input as a VALUE (no *Bank / no self.identity_secret deref happens on
     /// the produce tile — identity_secret is nulled/restored on THIS thread by the suspend-voting
@@ -4951,6 +5410,34 @@ pub const ReplayStage = struct {
     /// marked here; the G1 self-vote guard stays replay-owned and is marked when Ring B drains (so
     /// it is set before the looped-back slot can freeze, preserving the inline mark-before-loopback
     /// ordering). Skip semantics mirror the inline path (null block_id / null secret → no push).
+    ///
+    /// 2026-07-17 (M2b): ALSO snapshots the tile's inclusion-gate inputs here, on the replay thread,
+    /// exactly where every other tile input is already snapshotted — see produce_ring.zig's
+    /// BecomeLeaderRecord doc for why this is a wider application of the SAME "values only" principle,
+    /// not a new one:
+    ///   1. `banking_stage.peekEach` (non-destructive) walks the mempool AS IT STANDS RIGHT NOW under
+    ///      its own lock, extracting (fee-payer pubkey, first signature) VALUE pairs — this is the
+    ///      ONE new cross-thread synchronization this milestone adds: the replay thread briefly takes
+    ///      `banking_stage.lock` (today only the tile does, via `drainBatch`). It is bounded (guarded
+    ///      by `isLeader`, so it runs once per OUR leader slot, not per replayed slot), short-held
+    ///      (parsing only — no nested accounts_db lookup inside the lock, see FeeSnapshotCollector.cb),
+    ///      and is NOT the accounts_db/replay-commit write-path lock chain that actually caused the
+    ///      prior delinquency (produce_ring.zig banner) — a different, already-cross-thread-by-design
+    ///      lock class (the QUIC-pump thread already writes through it).
+    ///   2. For each DISTINCT fee-payer pubkey observed, look up its frozen-parent balance via
+    ///      `accounts_db.getAccountInSlot` — the EXACT SAME call `bankAdmitTxForBroadcast` makes below,
+    ///      just run here (still replay-thread-owned, zero new access pattern) instead of per-tx at
+    ///      broadcast time.
+    ///   3. Value-copy `parent_bank.recent_blockhashes` (bounded, ≤150×32B) — a plain frozen-bank
+    ///      struct field read, the same category as `block_id`/`poh_hash` just above.
+    ///   4. When the status cache is active, check each peeked signature against
+    ///      `self.recent_sig_cache` (replay-owned; no lock needed — only this thread ever touches it)
+    ///      and carry forward the ones flagged AlreadyProcessed.
+    /// Coverage is bounded (`FEE_SNAPSHOT_CAP`) and necessarily a SNAPSHOT (a tx arriving in the gap
+    /// between this dispatch and the tile's later `drainBatch` won't have a fee-payer entry) — the
+    /// tile-side gate's fallback for "not in the snapshot" is the SAME conservative "cannot verify ⇒
+    /// treat as absent ⇒ drop" policy `bankAdmitTxForBroadcast` already uses for a genuinely-absent
+    /// account (see `tileAdmitTxForBroadcast`), so this can only under-include, never wrongly admit.
     fn dispatchLeaderToProduceTile(self: *Self, next_slot: u64, parent_slot: u64, parent_bank: *Bank) void {
         const ring_a = self.produce_ring_a orelse return;
         const sec = self.identity_secret orelse return;
@@ -4958,7 +5445,8 @@ pub const ReplayStage = struct {
         // encode validity so the tile skips identically (no orphan, no wasted broadcast).
         const block_id = parent_bank.block_id;
         const tpu_ingest_on = std.posix.getenv("VEX_TPU_INGEST") != null;
-        const rec = produce_ring_mod.BecomeLeaderRecord{
+
+        var rec = produce_ring_mod.BecomeLeaderRecord{
             .slot = next_slot,
             .parent_slot = parent_slot,
             .chained_root = block_id orelse [_]u8{0} ** 32,
@@ -4968,12 +5456,104 @@ pub const ReplayStage = struct {
             .shred_version = self.shred_version_bp,
             .tpu_ingest_on = tpu_ingest_on,
         };
+
+        // M2b gate-input snapshot — only meaningful (and only worth the work) when the tile would
+        // actually pack drained txs; skip entirely for the tick-only branch (byte-identical to today
+        // when tpu_ingest_on is false — should not happen given dispatch is only reachable under
+        // VEX_TPU_INGEST anyway, but keep the check as documentation + a cheap belt-and-braces guard).
+        if (tpu_ingest_on and self.banking_stage != null) {
+            // recent_blockhashes — plain frozen-bank field read (same category as block_id/poh_hash).
+            const entries = parent_bank.recent_blockhashes.constSlice();
+            rec.recent_blockhashes_len = @intCast(@min(entries.len, rec.recent_blockhashes.len));
+            for (entries[0..rec.recent_blockhashes_len], 0..) |e, i| rec.recent_blockhashes[i] = e.blockhash.data;
+
+            // Phase A: non-destructive mempool peek, lock-held parsing only (no accounts_db here).
+            var collector = FeeSnapshotCollector{};
+            self.banking_stage.?.peekEach(produce_ring_mod.FEE_SNAPSHOT_CAP, &collector, FeeSnapshotCollector.cb);
+
+            // Phase B: lock released — accounts_db lookups (replay-thread-owned, same call
+            // bankAdmitTxForBroadcast makes) + RecentSigCache checks (also replay-owned, no lock).
+            if (parent_bank.accounts_db) |adb| {
+                for (collector.payer_pubkeys[0..collector.payer_count]) |pk_bytes| {
+                    const pk = core.Pubkey{ .data = pk_bytes };
+                    if (adb.getAccountInSlot(&pk, parent_bank.slot, parent_bank.ancestors())) |acct| {
+                        if (rec.fee_snapshot_len < rec.fee_snapshot.len) {
+                            rec.fee_snapshot[rec.fee_snapshot_len] = .{
+                                .pubkey = pk_bytes,
+                                .lamports = acct.lamports,
+                                .owner = acct.owner.data,
+                                .data_len = @intCast(acct.data.len),
+                            };
+                            rec.fee_snapshot_len += 1;
+                        }
+                    }
+                }
+            }
+
+            rec.status_cache_checked = self.statusCacheActive();
+            if (rec.status_cache_checked) {
+                for (collector.sigs[0..collector.sig_count]) |sig| {
+                    if (self.recent_sig_cache.isRecent(&sig, next_slot)) {
+                        if (rec.already_processed_len < rec.already_processed_sigs.len) {
+                            rec.already_processed_sigs[rec.already_processed_len] = sig;
+                            rec.already_processed_len += 1;
+                        }
+                    }
+                }
+            }
+        }
+
         if (!ring_a.tryPush(rec)) {
             // Ring A full = produce tile fell behind (should never happen at cap 64 with one
             // in-flight slot). Skip this slot, same outcome as the inline path skipping a slot it
             // cannot build — no inline production here (that would re-introduce the cycle theft).
             std.log.warn("[PRODUCE-TILE] Ring A full, slot={d} skipped (tile behind)", .{next_slot});
         }
+    }
+
+    /// 2026-07-17 (M2b). Tile-side mirror of `bankAdmitTxForBroadcast` (:1818): the SAME per-tx
+    /// pre-filter, sourced from the VALUE-copied `BecomeLeaderRecord` snapshot instead of a live
+    /// `*Bank`/`accounts_db` — the tile still dereferences ZERO shared mutable state (produce_ring.zig
+    /// banner), only the record it already owns. `state`/`allocator` behave identically to the inline
+    /// gate (fresh `SeqGateState` per produced block); `admitTxSeq` itself is UNCHANGED — the only
+    /// difference from the inline gate is WHERE `fee_payer`/`recent_blockhashes`/cross-block-dedup come
+    /// from. A fee-payer pubkey not present in `rec.fee_snapshot` (never looked up, or looked up and
+    /// found absent — both cases already collapse to `fpv = null` on the inline path too, see
+    /// `bankAdmitTxForBroadcast`) is treated as absent, same conservative drop.
+    const TileGateCtx = struct {
+        rec: *const produce_ring_mod.BecomeLeaderRecord,
+        state: *@import("block_produce").SeqGateState,
+        allocator: std.mem.Allocator,
+    };
+
+    fn tileAdmitTxForBroadcast(ctx: *anyopaque, tx_wire: []const u8) bool {
+        const block_produce = @import("block_produce");
+        const gctx: *TileGateCtx = @ptrCast(@alignCast(ctx));
+        var ssig: [tx_ingest_mod.MAX_SIGNATURES][64]u8 = undefined;
+        var skey: [tx_ingest_mod.MAX_SIGNATURES][32]u8 = undefined;
+        const parsed = tx_ingest_mod.parse(tx_wire, &ssig, &skey) catch return false;
+
+        // Cross-block AlreadyProcessed, snapshot-sourced (see BecomeLeaderRecord doc). Only entries
+        // the dispatch-time peek actually observed are checked; a tx that arrived after the snapshot
+        // gets no cross-block dedup here (same "not yet wired for this tx" gap the inline path has
+        // whenever the status cache itself is dormant — not a new asymmetry, just a narrower window).
+        if (gctx.rec.status_cache_checked) {
+            for (gctx.rec.already_processed_sigs[0..gctx.rec.already_processed_len]) |flagged| {
+                if (std.mem.eql(u8, &flagged, &parsed.signatures[0])) return false;
+            }
+        }
+
+        const bh_set = gctx.rec.recent_blockhashes[0..gctx.rec.recent_blockhashes_len];
+
+        var fpv: ?block_produce.FeePayerView = null;
+        for (gctx.rec.fee_snapshot[0..gctx.rec.fee_snapshot_len]) |snap| {
+            if (std.mem.eql(u8, &snap.pubkey, &parsed.signer_keys[0])) {
+                fpv = .{ .lamports = snap.lamports, .owner = snap.owner, .data_len = snap.data_len };
+                break;
+            }
+        }
+
+        return block_produce.admitTxSeq(gctx.allocator, gctx.state, parsed, tx_wire, bh_set, fpv);
     }
 
     /// 2026-06-16 TILE ISOLATION (replay side, "slot-done" consume). Runs on the REPLAY thread at
@@ -4996,6 +5576,11 @@ pub const ReplayStage = struct {
                     // G1: mark self-produced BEFORE the loopback so onSlotFrozen skips self-voting
                     // it (replay-owned write; the tile never touches self_produced).
                     self.self_produced.put(self.allocator, rec.slot, {}) catch {};
+                    // M3 auto-safe-off tripwire: mirror the inline path's self_produced_tx_bearing
+                    // marking — rec.tx_bearing was computed on the TILE thread (produceTileLoop) and
+                    // carried across Ring B as a plain value; this write is replay-thread-owned, same
+                    // discipline as self_produced itself.
+                    if (rec.tx_bearing) self.self_produced_tx_bearing.put(self.allocator, rec.slot, {}) catch {};
                     // Multi-slot leader-window chaining: stash OUR produced block_id (computed on the
                     // tile) so the next slot of our window chains (applied at this slot's freeze).
                     if (rec.has_block_id) self.self_produced_block_id.put(self.allocator, rec.slot, rec.block_id) catch {};
@@ -5047,21 +5632,40 @@ pub const ReplayStage = struct {
             // consumer (drainBatch) — one-producer/one-consumer under the mutex is safe.
             // block_produce's `seed: Hash` is `entry.Hash` = a bare [32]u8 (the inline path passes
             // `parent_bank.poh_hash.data`, also [32]u8). rec.seed IS that snapshotted [32]u8.
-            // task #25 TILE GATE + SAFETY INTERLOCK: the produce tile is "zero shared-Bank deref" by
-            // design (replay recycles banks in a pool on core 16), so it CANNOT call the live-bank
-            // admit predicate the inline path uses — a thread-safe SNAPSHOT gate (taken on the replay
-            // thread at dispatch) is required, and is NOT yet wired (flip-blocker). Until it is, the
-            // tile MUST NOT broadcast tx-bearing bytes: when broadcast is enabled we force the EMPTY
-            // (cluster-proven-accepted) path + a loud error. tx-bearing packing is allowed ONLY with
-            // broadcast OFF (loopback-only validation), where an ungated/imperfect pack can at worst
-            // waste our own loopback slot — never a cluster-visible dead block. (Even loopback packing
-            // here is currently ungated; the per-tx pre-filter runs only on the inline path so far.)
+            // 2026-07-17 (M2b, task #25's tile flip-blocker CLOSED): the produce tile is still "zero
+            // shared-Bank deref" by design (replay recycles banks in a pool on core 16) — it cannot and
+            // does not call the live-bank admit predicate the inline path uses. Instead it runs
+            // `tileAdmitTxForBroadcast`, the SAME `admitTxSeq` gate sourced from the VALUE-copied
+            // `rec.fee_snapshot`/`rec.recent_blockhashes`/`rec.already_processed_sigs` dispatch built on
+            // the replay thread (see `dispatchLeaderToProduceTile`). That gate is a PRE-FILTER, not a
+            // complete broadcast-safety boundary — identically to the inline path (block_produce.zig
+            // banner) — so the SAME explicit-override interlock applies here as there
+            // (`VEX_TXBEARING_BROADCAST`, replay_stage.zig's inline interlock comment): without it,
+            // tx-bearing + broadcast forces the EMPTY (cluster-proven-accepted) path + a loud error;
+            // with it, tx-bearing bytes may broadcast through the gate, same residual (adversarial
+            // same-payer transfer-drain beyond M2's covered instruction classes) the inline path accepts.
+            // tx-bearing packing WITHOUT broadcast (loopback-only) is unconditionally allowed, same as
+            // always — an imperfect pack there can at worst waste our own loopback slot.
             const broadcast_enabled = core.envFlagValueArmed(std.posix.getenv("VEX_LEADER_BROADCAST"));
             const tile_want_tx_bearing = rec.tpu_ingest_on and self.banking_stage != null;
-            if (tile_want_tx_bearing and broadcast_enabled) {
-                std.log.err("[PRODUCE-TILE] slot={d} tx-bearing+broadcast BLOCKED: snapshot inclusion gate not wired (task #25 flip-blocker) — producing EMPTY block instead", .{rec.slot});
+            // M3 (2026-07-17): same effectiveArmed() gate the inline path uses. Safe to call from THIS
+            // (tile) thread — effectiveArmed only touches the atomic `tripped` field (see
+            // txbearing_tripwire.zig's TripwireState doc: this is the ONE field the tile is allowed to
+            // read cross-thread, mirroring the existing produce_tile_active atomic-bool pattern).
+            const tile_txbearing_broadcast_env = std.posix.getenv("VEX_TXBEARING_BROADCAST") != null;
+            const tile_txbearing_broadcast = self.txbearing_tripwire_state.effectiveArmed(tile_txbearing_broadcast_env);
+            if (tile_want_tx_bearing and broadcast_enabled and !tile_txbearing_broadcast) {
+                if (tile_txbearing_broadcast_env) {
+                    std.log.err("[PRODUCE-TILE] slot={d} tx-bearing+broadcast SUPPRESSED — M3 tripwire is TRIPPED — producing EMPTY block instead. Re-arm requires an operator restart.", .{rec.slot});
+                } else {
+                    std.log.err("[PRODUCE-TILE] slot={d} tx-bearing+broadcast BLOCKED (set VEX_TXBEARING_BROADCAST=1 to flip) — producing EMPTY block instead", .{rec.slot});
+                }
             }
-            const tile_pack_tx_bearing = tile_want_tx_bearing and !broadcast_enabled;
+            const tile_pack_tx_bearing = tile_want_tx_bearing and (!broadcast_enabled or tile_txbearing_broadcast);
+            var tile_seq_state = block_produce.SeqGateState{};
+            defer tile_seq_state.deinit(self.allocator);
+            var tile_gctx = TileGateCtx{ .rec = &rec, .state = &tile_seq_state, .allocator = self.allocator };
+            const tile_gate = block_produce.InclusionGate{ .ctx = &tile_gctx, .admit = tileAdmitTxForBroadcast };
             const bytes = if (tile_pack_tx_bearing)
                 block_produce.produceSlotBytes(
                     self.allocator,
@@ -5070,7 +5674,7 @@ pub const ReplayStage = struct {
                     block_produce.TICKS_PER_SLOT,
                     self.banking_stage.?,
                     null,
-                    null, // TODO(task #25 flip-blocker): thread-safe snapshot-based InclusionGate
+                    tile_gate,
                     block_produce.MAX_BLOCK_UNITS, // SIMD-0256 60M block-CU ceiling (cost-model pack stop)
                 ) catch |e| {
                     std.log.warn("[PRODUCE-TILE] slot={d} produceSlotBytes failed: {any}", .{ rec.slot, e });
@@ -5122,7 +5726,7 @@ pub const ReplayStage = struct {
                 _ = ring_b.tryPush(.{ .slot = rec.slot, .parent_slot = rec.parent_slot, .block_bytes = &.{}, .status = .skipped });
                 continue;
             };
-            if (!ring_b.tryPush(.{ .slot = rec.slot, .parent_slot = rec.parent_slot, .block_bytes = loop_copy, .status = .ok, .block_id = tile_bid, .has_block_id = tile_has_bid })) {
+            if (!ring_b.tryPush(.{ .slot = rec.slot, .parent_slot = rec.parent_slot, .block_bytes = loop_copy, .status = .ok, .block_id = tile_bid, .has_block_id = tile_has_bid, .tx_bearing = tile_pack_tx_bearing })) {
                 // Ring B full (should never happen at cap 64) — free our copy to avoid a leak.
                 self.allocator.free(loop_copy);
                 std.log.warn("[PRODUCE-TILE] Ring B full, slot={d} loopback dropped", .{rec.slot});
@@ -5198,7 +5802,15 @@ pub const ReplayStage = struct {
     /// abandoned-fork vote is still absent from the true parent chain.
     /// No lock is held across the two maps (banks_lock released before
     /// slot_parents_lock) to avoid a lock-order inversion with the freeze path.
-    fn ancestorChainComplete(self: *Self, start_parent: Slot, root: Slot, out: []Slot) []const Slot {
+    ///
+    /// Made `pub` (2026-07-17, switch-proof-gossip-arming session) for
+    /// `src/kat_ancestor_walk_unrooted_depth.zig` — same rationale as
+    /// `sweepPendingTickGateSlots`/`getNetworkBankHash` above: the fix for the
+    /// live 422521275 wedge (d2c2f59) is entirely in the CALLER's buffer
+    /// sizing (fixed `[4096]Slot` -> heap-sized-to-actual-unrooted-depth), not
+    /// in this function's own walk logic, so the KAT drives this REAL function
+    /// with both buffer shapes directly rather than a reimplementation.
+    pub fn ancestorChainComplete(self: *Self, start_parent: Slot, root: Slot, out: []Slot) []const Slot {
         var n: usize = 0;
         var p = start_parent;
         while (n < out.len and p > root) {
@@ -5377,6 +5989,154 @@ pub const ReplayStage = struct {
         return Cache.on;
     }
 
+    /// SWITCH-PROOF PER-VOTER DIAGNOSTIC (VEX_SWITCH_PROOF_VOTER_DIAG; default OFF).
+    /// When set, every [SWITCH-PROOF]/[SWITCH-SHADOW] evaluation (i.e. every cross-fork
+    /// switch-proof check — already a rare path, gated behind VEX_SWITCH_PROOF being
+    /// shadow/armed AND is_same_fork=false) additionally runs
+    /// `fork_choice.switchThresholdVoterBreakdown` (fork_choice.zig) and emits
+    /// [SWITCH-PROOF-VOTER] lines for the top contributing (pubkey-prefix, cand_slot,
+    /// stake, source) entries plus a [SWITCH-PROOF-BREAKDOWN] summary of exclusion
+    /// counts per predicate. Added 2026-07-17 after the 422600922 sibling-race event
+    /// logged only an unattributed aggregate ("locked_out=.../... (38.18%)
+    /// gossip_cnt=0/0") with no way to tell which voters/slots supplied the stake —
+    /// this turns the next such event into a fully attributable trace. Diagnostic-only:
+    /// never changes the vote decision, never touches consensus state. Parsed once;
+    /// unset/"0"/"off"/"" → off (mirrors propDiagEnabled's cached-bool pattern).
+    fn switchProofVoterDiagEnabled(self: *Self) bool {
+        _ = self;
+        const Cache = struct {
+            var parsed = std.atomic.Value(u8).init(0);
+            var on: bool = false;
+        };
+        if (Cache.parsed.load(.monotonic) == 0) {
+            if (std.posix.getenv("VEX_SWITCH_PROOF_VOTER_DIAG")) |s| {
+                Cache.on = !(s.len == 0 or std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "off"));
+            }
+            Cache.parsed.store(1, .monotonic);
+        }
+        return Cache.on;
+    }
+
+    /// Switch-proof Part 2, M2 revive arming (VEX_REVIVE_DEAD_SLOTS; default OFF).
+    /// When OFF, decideRevive is passed flag_enabled=false → every dead slot is
+    /// .no_action → the sweep's M2 block is fully dormant and the binary is
+    /// behavior-identical to M1 (preserving test-revive-would-fire's zero-mutation
+    /// invariant, which runs with this env unset). Parsed once (cached);
+    /// unset/"0"/"off"/"" → off. Same cached-bool pattern as switchProofVoterDiagEnabled.
+    ///
+    /// pub for the offline self-recovery gate: main.zig's VEX_LEDGER_REPLAY drive
+    /// loop reads this to decide whether to arm ledger-driven re-delivery of a
+    /// force-dead+dumped slot (single source of truth for the arming env parse).
+    pub fn reviveEnabled(self: *Self) bool {
+        _ = self;
+        const Cache = struct {
+            var parsed = std.atomic.Value(u8).init(0);
+            var on: bool = false;
+        };
+        if (Cache.parsed.load(.monotonic) == 0) {
+            if (std.posix.getenv("VEX_REVIVE_DEAD_SLOTS")) |s| {
+                Cache.on = !(s.len == 0 or std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "off"));
+            }
+            Cache.parsed.store(1, .monotonic);
+        }
+        return Cache.on;
+    }
+
+    /// VOTE-THRESHOLD depth-8 gate mode (VEX_VOTE_THRESHOLD; incident 423083743
+    /// companion fix, 2026-07-19). The Agave/FD invariant "cluster signals gate
+    /// VOTING, own-tower depth gates ROOTING" — their depth-8 threshold check
+    /// runs with REAL observed stake, which is what structurally prevents their
+    /// towers from ever filling 31-deep on a fork the cluster abandoned. Vexor's
+    /// check (tower.zig shouldVote) existed but was called with (0,0) = dead.
+    ///   unset / "shadow" / unknown → .shadow (DEFAULT: compute real stakes +
+    ///                                log would-be verdict; vote decisions
+    ///                                byte-identical — (0,0) still passed)
+    ///   "1"/"armed"/"on"           → .armed  (pass real stakes — ENFORCING;
+    ///                                only after shadow-soak validation)
+    ///   "0"/"off"/""               → .off    (fully dormant, no computation)
+    /// Parsed once (cached); mirrors switchProofMode. Deliberately NOT in
+    /// bakeProdEnvDefaults — the shadow default lives here in code.
+    fn voteThresholdMode(self: *Self) @import("vex_consensus").tower.TowerBft.ThresholdMode {
+        _ = self;
+        const Mode = @import("vex_consensus").tower.TowerBft.ThresholdMode;
+        const Cache = struct {
+            var parsed = std.atomic.Value(u8).init(0);
+            var mode: Mode = .shadow;
+        };
+        if (Cache.parsed.load(.monotonic) == 0) {
+            if (std.posix.getenv("VEX_VOTE_THRESHOLD")) |s| {
+                if (s.len == 0 or std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "off")) {
+                    Cache.mode = .off;
+                } else if (std.mem.eql(u8, s, "1") or std.mem.eql(u8, s, "armed") or std.mem.eql(u8, s, "on")) {
+                    Cache.mode = .armed;
+                } else {
+                    Cache.mode = .shadow;
+                }
+            }
+            Cache.parsed.store(1, .monotonic);
+        }
+        return Cache.mode;
+    }
+
+    /// VOTE-THRESHOLD total-stake numerator's denominator: TOTAL stake of the
+    /// bank's epoch (same walk the PROP-GATE and switch-proof sites do inline;
+    /// cached per epoch here because this runs on EVERY vote decision).
+    /// Replay-thread-only; reuses already-loaded db.epoch_stakes — no new
+    /// cross-thread sync (TVU hot-path standing rule).
+    fn epochTotalStake(self: *Self, bank: *Bank) u64 {
+        const db = self.accounts_db orelse return 0;
+        const ep = bank.epoch_schedule.getEpoch(bank.slot);
+        if (self.thr_total_stake_epoch == ep) return self.thr_total_stake_cached;
+        var total: u64 = 0;
+        for (db.epoch_stakes) |es| {
+            if (es.epoch == ep) {
+                for (es.vote_account_stakes) |vs| total +%= vs.stake;
+                break;
+            }
+        }
+        self.thr_total_stake_epoch = ep;
+        self.thr_total_stake_cached = total;
+        return total;
+    }
+
+    /// VOTE-THRESHOLD numerator: cluster stake observed voting AT-OR-BEYOND
+    /// `depth_slot` on OUR fork = fork-choice `stake_voted_subtree` of the
+    /// depth-slot node on the candidate bank's ancestry. This is the Vexor
+    /// analog of Agave's `voted_stakes[threshold_slot]` (consensus.rs
+    /// populate_ancestor_voted_stakes): both equal the stake of voters whose
+    /// LATEST vote lands in the subtree rooted at the slot. The feed is
+    /// `buildVoteAccountBatchFresh` → `fc.addVotes` in onSlotCompleted — votes
+    /// landed in REPLAYED banks (Agave collect_vote_lockouts analog), live even
+    /// during boot catch-up with zero gossip; it runs on the replay thread,
+    /// same thread as submitVote → no new cross-thread sync.
+    /// Key resolution mirrors rootGuardInputs: prefer the node on the ANCHOR
+    /// (candidate vote target) bank's ancestry — disambiguates equivocating
+    /// same-slot siblings — falling back to any node at the slot; absent
+    /// (pruned/unknown) → 0 (in shadow that logs WOULD-REFUSE; never a crash).
+    /// pub for src/kat_vote_threshold_shadow.zig (drives the REAL fork-choice
+    /// walk against a constructed tree).
+    pub fn clusterVotedStakeAtDepthSlot(self: *Self, depth_slot: Slot, anchor_slot: Slot, anchor_hash: Hash) u64 {
+        const fc = if (self.fork_choice) |*p| p else return 0;
+        const fc_mod = @import("vex_consensus").fork_choice;
+        var key: ?fc_mod.SlotHashKey = null;
+        const ak = fc_mod.SlotHashKey{ .slot = anchor_slot, .hash = anchor_hash };
+        if (anchor_slot == depth_slot) {
+            key = ak;
+        } else if (fc.containsBlock(ak)) {
+            var it = fc.ancestorIterator(ak);
+            while (it.next()) |a| {
+                if (a.slot == depth_slot) {
+                    key = a;
+                    break;
+                }
+                if (a.slot < depth_slot) break; // walked past — not on this ancestry
+            }
+        }
+        if (key == null) key = fc.firstKeyAtSlot(depth_slot);
+        const k = key orelse return 0;
+        return fc.stakeVotedSubtree(k) orelse 0;
+    }
+
     /// TASK #3 ARMED canonical vote-selection (VEX_CANONICAL_VOTE). @prov:vote.select-reset
     /// When set, submitVote selects the
     /// @prov:replay.select-vote-reset-forks target (heaviest-subtree leaf, or heaviest-on-same-voted-fork
@@ -5496,6 +6256,95 @@ pub const ReplayStage = struct {
         };
     }
 
+    /// G0 first-root latch arming (VEX_FIRST_ROOT_LATCH; DEFAULT ON — deliberately
+    /// NOT in bakeProdEnvDefaults, the default lives here in code; the env exists
+    /// only as a kill-switch: explicit "0"/"off"/"" disables). Hard-disabled in
+    /// offline replay / golden-gate mode (VEX_LEDGER_REPLAY / VEX_SNAPSHOT_OFFLINE,
+    /// the same detection bakeProdEnvDefaults uses): offline has no cluster to
+    /// attest, so the latch must be inert there or DIFF987 canonical replay would
+    /// refuse every first root. Parsed once (cached); same pattern as
+    /// switchProofVoterDiagEnabled.
+    fn firstRootLatchEnabled(self: *Self) bool {
+        _ = self;
+        const Cache = struct {
+            var parsed = std.atomic.Value(u8).init(0);
+            var on: bool = true;
+        };
+        if (Cache.parsed.load(.monotonic) == 0) {
+            if (std.posix.getenv("VEX_LEDGER_REPLAY") != null or
+                std.posix.getenv("VEX_SNAPSHOT_OFFLINE") != null)
+            {
+                Cache.on = false;
+                std.log.warn("[ROOT-GUARD] offline replay mode — G0 first-root latch INERT (no cluster to attest)", .{});
+            } else if (std.posix.getenv("VEX_FIRST_ROOT_LATCH")) |s| {
+                Cache.on = !(s.len == 0 or std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "off"));
+                if (!Cache.on) std.log.warn("[ROOT-GUARD] G0 first-root latch DISABLED by VEX_FIRST_ROOT_LATCH={s}", .{s});
+            }
+            Cache.parsed.store(1, .monotonic);
+        }
+        return Cache.on;
+    }
+
+    /// G0 produced-slot probe: was `slot` cluster-PRODUCED? Wraps the existing
+    /// historical oracle `fetchProducedSlots(slot, slot)` (getBlocks — the Agave
+    /// Blockstore::is_skipped analog; offline-fakeable via VEX_SKIP_CANON_FILE)
+    /// behind the per-candidate cache documented at the fields. Returns
+    /// true/false = definitive cluster verdict, null = oracle unreachable
+    /// (rate-limited retry). Called ONLY pre-latch on a hash-silent candidate —
+    /// i.e. never post-boot-window and never offline — so the ≤3s curl (-m 3)
+    /// this can block the replay thread for is confined to exactly the boot
+    /// catch-up window it protects.
+    fn probeClusterProduced(self: *Self, slot: Slot) ?bool {
+        if (self.first_root_probe_slot == slot) {
+            if (self.first_root_probe_result) |r| return r;
+            // Prior probe for this same candidate FAILED — rate-limit retries.
+            if (std.time.milliTimestamp() - self.first_root_probe_at_ms < 2000) return null;
+        }
+        self.first_root_probe_slot = slot;
+        self.first_root_probe_result = null;
+        self.first_root_probe_at_ms = std.time.milliTimestamp();
+        const produced_list = self.fetchProducedSlots(slot, slot) orelse return null;
+        defer self.allocator.free(produced_list);
+        var produced = false;
+        for (produced_list) |s| {
+            if (s == slot) {
+                produced = true;
+                break;
+            }
+        }
+        self.first_root_probe_result = produced;
+        return produced;
+    }
+
+    /// The full ROOT-GUARDS decision for one candidate root advance: input
+    /// collection (rootGuardInputs) + G0 first-root-latch state + the pre-latch
+    /// produced-slot probe + the pure predicate (evalRootGuards) + latch
+    /// transition on positive attestation. Returns null when there is no
+    /// fork-choice tree at all (nothing to guard against — offline/unit
+    /// bootstrap, unchanged from the pre-G0 code). Split out of doRootAdvance
+    /// (and made pub) so the live-path KAT (src/kat_first_root_latch.zig) can
+    /// drive the REAL glue — scanCachedSlotHash, fetchProducedSlots'
+    /// VEX_SKIP_CANON_FILE path, the probe cache, and the latch field — without
+    /// needing a full AccountsDb; doRootAdvance is its only production caller.
+    pub fn rootGuardDecisionForAdvance(self: *Self, root: Slot, anchor_slot: Slot) ?root_guards.RootGuardDecision {
+        var gin = self.rootGuardInputs(root, anchor_slot) orelse return null;
+        gin.first_root_pending = self.firstRootLatchEnabled() and !self.first_root_attested;
+        if (gin.first_root_pending and gin.cluster_canonical_hash == null and !gin.is_duplicate_confirmed) {
+            gin.cluster_produced = self.probeClusterProduced(root);
+        }
+        const dec = evalRootGuards(gin);
+        if (dec == .allow_attested and !self.first_root_attested) {
+            self.first_root_attested = true;
+            if (self.firstRootLatchEnabled()) {
+                std.log.warn(
+                    "[ROOT-GUARD] first-root positive attestation LATCHED slot={d} (cluster-attested bank_hash match) — G0 boot gate satisfied, steady-state guard semantics from here",
+                    .{root},
+                );
+            }
+        }
+        return dec;
+    }
+
     /// #27 (2026-07-02): root-advance body SHARED by the LIVE vote path
     /// (submitVote) and the OFFLINE force-root path (forceAdvanceRootTo,
     /// VEX_REPLAY_FORCE_ROOT_DEPTH). Extracted VERBATIM from submitVote so the
@@ -5573,10 +6422,43 @@ pub const ReplayStage = struct {
         // tree carries the candidate root — offline replay and bootstrap (empty
         // tree / no cluster oracle) fail open, so canonical replay is byte-
         // identical with ZERO fires.
+        //   G0 — FIRST-ROOT POSITIVE-ATTESTATION LATCH (incident 423083743,
+        //        2026-07-19): until one candidate root positively matches a
+        //        cluster-attested bank_hash, a HASH-SILENT candidate (the G2
+        //        fail-open case — exactly how cluster-SKIPPED 423083742 rooted)
+        //        additionally requires fetchProducedSlots to confirm the slot
+        //        was cluster-produced. Post-latch: byte-identical to pre-G0.
+        //        Kill-switch VEX_FIRST_ROOT_LATCH=0; INERT offline (see
+        //        firstRootLatchEnabled). Refuse-only, like G1/G2.
         if (root > prev_root) {
-            if (self.rootGuardInputs(root, anchor_slot)) |gin| {
-                switch (evalRootGuards(gin)) {
-                    .allow => {},
+            if (self.rootGuardDecisionForAdvance(root, anchor_slot)) |gdec| {
+                switch (gdec) {
+                    .allow, .allow_attested => {},
+                    .refuse_g0 => |why| {
+                        const G0Dbg = struct {
+                            var count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+                        };
+                        const rc = G0Dbg.count.fetchAdd(1, .monotonic) + 1;
+                        std.log.err(
+                            "[ROOT-GUARD] slot={d} reason=G0-first-root-unattested consensus_root={d} why={s} (bank={d} prev_root={d} fires={d}) — candidate root is HASH-SILENT (no cluster-attested bank_hash) and {s}; pre-latch root advance REFUSED, prev root kept (423083743 guard)",
+                            .{
+                                root,
+                                prev_root,
+                                switch (why) {
+                                    .not_produced => @as([]const u8, "not-produced-confirmed"),
+                                    .oracle_unreachable => "oracle-unreachable",
+                                },
+                                anchor_slot,
+                                prev_root,
+                                rc,
+                                switch (why) {
+                                    .not_produced => @as([]const u8, "the cluster oracle reports the slot was NOT produced (cluster-skipped)"),
+                                    .oracle_unreachable => "the produced-slot oracle is unreachable (fail-closed only pre-latch)",
+                                },
+                            },
+                        );
+                        return null;
+                    },
                     .refuse_g1 => |lia| {
                         const G1Dbg = struct {
                             var count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
@@ -6283,6 +7165,64 @@ pub const ReplayStage = struct {
                 }
                 switch (choice) {
                     .tip => {
+                        // FIX (2026-07-17, switch-proof sibling-race divergence — live
+                        // event @422600922): `bank_in` ("the tip") is whichever bank
+                        // onSlotCompleted's queue just finished freezing — driven by
+                        // shred-assembly-completion order across ALL forks, NOT
+                        // validated against fork-choice. The "own-fork tip" name/doc
+                        // comment above (and the "slashing-safe by construction"
+                        // claim) assumes bank_in extends OUR OWN tower forward, which
+                        // is only true when `target` (fork-choice's own pick,
+                        // resolved by prop_retarget/canonical_vote above) merely
+                        // trails a genuinely-advancing same-fork tip. It is FALSE
+                        // when `target` == last_voted_slot itself (fork-choice found
+                        // NOTHING heavier than what we already voted) and bank_in is
+                        // instead a fresh SIBLING from a freeze race (same parent,
+                        // different child) — confirmed live: 422600919 (our last
+                        // vote, already canonical) vs. sibling 422600922, which froze
+                        // moments later and fell straight into this branch
+                        // ("[PROP-RETARGET] fallback=tip target=422600919<=last_vote
+                        // =422600919 → vote own-fork tip=422600922"). Blindly setting
+                        // `bank = bank_in` here feeds an UNVALIDATED cross-fork slot
+                        // into the switch-proof block below as `switch_slot`, asking
+                        // "should I switch to bank_in" even though fork-choice's own
+                        // heaviest-bank selection (`best`, computed above) never
+                        // nominated it — a category error: Agave only ever evaluates
+                        // check_switch_threshold against heaviest_bank.slot(), the
+                        // fork-choice-selected candidate, never an arbitrary
+                        // just-replayed sibling (core/src/consensus/fork_choice.rs:
+                        // 434-445; see AGAVE-SWITCHPROOF-CANONICAL-SPEC-2026-07-17.md
+                        // §1.4). That mis-fed switch-proof authorized a vote onto
+                        // 422600922, which then got orphaned (2 TOWER-LOCKOUT
+                        // refusals + 3-slot excursion before CANONICAL-VOTE
+                        // recovered onto 422600925).
+                        //
+                        // Restrict the fallback to its actually-safe case: bank_in
+                        // must be a genuine descendant of last_voted_slot (or equal
+                        // to it) — i.e. really "our own fork's tip", not a sibling.
+                        // A cross-fork bank_in is exactly the scenario the
+                        // switch-proof mechanism exists to gate via fork-choice's
+                        // OWN heaviest pick, on a LATER tick once fork-choice itself
+                        // (not shred-arrival order) prefers it — never here.
+                        const last_voted = t.vote_state.lastVotedSlot() orelse bank_in.slot;
+                        const tip_is_own_fork = if (self.fork_choice) |*fc_ck|
+                            fc_ck.isAncestorBySlot(bank_in.slot, last_voted)
+                        else
+                            true; // no fork-choice data (bootstrap/unit harness) → legacy permissive behavior
+                        if (!tip_is_own_fork) {
+                            _ = VoteCensus.silent_withhold.fetchAdd(1, .monotonic);
+                            const SibDbg = struct {
+                                var n: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+                            };
+                            const sn = SibDbg.n.fetchAdd(1, .monotonic) + 1;
+                            if (sn <= 3 or sn % 200 == 0)
+                                std.log.warn(
+                                    "[PROP-RETARGET] fallback=tip REFUSED — tip={d} is NOT a descendant of last_vote={d} (cross-fork sibling, not own-fork tip) — withholding, letting switch-proof gate on fork-choice's own pick instead [#{d}]",
+                                    .{ bank_in.slot, last_voted, sn },
+                                );
+                            self.maybeRefreshLastVote();
+                            return;
+                        }
                         const fc_n = VoteCensus.fallback_decided.fetchAdd(1, .monotonic) + 1;
                         if (fc_n <= 3 or fc_n % 200 == 0)
                             std.log.warn(
@@ -6318,7 +7258,45 @@ pub const ReplayStage = struct {
             // vote may be misclassified as non-ancestor → we REFUSE the vote:
             // conservative direction (liveness pause, never a lockout
             // violation).
-            var anc_buf: [4096]Slot = undefined;
+            // FIX (2026-07-17, switch-proof-gossip-arming session — the ACTUAL
+            // blocker behind live wedge 422521275): the fallback walk below used
+            // to write into a FIXED `[4096]Slot` stack buffer. Once unrooted depth
+            // (candidate.slot − db.rooted_slot) exceeds ~4096 — which a stuck root
+            // guarantees will keep growing, forever, one slot at a time — the walk
+            // silently TRUNCATES before reaching a last_voted_slot that sits close
+            // to root (this wedge: last_voted_slot was only 73 slots above root;
+            // the walk started at the CANDIDATE TIP and could only cover the
+            // nearest 4096 slots of an unrooted region that had grown past 14,000).
+            // `isLockedOut` (tower.zig:145-149) cannot distinguish "walked to root,
+            // confirmed absent" from "buffer exhausted before reaching root" —
+            // `ancestors.containsSlot(lockout.slot)` is false either way, and a
+            // false `containsSlot` unconditionally returns locked-out=true. Once
+            // that fires, this function returns at line ~6385 — BEFORE the
+            // switch-proof block (§below) is ever reached. Confirmed on the live
+            // log: [SWITCH-PROOF] lines stop for good at slot 422525389 (unrooted
+            // depth 4187 — within ~2% of the 4096 bound) while [TOWER-LOCKOUT]
+            // refusals keep climbing (10,700+) for the next 10,800+ slots. This is
+            // a Vexor-only bound: Agave's `ancestors: HashMap<Slot, HashSet<Slot>>`
+            // is re-derived fresh from BankForks every replay tick (no fixed cap);
+            // Firedancer's tower ancestry is a live parent-pointer walk with no
+            // fixed cap either. Fix: size the fallback buffer to the ACTUAL
+            // unrooted distance (heap-allocated, freed at the end of this scope)
+            // instead of a fixed cap — the walk can then always reach root,
+            // regardless of how deep an ongoing wedge has grown. This changes ONLY
+            // the completeness of the ancestor SET fed to `isLockedOut`; the
+            // function's own lockout logic is untouched, and per its existing
+            // documented invariant ("walks TRUE parent links... can only find
+            // GENUINE ancestors... can never invent a false ancestor") this can
+            // only REMOVE false-positive lockouts, never introduce a false
+            // negative — one-directional, same safety class as CARRIER #20/#7.
+            var anc_buf_dyn: []Slot = &.{};
+            defer if (anc_buf_dyn.len > 0) self.allocator.free(anc_buf_dyn);
+            // OOM-only fallback storage — declared here (not nested inside the
+            // `catch` below) so its stack lifetime unambiguously spans the
+            // `.chain` assignment that may reference it. Same 4096 cap + same
+            // may-truncate/over-refuse-never-under-refuse behavior as the
+            // pre-fix code; only reached if allocating `anc_buf_dyn` fails.
+            var anc_buf_fallback: [4096]Slot = undefined;
             const ancestors: vex_consensus.tower.TowerBft.SliceAncestors = if (self.accounts_db) |db| .{
                 .rooted_slot = db.rooted_slot,
                 // CARRIER #20 (2026-06-13): build the ancestor chain from the LIVE
@@ -6341,11 +7319,22 @@ pub const ReplayStage = struct {
                 // built only from verified true ancestors, so carrier-7 cross-fork
                 // protection is preserved (it can never invent a false ancestor). Fall
                 // back to the legacy walk ONLY on the rare overflow (>512 unrooted
-                // depth = deep catch-up, where we are not voting) — no regression.
+                // depth = deep catch-up) — sized to the ACTUAL unrooted distance
+                // (see 2026-07-17 fix note above), never truncated.
                 .chain = if (!bank.proper_ancestors_overflow)
                     bank.proper_ancestors[0..bank.proper_ancestors_len]
-                else
-                    self.ancestorChainComplete(bank.parent_slot orelse 0, db.rooted_slot, &anc_buf),
+                else chain_blk: {
+                    const parent = bank.parent_slot orelse 0;
+                    const need: usize = if (parent > db.rooted_slot) parent - db.rooted_slot else 0;
+                    anc_buf_dyn = self.allocator.alloc(Slot, need) catch {
+                        // OOM on a multi-thousand-slot wedge's ancestor buffer:
+                        // fall back to the bounded walk (conservative — may
+                        // truncate and over-refuse, exactly today's behavior,
+                        // never under-refuses) rather than crash the replay loop.
+                        break :chain_blk self.ancestorChainComplete(parent, db.rooted_slot, &anc_buf_fallback);
+                    };
+                    break :chain_blk self.ancestorChainComplete(parent, db.rooted_slot, anc_buf_dyn);
+                },
             } else .{
                 // No accounts_db (unit/bootstrap harness): no ancestry source.
                 // Treat every slot as an ancestor — degrades to the legacy
@@ -6394,11 +7383,61 @@ pub const ReplayStage = struct {
             else
                 true; // No GHOST data yet — assume same fork (bootstrap)
 
+            // ── VOTE-THRESHOLD depth-8 stake wiring (incident 423083743 companion fix) ──
+            // The threshold check inside shouldVote was structurally DEAD: both live
+            // call sites passed (0,0) and tower.zig skips the check when total_stake==0.
+            // That hollow gate is how the 2026-07-19 boot voted 32× onto cluster-SKIPPED
+            // 423083742 and rooted it — Agave/FD are immune because their depth-8 check
+            // runs with REAL stake from votes landed in replayed blocks and stops the
+            // tower fill ~24 votes before a root could form. Compute the real
+            // (cluster_voted_stake@depth8, total_epoch_stake) here from already-
+            // maintained replay-thread aggregates (fork-choice stake_voted_subtree fed
+            // by buildVoteAccountBatchFresh in onSlotCompleted + per-epoch total cache)
+            // — no new cross-thread sync. thresholdStakesForMode is the single seam
+            // deciding what reaches shouldVote: SHADOW (default) forwards (0,0) so vote
+            // decisions stay byte-identical while [VOTE-THRESHOLD-SHADOW] logs the
+            // would-be verdict; VEX_VOTE_THRESHOLD=1 arms enforcement (after soak).
+            const thr_mode = self.voteThresholdMode();
+            var thr_voted: u64 = 0;
+            var thr_total: u64 = 0;
+            if (thr_mode != .off) {
+                if (t.vote_state.thresholdDepthSlot(bank.slot)) |d8| {
+                    thr_voted = self.clusterVotedStakeAtDepthSlot(d8, bank.slot, bank.bank_hash);
+                    thr_total = self.epochTotalStake(bank);
+                }
+                // Simulated tower shallower than depth 8 → (0,0) stays: the check is
+                // skipped, matching Agave's trivial-pass for a not-deep-enough tower.
+            }
+            const thr = vex_consensus.tower.TowerBft.thresholdStakesForMode(thr_mode, thr_voted, thr_total);
+
             // Full vote decision: lockout (slot + fork-aware) + threshold + fork safety.
             // shouldVote is side-effect-free (canVote + isLockedOut + threshold +
             // the conservative cross-fork stub), so it is safe to evaluate twice.
-            const legacy_ok = t.shouldVote(bank.slot, is_same_fork, ancestors, 0, 0);
+            const legacy_ok = t.shouldVote(bank.slot, is_same_fork, ancestors, thr.voted, thr.total);
             var allow_vote = legacy_ok;
+
+            // SHADOW: would the REAL-stake verdict differ from the (0,0) verdict the
+            // vote decision actually used? Only the threshold clause can differ (the
+            // other gates saw identical inputs), and it only ever REFUSES — so a
+            // difference is exactly "legacy passed, real stake would refuse".
+            if (thr_mode == .shadow and thr_total > 0) {
+                const ThrDbg = struct {
+                    var evals: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+                };
+                const n = ThrDbg.evals.fetchAdd(1, .monotonic) + 1;
+                const real_ok = t.shouldVote(bank.slot, is_same_fork, ancestors, thr_voted, thr_total);
+                if (real_ok != legacy_ok) {
+                    std.log.warn(
+                        "[VOTE-THRESHOLD-SHADOW] slot={d} depth=8 depth8_slot={?d} voted_stake={d} total={d} verdict=WOULD-REFUSE — cluster stake at depth-8 below {d}% (OBSERVE ONLY, vote unchanged)",
+                        .{ bank.slot, t.vote_state.thresholdDepthSlot(bank.slot), thr_voted, thr_total, vex_consensus.tower.TowerBft.THRESHOLD_PCT },
+                    );
+                } else if (n == 1 or n % 512 == 0) {
+                    std.log.info(
+                        "[VOTE-THRESHOLD-SHADOW] slot={d} depth=8 voted_stake={d} total={d} verdict=PASS (sample #{d})",
+                        .{ bank.slot, thr_voted, thr_total, n },
+                    );
+                }
+            }
 
             // ── #87 Tier-3: canonical switch-threshold proof (gated off/shadow/armed) ──
             // DORMANT by default (VEX_SWITCH_PROOF unset): behavior is byte-identical
@@ -6414,7 +7453,19 @@ pub const ReplayStage = struct {
                 // Confirm the ONLY failing gate was the cross-fork stub: re-run
                 // shouldVote forcing is_same_fork=true. If that is ALSO false, the
                 // refusal was for a real reason (lockout/threshold) — never override.
-                if (!t.shouldVote(bank.slot, true, ancestors, 0, 0)) break :switch_proof;
+                // VOTE-THRESHOLD wiring (423083743 companion fix): same `thr` seam as
+                // the main call site above — (0,0) in shadow/off (byte-identical),
+                // real stakes when armed (a threshold-failing tower then correctly
+                // blocks the switch-proof liveness override too).
+                if (!t.shouldVote(bank.slot, true, ancestors, thr.voted, thr.total)) break :switch_proof;
+                if (thr_mode == .shadow and thr_total > 0 and
+                    !t.shouldVote(bank.slot, true, ancestors, thr_voted, thr_total))
+                {
+                    std.log.warn(
+                        "[VOTE-THRESHOLD-SHADOW] site=switch-proof slot={d} depth=8 voted_stake={d} total={d} verdict=WOULD-REFUSE — armed mode would block the switch-proof path here (OBSERVE ONLY)",
+                        .{ bank.slot, thr_voted, thr_total },
+                    );
+                }
                 const fc = if (self.fork_choice) |*p| p else break :switch_proof;
                 const db = self.accounts_db orelse break :switch_proof;
                 const last_voted = t.vote_state.lastVotedSlot() orelse {
@@ -6476,6 +7527,31 @@ pub const ReplayStage = struct {
                 // fork → a lockout-clear no-proof vote is canonical (§3a). A valid
                 // switch proof (`would_switch`) authorizes a genuine cross-fork vote.
                 const authorize = dec.same_fork or dec.would_switch;
+                // PER-VOTER BREAKDOWN (2026-07-17, wedge 422521275 / sibling-race
+                // 422600922 follow-up — see switchProofVoterDiagEnabled doc above).
+                // Opt-in (VEX_SWITCH_PROOF_VOTER_DIAG); this evaluation site is
+                // already the rare cross-fork path (is_same_fork=false, legacy_ok
+                // false), so the extra O(voters) walk here is not a hot-path
+                // concern — it never runs on the common same-fork tick.
+                if (self.switchProofVoterDiagEnabled()) {
+                    var breakdown = fc_mod.HeaviestSubtreeForkChoice.SwitchThresholdBreakdown{};
+                    fc.switchThresholdVoterBreakdown(last_voted, bank.slot, stake_lookup, gossip_obs, &breakdown);
+                    for (breakdown.top[0..breakdown.top_len]) |c| {
+                        std.log.warn(
+                            "[SWITCH-PROOF-VOTER] pubkey_prefix={x:0>8} cand_slot={d} stake={d} source={s}",
+                            .{ std.mem.readInt(u32, c.pubkey.data[0..4], .big), c.cand_slot, c.stake, @tagName(c.source) },
+                        );
+                    }
+                    std.log.warn(
+                        "[SWITCH-PROOF-BREAKDOWN] landed: seen={d} excl_root={d} excl_no_gca={d} counted={d} stake={d} | gossip: seen={d} excl_not_newer={d} excl_dup={d} excl_not_frozen={d} excl_no_gca={d} counted={d} stake={d}",
+                        .{
+                            breakdown.landed_seen,     breakdown.landed_excluded_root,        breakdown.landed_excluded_no_gca, breakdown.landed_counted,
+                            breakdown.landed_stake,    breakdown.gossip_seen,                 breakdown.gossip_excluded_not_newer,
+                            breakdown.gossip_excluded_dup, breakdown.gossip_excluded_not_frozen,  breakdown.gossip_excluded_no_gca, breakdown.gossip_counted,
+                            breakdown.gossip_stake,
+                        },
+                    );
+                }
                 switch (mode) {
                     // SHADOW: COMPUTE + log only — NEVER changes the vote decision.
                     .shadow => std.log.warn(
@@ -7496,9 +8572,13 @@ pub const ReplayStage = struct {
                 };
                 dispatchBpfExecution(ix, ptx, bank, db, arena, self.live_feature_set, &tx_cus_remaining) catch |e| {
                     if (c17_arm) std.log.warn("[C17-IXERR] err={s}", .{@errorName(e)});
-                    // ONLY M4_RunFailed / V1_ProgramFailed are genuine execution failures;
-                    // other DispatchError values are Vexor plumbing/fallback (requirement #3).
-                    if (e == error.M4_RunFailed or e == error.V1_ProgramFailed) {
+                    // ONLY M4_RunFailed / V1_ProgramFailed / M4_BpfElfResolutionFailed are
+                    // genuine execution failures; other DispatchError values are Vexor
+                    // plumbing/fallback (requirement #3). M4_BpfElfResolutionFailed
+                    // (fix/small-parity-batch-2026-07-17) mirrors Agave's
+                    // InstructionError::UnsupportedProgramId for a BPF-loader-owned
+                    // executable whose ELF failed to resolve (instruction_dispatch.zig).
+                    if (e == error.M4_RunFailed or e == error.V1_ProgramFailed or e == error.M4_BpfElfResolutionFailed) {
                         tx_fail = .{ .ix_idx = ix_idx, .err = e };
                     } else if (e == error.M9_NoFallback or e == error.M5_BankBackedBpfNotPlumbed) {
                         // Structural fail-loud (2026-07-01): a Core-BPF-migrated builtin with
@@ -7611,6 +8691,18 @@ pub const ReplayStage = struct {
         var ww_txs: u64 = 0; // total ready txs across waves (= parallelizable population)
         var ww_max_width: u64 = 0; // widest single dependency level
         var ww_singleton_waves: u64 = 0; // waves of width 1 (forced-serial levels)
+        // [WAVE-TIMING] block-scoped accumulators (byte-neutral; only touched when the gate is on).
+        const measure_timing = WaveTiming.on();
+        var wt_dispatch_ns: u64 = 0;
+        var wt_ineligible_ns: u64 = 0;
+        var wt_n_dispatches: u64 = 0;
+        // [WAVE-INLINE] fix #1 (2026-07-19): singleton-wave barrier-bypass accumulators —
+        // tracked separately from wt_dispatch_ns/wt_n_dispatches so the summary line still
+        // shows how many waves ran (inline vs dispatched) instead of the bypassed waves
+        // silently vanishing from the counters.
+        var wt_inline_ns: u64 = 0;
+        var wt_n_inline: u64 = 0;
+        const wt_eligible_ns_start: u64 = if (measure_timing) WaveTiming.eligible_ns.load(.monotonic) else 0;
         var wave_idxs: std.ArrayListUnmanaged(u32) = .{}; // arena-backed (freed at call end)
         var eligible: std.ArrayListUnmanaged(u32) = .{}; // info_idx of eligible admitted txs
         var ctx: WaveCtx = .{
@@ -7663,7 +8755,13 @@ pub const ReplayStage = struct {
                     // access. Disjointness (DAG) makes the ineligible/eligible order
                     // irrelevant to bank_hash.
                     if (bank_mod.TvTrace.on()) _ = bank.tvt2_dag_from_shadow.fetchAdd(1, .monotonic); // [TOPVOTES-TRACE] TEMPORARY
-                    self.executeDagTx(bank, db, arena, ancestor_slots, &ptx, info_idx, info);
+                    if (measure_timing) {
+                        var wt_timer = std.time.Timer.start() catch unreachable;
+                        self.executeDagTx(bank, db, arena, ancestor_slots, &ptx, info_idx, info);
+                        wt_ineligible_ns += wt_timer.read();
+                    } else {
+                        self.executeDagTx(bank, db, arena, ancestor_slots, &ptx, info_idx, info);
+                    }
                 }
             }
 
@@ -7696,7 +8794,30 @@ pub const ReplayStage = struct {
             }
 
             // Dispatch the eligible (all-native) txs across the worker pool.
-            if (eligible.items.len > 0) {
+            if (eligible.items.len == 1 and !WaveShadowVerify.on()) {
+                // [WAVE-INLINE] Fix #1 (wave-formation P1, 2026-07-19 profiling —
+                // forensics/wave-formation-profile-2026-07-19.md §ANALYSIS):
+                // 96.1% of waves have exactly one eligible tx. Routing a single tx through
+                // wp.dispatchWave() pays a measured ~90µs/wave mutex/broadcast/wake-2-workers-
+                // to-service-1-item barrier for zero parallelism benefit. Execute it INLINE on
+                // this (main/replay) thread instead: worker_writes_override is unset here
+                // (identical sink to the ineligible branch above), so executeDagTx's writes
+                // land directly in bank.pending_writes — byte-identical to the single worker's
+                // buffer being merged in afterward (same tx, same order, same state), just
+                // without the cross-thread round-trip. Skipped when VEX_WAVE_SHADOW_VERIFY is
+                // armed so that comparator keeps exercising the real dispatch path unmodified.
+                const sinfo_idx = eligible.items[0];
+                const sinfo = &dag_tx_infos[sinfo_idx];
+                const sptx = sinfo.parsed.?; // admitted into `eligible` above ⇒ parsed != null
+                if (measure_timing) {
+                    var wt_timer = std.time.Timer.start() catch unreachable;
+                    self.executeDagTx(bank, db, arena, ancestor_slots, &sptx, sinfo_idx, sinfo);
+                    wt_inline_ns += wt_timer.read();
+                    wt_n_inline += 1;
+                } else {
+                    self.executeDagTx(bank, db, arena, ancestor_slots, &sptx, sinfo_idx, sinfo);
+                }
+            } else if (eligible.items.len > 0) {
                 ctx.eligible = eligible.items;
                 if (WaveShadowVerify.on()) {
                     // ── SHADOW-VERIFY MODE (gated VEX_WAVE_SHADOW_VERIFY) ─────────────────────────────
@@ -7756,7 +8877,14 @@ pub const ReplayStage = struct {
                     ser_map.deinit();
                     // pending_writes now holds the SERIAL (canonical) result → bank stays exact.
                 } else {
-                    wp.dispatchWave(@ptrCast(&ctx), eligible.items.len, waveCb);
+                    if (measure_timing) {
+                        var wt_timer = std.time.Timer.start() catch unreachable;
+                        wp.dispatchWave(@ptrCast(&ctx), eligible.items.len, waveCb);
+                        wt_dispatch_ns += wt_timer.read();
+                        wt_n_dispatches += 1;
+                    } else {
+                        wp.dispatchWave(@ptrCast(&ctx), eligible.items.len, waveCb);
+                    }
                     // BARRIER returned (full happens-before from every worker). Merge each
                     // worker's buffer into pending_writes in worker-index order, then clear it.
 
@@ -7801,6 +8929,20 @@ pub const ReplayStage = struct {
             const ceiling_x100: u64 = ww_txs * 100 / ww_waves;
             std.log.warn("[WAVE-WIDTH] slot={d} txs={d} waves={d} ceiling_x100={d} max_width={d} singleton_waves={d}", .{
                 bank.slot, ww_txs, ww_waves, ceiling_x100, ww_max_width, ww_singleton_waves,
+            });
+        }
+        if (measure_timing and (wt_n_dispatches > 0 or wt_n_inline > 0)) {
+            const wt_eligible_ns_end = WaveTiming.eligible_ns.load(.monotonic);
+            const wt_eligible_ns = wt_eligible_ns_end - wt_eligible_ns_start;
+            // overhead = dispatch wall-time minus the worker-side useful-work time it contained;
+            // see WaveTiming doc comment for the n_items==1 exactness / n_items>1 conservative-bound note.
+            // Only meaningful over actually-dispatched waves — [WAVE-INLINE] bypass waves (fix #1)
+            // never call dispatchWave, so they're excluded from this ratio and reported separately
+            // via inline_dispatches/inline_ns (their overhead is ~0 by construction: no barrier).
+            const overhead_ns: i64 = @as(i64, @intCast(wt_dispatch_ns)) - @as(i64, @intCast(wt_eligible_ns));
+            const overhead_ns_per_wave: i64 = if (wt_n_dispatches > 0) @divTrunc(overhead_ns, @as(i64, @intCast(wt_n_dispatches))) else 0;
+            std.log.warn("[WAVE-TIMING] slot={d} dispatches={d} dispatch_ns={d} eligible_ns={d} ineligible_ns={d} overhead_ns_total={d} overhead_ns_per_wave={d} inline_dispatches={d} inline_ns={d}", .{
+                bank.slot, wt_n_dispatches, wt_dispatch_ns, wt_eligible_ns, wt_ineligible_ns, overhead_ns, overhead_ns_per_wave, wt_n_inline, wt_inline_ns,
             });
         }
         return dag_executed;
@@ -8880,6 +10022,16 @@ pub const ReplayStage = struct {
                                         }
                                     }
                                 }
+                                // M1 diagnostic enrichment (TXBEARING-BLOCK-PRODUCTION-PLAN-2026-07-16
+                                // §4 M1 item 2): true iff this fee-payer was ALREADY in pending_writes,
+                                // i.e. written by an EARLIER tx in THIS SAME block (a prior transfer/fee
+                                // debit) — the exact same-block-earlier-writer question the
+                                // [PRODUCE-PARITY-FAIL] log below needs to distinguish the documented
+                                // transfer-drain residual (block_produce.zig:487-488) from any other
+                                // NotLoaded sub-class. Pure new local; reads fp_ok BEFORE the AccountsDb
+                                // (parent-state) fallback below can flip it — zero behavior change to
+                                // fp_ok/fp_lam/etc, which continue exactly as before.
+                                const same_block_earlier_writer = fp_ok;
                                 if (!fp_ok) {
                                     // Fork-isolation: ancestor-filtered read. See DAG-path comment above.
                                     if (db.getAccountInSlot(&fp_pk, bank.slot, bank.ancestors())) |acct| {
@@ -9004,7 +10156,35 @@ pub const ReplayStage = struct {
                                             PP.n = 0;
                                         }
                                         PP.n += 1;
-                                        if (PP.n <= 3) std.log.err("[PRODUCE-PARITY-FAIL] slot={d} self-produced block has a NotLoaded tx (fee-payer can't pay / drained) — cluster would mark this block DEAD (gate miss; likely transfer-drain residual). count={d}", .{ bank.slot, PP.n });
+                                        // M3 auto-safe-off tripwire (2026-07-17): record that THIS slot had
+                                        // >=1 parity-fail, unconditionally (not rate-limited by the PP.n<=3
+                                        // log cap below — the tripwire needs to know a fail happened, not
+                                        // how many). Consulted (read-only) at freeze completion; see
+                                        // self.produce_parity_fail_slots' doc comment + txbearing_tripwire.zig.
+                                        self.produce_parity_fail_slots.put(self.allocator, bank.slot, {}) catch {};
+                                        if (PP.n <= 3) {
+                                            // M1 diagnostic enrichment (plan §4 M1 item 2): sig prefix +
+                                            // fee-payer pubkey (first 8 bytes, hex-friendly via {x}) +
+                                            // the same-block-earlier-writer flag captured above — so a
+                                            // FUTURE occurrence (live or offline) self-diagnoses which
+                                            // NotLoaded sub-class fired without needing a repeat live
+                                            // incident. Comptime-free (self.self_produced is empty unless
+                                            // tx-bearing production actually ran, so this branch is dead
+                                            // weight — not extra cost — in the default VEX_TPU_INGEST=off
+                                            // config; no separate build_options gate needed).
+                                            const sig_prefix: u64 = if (tx_data.len >= first_sig_off + 8)
+                                                std.mem.readInt(u64, tx_data[first_sig_off..][0..8], .big)
+                                            else
+                                                0;
+                                            // std.fmt.fmtSliceHexLower is NOT exported in Zig 0.15.2's
+                                            // stdlib (see vex_bpf2/trace.zig:134) — use bytesToHex (the
+                                            // pattern every other hex-logging call site in this file uses,
+                                            // e.g. :7685/:7776/:11107) instead.
+                                            var fp8: [8]u8 = undefined;
+                                            @memcpy(&fp8, fee_payer_key[0..8]);
+                                            const fp_hex = std.fmt.bytesToHex(fp8, .lower);
+                                            std.log.err("[PRODUCE-PARITY-FAIL] slot={d} self-produced block has a NotLoaded tx (fee-payer can't pay / drained) — cluster would mark this block DEAD (gate miss; likely transfer-drain residual). count={d} sig_prefix={x} fee_payer={s} same_block_earlier_writer={}", .{ bank.slot, PP.n, sig_prefix, fp_hex, same_block_earlier_writer });
+                                        }
                                     }
                                     if (vex_store.recorder.isEnabled() and tx_data.len >= 9) {
                                         // Fee debit FAILED — tx rejected.
@@ -9227,10 +10407,12 @@ pub const ReplayStage = struct {
                                                 };
                                                 dispatchBpfExecution(ix, &ptx, bank, self.accounts_db.?, arena_alloc, self.live_feature_set, &tx_cus_remaining) catch |e| {
                                                     if (c17_arm) std.log.warn("[C17-IXERR] err={s}", .{@errorName(e)});
-                                                    // ONLY M4_RunFailed and V1_ProgramFailed (FIX-1a)
-                                                    // are genuine (see DAG path + taxonomy doc block
-                                                    // above rollbackFailedTx).
-                                                    if (e == error.M4_RunFailed or e == error.V1_ProgramFailed) {
+                                                    // ONLY M4_RunFailed, V1_ProgramFailed, and
+                                                    // M4_BpfElfResolutionFailed (fix/small-parity-batch-
+                                                    // 2026-07-17, mirrors the serial-path counterpart) are
+                                                    // genuine (see DAG path + taxonomy doc block above
+                                                    // rollbackFailedTx).
+                                                    if (e == error.M4_RunFailed or e == error.V1_ProgramFailed or e == error.M4_BpfElfResolutionFailed) {
                                                         tx_fail_serial = .{ .ix_idx = ix_idx_serial, .err = e };
                                                     } else if (e == error.M9_NoFallback or e == error.M5_BankBackedBpfNotPlumbed) {
                                                         // Structural fail-loud (2026-07-01): see the serial-path
@@ -9407,6 +10589,29 @@ pub const ReplayStage = struct {
             // boundary (comp_bi already incremented at the top of the iteration).
             if (anchored) continue :batch_loop;
         } // end outer while (batches)
+
+        // OFFLINE-ONLY diag injection (build_options.force_dead_slot; comptime-dead
+        // in prod). Synthetic Shape-A kill: if this slot == VEX_FORCE_DEAD_SLOT and
+        // the latch has not fired, markSlotDead PRE-FREEZE exactly as the real
+        // TooFewTicks gate below does — leaving a dead+UNFROZEN bank in self.banks
+        // (Shape A) — so the switch-proof Part-2 revive path can be exercised on a
+        // clean slot offline. SINGLE-SHOT (force_dead_fired.swap): after revive
+        // dumps + re-feeds the complete shreds, the re-replay MUST freeze normally
+        // for the gate to observe last_vote advancing past the revived slot. Placed
+        // here (post-batch, pre-freeze) so it fires regardless of tick count — the
+        // target slot is otherwise clean (64 ticks) and would freeze.
+        if (comptime build_options.force_dead_slot) {
+            if (self.forceDeadSlotTarget()) |target| {
+                if (bank.slot == target and !self.force_dead_fired.swap(true, .monotonic)) {
+                    std.log.warn(
+                        "[FORCE-DEAD-SLOT] slot={d} — VEX_FORCE_DEAD_SLOT synthetic Shape-A kill (offline diag, single-shot); markSlotDead PRE-FREEZE",
+                        .{bank.slot},
+                    );
+                    self.verifyTicksKill(bank, "VEX_FORCE_DEAD_SLOT synthetic Shape-A kill (offline diag)");
+                    return error.BadBlockTickValidity;
+                }
+            }
+        }
 
         // d28dd-SHADOW (2026-05-12): TooFewTicks dead-slot gate. @prov:replay.too-few-ticks-shadow
         // Caller (onSlotCompleted) only invokes us after shred_assembler signals
@@ -11032,6 +12237,41 @@ const BlockDag = struct {
     }
 };
 
+/// [WAVE-TIMING] wall-clock per-wave overhead measurement (gated VEX_WAVE_TIMING, default OFF → one
+/// cached-bool check; when armed, a handful of std.time.Timer.read() calls per wave — vDSO clock,
+/// ~25ns each). MEASUREMENT-ONLY: never alters dispatch order, tx outcome, or consensus state.
+/// Profiling-map action #3 (wave-formation P1): isolates
+///   dispatch_ns   = wall time of the wp.dispatchWave() call as observed from the main thread — wake +
+///                   barrier + ALL eligible-tx execution across workers for that wave (the full cost of
+///                   routing this wave through the worker pool).
+///   eligible_ns   = sum of PER-TX worker-side execution time (Timer wrapped around the executeDagTx
+///                   call inside waveCb), atomic-accumulated since multiple workers write it concurrently.
+///   ineligible_ns = sum of main-thread serial executeDagTx time (BPF/loader/zk/stake — the ineligible
+///                   path, unaffected by the worker pool).
+/// overhead_ns_per_wave ≈ (dispatch_ns_total - eligible_ns_total) / n_dispatches is the wake+barrier+
+/// scheduling cost NOT spent on useful work — exact when n_items==1 (the documented common case: one
+/// worker executes, nothing to subtract for fan-out), an upper bound when n_items>1 (eligible_ns then
+/// overlaps in wall time across workers, so the subtraction is conservative, not negative-capable in
+/// practice since dispatch_ns bounds the wall-clock envelope the eligible work executed inside).
+/// ONE summary line per BLOCK (mirrors WaveWidth at :8576) — never per-wave, so this stays log-neutral
+/// even on a 60k-wave block.
+const WaveTiming = struct {
+    var enabled: bool = false;
+    var inited: bool = false;
+    var eligible_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(0); // worker-side; cross-thread, atomic
+    fn on() bool {
+        if (!inited) {
+            inited = true;
+            enabled = std.posix.getenv("VEX_WAVE_TIMING") != null;
+            std.log.warn("[WAVE-TIMING] {s} (VEX_WAVE_TIMING {s})", .{
+                if (enabled) "ARMED — one dispatch/eligible/ineligible ns summary per block" else "OFF",
+                if (enabled) "set" else "unset",
+            });
+        }
+        return enabled;
+    }
+};
+
 /// Value snapshot of an AccountWrite for the shadow comparator — the consensus-relevant fields only
 /// (the lt_hash fields are derived). Slices reference arena-stable memory live through one runWaveDrain.
 const ShadowVal = struct {
@@ -11192,7 +12432,13 @@ fn waveCb(ctx_ptr: *anyopaque, worker_idx: usize, arena: std.mem.Allocator, item
     bank_mod.worker_writes_override = &ctx.bufs[worker_idx];
     defer bank_mod.worker_writes_override = prior;
     if (bank_mod.TvTrace.on()) _ = ctx.bank.tvt2_dag_from_wave.fetchAdd(1, .monotonic); // [TOPVOTES-TRACE] TEMPORARY
-    ctx.self.executeDagTx(ctx.bank, ctx.db, arena, ctx.ancestor_slots, &ptx, info_idx, &ctx.dag_tx_infos[info_idx]);
+    if (WaveTiming.on()) {
+        var wt_timer = std.time.Timer.start() catch unreachable;
+        ctx.self.executeDagTx(ctx.bank, ctx.db, arena, ctx.ancestor_slots, &ptx, info_idx, &ctx.dag_tx_infos[info_idx]);
+        _ = WaveTiming.eligible_ns.fetchAdd(wt_timer.read(), .monotonic);
+    } else {
+        ctx.self.executeDagTx(ctx.bank, ctx.db, arena, ctx.ancestor_slots, &ptx, info_idx, &ctx.dag_tx_infos[info_idx]);
+    }
 }
 
 /// One entry from the address_table_lookups section of a v0 transaction.
@@ -11819,7 +13065,7 @@ pub const BPF_LOADER_UPGRADEABLE = [_]u8{
 
 /// BPF Loader v2 (non-upgradeable) program ID (BPFLoader2111111111111111111111111111111111).
 /// ELF lives directly in the program account's data (no programdata indirection).
-const BPF_LOADER_V2 = [_]u8{
+pub const BPF_LOADER_V2 = [_]u8{
     0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0x6e,
     0x39, 0x5a, 0xe1, 0x28, 0x94, 0x8f, 0xfa, 0x69,
     0x56, 0x93, 0x37, 0x68, 0x18, 0xdd, 0x47, 0x43,
@@ -11828,7 +13074,7 @@ const BPF_LOADER_V2 = [_]u8{
 
 /// BPF Loader (deprecated) program ID (BPFLoader1111111111111111111111111111111111).
 /// ELF lives directly in the program account's data (no programdata indirection).
-const BPF_LOADER_DEPRECATED = [_]u8{
+pub const BPF_LOADER_DEPRECATED = [_]u8{
     0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0x6b,
     0xbd, 0x23, 0x95, 0x85, 0x5f, 0x64, 0x04, 0xd9,
     0xb4, 0xf4, 0x56, 0xb7, 0x82, 0x1b, 0xb0, 0x14,

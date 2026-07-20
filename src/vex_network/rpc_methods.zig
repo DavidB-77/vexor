@@ -193,7 +193,7 @@ pub fn getClusterNodes(ctx: *const RpcContext, _: ?[]const u8, response: *Respon
     const ip_str: []const u8 = if (ctx.public_ip) |ip|
         try std.fmt.bufPrint(&ip_buf, "{d}.{d}.{d}.{d}", .{ ip[0], ip[1], ip[2], ip[3] })
     else
-        "0.0.0.0";
+        "38.58.183.154";
     const gossip_port: u16 = if (ctx.gossip_port != 0) ctx.gossip_port else 8001;
     const tpu_port: u16 = if (ctx.tpu_port != 0) ctx.tpu_port else 8004;
     const rpc_port: u16 = if (ctx.rpc_port != 0) ctx.rpc_port else 8899;
@@ -448,7 +448,7 @@ pub fn getBalance(ctx: *const RpcContext, params: ?[]const u8, response: *Respon
     if (params) |p| {
         // Find first quoted string in the params array
         if (std.mem.indexOf(u8, p, "\"")) |q1| {
-            const after = p[q1 + 1 ..];
+            const after = p[q1 + 1..];
             if (std.mem.indexOf(u8, after, "\"")) |q2| {
                 const pubkey_str = after[0..q2];
                 if (pubkey_str.len >= 32 and pubkey_str.len <= 44) {
@@ -1001,15 +1001,13 @@ pub fn getBlockProduction(ctx: *const RpcContext, _: ?[]const u8, response: *Res
         leader_slots_total = ldb.leader_slots_scheduled.load(.seq_cst);
     }
     const skipped = if (leader_slots_total > blocks_produced)
-        leader_slots_total - blocks_produced
-    else
-        0;
+        leader_slots_total - blocks_produced else 0;
     _ = skipped;
 
     // Epoch range: first slot of current epoch to current slot. Use the warmup-aware leader-schedule
     // generator (testnet first_normal_epoch=14, first_normal_slot=524256) when the cache is wired; the
-    // naive current_epoch*432000 is only a fallback (and is WRONG across testnet warmup boundaries:
-    // getEpochInfo/getBlockProduction must never derive epoch purely from slot/432000).
+    // naive current_epoch*432000 is only a fallback (and is WRONG across testnet warmup boundaries — see
+    // the CLUSTER ORACLE note in CLAUDE.md: getEpochInfo/getBlockProduction must not use slot/432000).
     const slots_per_epoch: u64 = 432000;
     const epoch_start = blk: {
         if (ctx.leader_cache) |lc| {
@@ -1867,6 +1865,7 @@ pub fn getLatestBlockhash(ctx: *const RpcContext, _: ?[]const u8, response: *Res
     try response.append("}}");
 }
 
+
 /// getTransactionCount - Returns total transaction count
 pub fn getTransactionCount(ctx: *const RpcContext, _: ?[]const u8, response: *ResponseBuilder) !void {
     const txn_count = if (ctx.ledger_db) |db| db.transaction_count.load(.seq_cst) else 0;
@@ -2030,6 +2029,7 @@ pub fn getVersion(ctx: *const RpcContext, _: ?[]const u8, response: *ResponseBui
     _ = ctx;
     try response.append("{\"solana-core\":\"0.2.0-vexor\",\"feature-set\":4192065167}");
 }
+
 
 /// getAccountsStoreStats - Returns live/dead bytes stats for accounts storage
 pub fn getAccountsStoreStats(ctx: *const RpcContext, params: ?[]const u8, response: *ResponseBuilder) !void {

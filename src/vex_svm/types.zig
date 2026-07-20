@@ -9,20 +9,20 @@ pub const AccountMeta = struct {
     pubkey: Pubkey,
     lamports: u64,
     owner: Pubkey,
-
+    
     /// Identifies the account as purely executable (a program code account)
     executable: bool,
-
+    
     /// The current rent epoch this account owes or is paid up for.
     rent_epoch: u64,
-
+    
     /// The dynamically allocated byte array for the account's actual data state.
     data: []u8,
 
     pub fn isExecutable(self: AccountMeta) bool {
         return self.executable;
     }
-
+    
     pub fn isSystem(self: AccountMeta) bool {
         // System program id = all-zero (11111111... base58). Bind to a const lvalue so the
         // *const Pubkey eql() param has an addressable argument (Zig won't auto-ref an rvalue).
@@ -35,7 +35,7 @@ pub const AccountMeta = struct {
 pub const Instruction = struct {
     program_id: Pubkey,
     /// Indices referencing the transaction's master keys array
-    accounts: []const u8,
+    accounts: []const u8, 
     data: []const u8,
 };
 

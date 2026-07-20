@@ -36,11 +36,50 @@
 //! freeze before the next can be produced), so 64 is far more than enough; a
 //! full ring just means production fell behind, which is logged and the slot is
 //! skipped exactly as the inline path skips a slot it cannot build.
+//!
+//! 2026-07-17 (M2b, produce-tile SAFE GATING — task #25's tile flip-blocker):
+//! BecomeLeaderRecord now also carries a bounded, VALUE-copied snapshot of the
+//! exact frozen-parent-state inputs `admitTxSeq`'s inclusion gate needs
+//! (`recent_blockhashes` + a per-fee-payer balance snapshot `fee_snapshot` +
+//! a cross-block-AlreadyProcessed flag list `already_processed_sigs`), extending
+//! the SAME "replay reads live state, tile gets values only" discipline this file
+//! already used for `chained_root`/`seed`/`secret` — NOT a new principle, a wider
+//! application of it. `accounts_db` stays exclusively replay-thread-owned (never
+//! dereferenced by the tile, before or after this change); the tile's own
+//! zero-shared-mutable-state invariant (banner above) is unchanged. See
+//! replay_stage.zig `dispatchLeaderToProduceTile` (builder) and
+//! `tileAdmitTxForBroadcast` (consumer) for the mechanism.
 
 const std = @import("std");
 
 /// Per-ring capacity (power of 2). 64 control records ≈ a few KB total.
 pub const PRODUCE_RING_CAPACITY: u32 = 64;
+
+/// Bound on both the distinct-fee-payer balance snapshot and the peeked/
+/// cross-block-dedup-checked signature list (M2b). Sized above the mempool's
+/// pack batch_size (banking_stage.zig BankingConfig.batch_size = 128) with
+/// slack for the votes+txs split drainBatch takes; NOT a hard correctness bound
+/// — a mempool deeper than this at snapshot time degrades gracefully (excess
+/// distinct payers are simply not snapshotted, so a tx touching one is dropped
+/// by the gate's existing "cannot verify ⇒ absent" fallback, never wrongly
+/// admitted). Explicitly out of scope for the low/throttled volumes M1-M3
+/// target (plan §5); would need revisiting for mainnet-scale mempool depth.
+pub const FEE_SNAPSHOT_CAP: u32 = 256;
+
+/// One fee-payer's frozen-parent-state balance view, VALUE-copied from
+/// `accounts_db.getAccountInSlot` on the replay thread (see
+/// replay_stage.zig `dispatchLeaderToProduceTile`). Field shape mirrors
+/// `block_produce.FeePayerView` deliberately (trivial to convert at the two
+/// use sites) but is NOT the same type — produce_ring.zig stays std-only
+/// (imports nothing beyond `std`, verified fresh at every KAT wiring; see
+/// build.zig's "zero addImports required" note for `test-produce-ring`), so
+/// this is a local duplicate rather than a cross-module import.
+pub const FeePayerSnapshotEntry = struct {
+    pubkey: [32]u8,
+    lamports: u64,
+    owner: [32]u8,
+    data_len: u64,
+};
 
 /// Ring A record — replay→produce "become-leader". Carries ALL build inputs as
 /// VALUES, snapshotted on the replay thread at the same point the inline path
@@ -69,6 +108,36 @@ pub const BecomeLeaderRecord = struct {
     /// (produceSlotBytes); else the empty tick-only path (produceEmptySlotBytes).
     /// Snapshotted so the tile makes the SAME branch the inline path would.
     tpu_ingest_on: bool,
+
+    // ── M2b gate-input snapshot (all VALUES; replay-thread-computed) ────────
+
+    /// Snapshot of `parent_bank.recent_blockhashes.constSlice()` (≤150 entries,
+    /// Agave MAX_PROCESSING_AGE). Feeds `admitTxSeq`'s BlockhashNotFound check
+    /// exactly as `bankAdmitTxForBroadcast` reads it from the live bank inline.
+    recent_blockhashes: [150][32]u8 = undefined,
+    recent_blockhashes_len: u8 = 0,
+
+    /// Per-distinct-fee-payer frozen-parent balance, for every fee-payer pubkey
+    /// observed in the mempool at dispatch time (a non-destructive peek —
+    /// `banking_stage.peekEach`) that `accounts_db.getAccountInSlot` resolved to
+    /// a present, non-zero-lamport account. A pubkey NOT in this list (absent
+    /// from the DB, OR simply not seen by the peek — e.g. arrived in the gap
+    /// between this snapshot and the tile's later `drainBatch`) is
+    /// indistinguishable from "unverifiable" to the consumer and is dropped by
+    /// the gate's existing conservative fallback — same fail-closed posture the
+    /// inline path already uses for a genuinely-absent account.
+    fee_snapshot: [FEE_SNAPSHOT_CAP]FeePayerSnapshotEntry = undefined,
+    fee_snapshot_len: u16 = 0,
+
+    /// First-signatures of peeked txs the REPLAY-thread-owned `RecentSigCache`
+    /// (cross-block AlreadyProcessed dedup) flagged as recently committed, as of
+    /// this snapshot. Only meaningful when `status_cache_checked` is true
+    /// (mirrors `ReplayStage.statusCacheActive()`); when false, cross-block
+    /// dedup was not evaluated for this slot — same as the inline path passing
+    /// `recent_sigs = null` when the status cache is dormant, NOT a new gap.
+    already_processed_sigs: [FEE_SNAPSHOT_CAP][64]u8 = undefined,
+    already_processed_len: u16 = 0,
+    status_cache_checked: bool = false,
 };
 
 /// Ring B record — produce→replay "slot-done". The produce tile built the block
@@ -92,6 +161,17 @@ pub const SlotDoneRecord = struct {
     /// when has_block_id (compute may fail / be unwired → then slot N+1 skips, as before).
     block_id: [32]u8 = [_]u8{0} ** 32,
     has_block_id: bool = false,
+    /// M3 auto-safe-off tripwire (2026-07-17): true iff the tile actually packed
+    /// drained txs into this block (mirrors the inline path's `pack_tx_bearing`
+    /// local). Replay's `drainProduceTileRingB` uses this to mark
+    /// `self_produced_tx_bearing` — computed on the TILE thread (the only place
+    /// this decision is made for the tile path) and carried across Ring B as a
+    /// plain value, same "values only, zero shared mutable state" discipline as
+    /// every other field here. An empty (tick-only) self-produced slot leaves
+    /// this false, so the tripwire's consecutive-fail counter correctly never
+    /// sees it (see txbearing_tripwire.zig's threshold-reasoning doc: an empty
+    /// self-produced slot is neither a failure nor a clean reset).
+    tx_bearing: bool = false,
 
     pub const Status = enum(u8) {
         /// Block built; `block_bytes` carries the loopback copy (transfer).

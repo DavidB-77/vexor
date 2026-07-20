@@ -16,6 +16,7 @@ const shadow_capture = @import("shadow_capture.zig");
 const v2dispatch = @import("v2_dispatch.zig");
 const compute_budget = @import("compute_budget"); // task #13: dedicated shared module (build.zig)
 const elf_version = @import("elf_version.zig");
+const elf_resolution_guard = @import("elf_resolution_guard.zig");
 const bank_sysvar_adapter = @import("bank_sysvar_adapter.zig");
 const instructions_sysvar_mod = @import("native/instructions_sysvar.zig");
 const address_lookup_table = @import("native/address_lookup_table.zig");
@@ -49,6 +50,8 @@ const ParsedInstruction = rs.ParsedInstruction;
 const ParseRejStats = rs.ParseRejStats;
 const NATIVE_PROGRAM_IDS = rs.NATIVE_PROGRAM_IDS;
 const BPF_LOADER_UPGRADEABLE = rs.BPF_LOADER_UPGRADEABLE;
+const BPF_LOADER_V2 = rs.BPF_LOADER_V2;
+const BPF_LOADER_DEPRECATED = rs.BPF_LOADER_DEPRECATED;
 const SYSVAR_OWNER_FOR_INSTRUCTIONS = rs.SYSVAR_OWNER_FOR_INSTRUCTIONS;
 const flushPendingWritesToDb = rs.flushPendingWritesToDb;
 const getOrInitV2ProgramCache = rs.getOrInitV2ProgramCache;
@@ -147,6 +150,49 @@ pub fn dispatchBpfExecution(
                 }
                 return dispatchV3ViaV2Producer(ix, ptx, bank, db, alloc, feature_set, tx_meter);
             }
+        } else {
+            // fix/small-parity-batch-2026-07-17 (audit: SYSCALL-WIRING-TRUTH-AUDIT
+            // fix-list item 2): resolveProgramSbpfVersion returned null. Per
+            // elf_version.zig:66-70 that means the program account is missing, OR
+            // (native/builtin data isn't an ELF — moot here, since replay_stage.zig
+            // routes every NATIVE_PROGRAM_IDS.*/BPF_LOADER_UPGRADEABLE/V2/DEPRECATED/
+            // ALT/ZK_ELGAMAL program_id to its own native handler at :7440-7481 and
+            // :9136-9213 BEFORE ever calling dispatchBpfExecution — only "Generic BPF
+            // program" ids reach here), OR a genuine sBPF-load failure: missing/short
+            // programdata, corrupted/unrecognized e_flags.
+            //
+            // The last case is dangerous: falling through unconditionally to
+            // `dispatch_mode`'s `.v1` default hands the program_id to the legacy V1
+            // interpreter (`executeBpfProgram` -> `executeBpfProgramCore`), which
+            // treats `loader.load(elf_data) catch { return &[_]AccountMutation{}; }`
+            // (an ELF that fails to parse) as an EMPTY-MUTATION SUCCESS — silently
+            // no-op instead of failing the transaction. Agave instead tombstones a
+            // program that fails to load/verify (agave-4.2.0-beta.1-src/svm/src/
+            // program_loader.rs:118-119,189-193 -> ProgramCacheEntryType::Closed /
+            // FailedVerification) and, at invoke time, returns
+            // InstructionError::UnsupportedProgramId for that tombstone
+            // (agave-4.2.0-beta.1-src/programs/bpf_loader/src/lib.rs:136-141) — a
+            // hard instruction failure that rolls back the tx, never a silent no-op.
+            //
+            // Mirror that ONLY for the narrow case that can actually reach this
+            // branch carrying a real program: the account exists, IS executable, and
+            // IS owned by one of the three BPF loaders. Any other null cause (account
+            // missing entirely, non-executable, non-BPF-loader-owned) is UNCHANGED —
+            // those aren't "a real BPF program whose ELF we failed to parse" and keep
+            // today's fallthrough to `dispatch_mode` exactly as before. This makes
+            // the change provably a no-op on the normal path: every resolvable ELF
+            // still routes through `route` above unchanged, and every non-BPF-owned
+            // null cause still falls through unchanged; only the narrow silently-
+            // wrong-answer case gets a loud failure instead.
+            const program_pk = core.Pubkey{ .data = program_id.* };
+            if (db.getAccountInSlot(&program_pk, bank.slot, bank.ancestors())) |prog_acct| {
+                if (isFatalBpfElfResolutionFailure(prog_acct.executable, prog_acct.owner.data)) {
+                    std.log.err("[BPF-ELF-RESOLUTION-FAILED] slot={d} program={x:0>2}{x:0>2}{x:0>2}{x:0>2}.. executable BPF-loader-owned account failed sBPF version resolution — failing the instruction loud instead of silently falling through to the legacy V1 stub table (matches Agave InstructionError::UnsupportedProgramId, programs/bpf_loader/src/lib.rs:136-141)", .{
+                        bank.slot, program_id[0], program_id[1], program_id[2], program_id[3],
+                    });
+                    return error.M4_BpfElfResolutionFailed;
+                }
+            }
         }
     }
 
@@ -219,6 +265,22 @@ pub fn dispatchBpfExecution(
             return;
         },
     }
+}
+
+/// fix/small-parity-batch-2026-07-17: thin wrapper around the standalone,
+/// independently-unit-tested predicate in `elf_resolution_guard.zig` (kept
+/// dependency-free there so it can be test-discovered without pulling in
+/// this file's heavy `vex_svm`/`replay_stage.zig` closure, which has no
+/// standalone test root today). See that file for the KATs and the full
+/// reasoning; see the call site above for the Agave citations.
+fn isFatalBpfElfResolutionFailure(executable: bool, owner: [32]u8) bool {
+    return elf_resolution_guard.isFatalBpfElfResolutionFailure(
+        executable,
+        owner,
+        BPF_LOADER_UPGRADEABLE,
+        BPF_LOADER_V2,
+        BPF_LOADER_DEPRECATED,
+    );
 }
 
 /// F8i: V3 ELF dispatch through V2 producer.
@@ -2567,6 +2629,7 @@ pub fn executeVoteInstruction(
         return;
     }
 
+
     // Vote account is always the first account in the instruction
     const vote_acct_idx = ix.account_indices[0];
     if (vote_acct_idx >= ptx.num_accounts) {
@@ -2698,6 +2761,7 @@ pub fn executeVoteInstruction(
 /// have no `self`. null (e.g. early bootstrap or KAT harnesses) → voteforge's
 /// conservative default (all new gates off) applies.
 pub var g_vote_live_features: ?*const features_mod.FeatureSet = null;
+
 
 /// The production vote seam: voteforge's own front door (`vp.dispatch`)
 /// executes the vote instruction for real against the LIVE bank accounts,
@@ -2914,6 +2978,12 @@ pub fn executeVoteViaVoteforge(
         },
         .features = features,
         .slot_hashes = slot_hashes,
+        // SIMD-0185 realloc-before-write: storeV4 grows an under-sized (legacy
+        // V1_14_11) vote account to 3762 bytes using THIS allocator — the same
+        // one that duped the writable account's `data` slice above, so the
+        // resize/free is allocator-consistent and the grown `post.data` is what
+        // the diff-and-commit loop below reads.
+        .alloc = alloc,
     };
 
     const dispatch_result = vp.dispatch(alloc, &table, program_id, ix.data, signers_buf[0..n_signers], &ctx);
@@ -2937,6 +3007,7 @@ pub fn executeVoteViaVoteforge(
             },
         }
     };
+
 
     exec_result catch |e| {
         mutate_fail.* += 1;
@@ -2985,6 +3056,7 @@ pub fn executeVoteViaVoteforge(
         }
     }
 }
+
 
 /// Convert vote_program Lockout[] to vote_state_serde Lockout[] (same layout, different types)
 pub fn convertVoteLockouts(

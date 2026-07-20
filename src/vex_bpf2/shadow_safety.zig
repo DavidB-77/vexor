@@ -245,23 +245,17 @@ test "RateLimiter.auto: 1000 logs in 0..999, 900 in 1000..9999, then every 100" 
     defer setRateOverride(.auto);
     var phase1: u64 = 0;
     var i: u64 = 0;
-    while (i < 1000) : (i += 1) if (RateLimiter.shouldLog(i)) {
-        phase1 += 1;
-    };
+    while (i < 1000) : (i += 1) if (RateLimiter.shouldLog(i)) { phase1 += 1; };
     try std.testing.expectEqual(@as(u64, 1000), phase1);
 
     var phase2: u64 = 0;
     i = 1000;
-    while (i < 10000) : (i += 1) if (RateLimiter.shouldLog(i)) {
-        phase2 += 1;
-    };
+    while (i < 10000) : (i += 1) if (RateLimiter.shouldLog(i)) { phase2 += 1; };
     try std.testing.expectEqual(@as(u64, 900), phase2);
 
     var phase3: u64 = 0;
     i = 10000;
-    while (i < 14000) : (i += 1) if (RateLimiter.shouldLog(i)) {
-        phase3 += 1;
-    };
+    while (i < 14000) : (i += 1) if (RateLimiter.shouldLog(i)) { phase3 += 1; };
     try std.testing.expectEqual(@as(u64, 40), phase3);
     // 1000 + 900 + 40 = 1940
     try std.testing.expectEqual(@as(u64, 1940), phase1 + phase2 + phase3);
@@ -272,9 +266,7 @@ test "RateLimiter.every_1: every line logs regardless of seq" {
     defer setRateOverride(.auto);
     var n: u64 = 0;
     var i: u64 = 0;
-    while (i < 100) : (i += 1) if (RateLimiter.shouldLog(i)) {
-        n += 1;
-    };
+    while (i < 100) : (i += 1) if (RateLimiter.shouldLog(i)) { n += 1; };
     try std.testing.expectEqual(@as(u64, 100), n);
 }
 
@@ -283,9 +275,7 @@ test "RateLimiter.every_100: 1 in 100 lines logs" {
     defer setRateOverride(.auto);
     var n: u64 = 0;
     var i: u64 = 0;
-    while (i < 5000) : (i += 1) if (RateLimiter.shouldLog(i)) {
-        n += 1;
-    };
+    while (i < 5000) : (i += 1) if (RateLimiter.shouldLog(i)) { n += 1; };
     try std.testing.expectEqual(@as(u64, 50), n);
 }
 
@@ -304,9 +294,7 @@ test "CacheTx: rollback restores prior values" {
         pub fn init(alloc: std.mem.Allocator) TC {
             return .{ .map = std.AutoHashMap([32]u8, u32).init(alloc) };
         }
-        pub fn deinit(self: *TC) void {
-            self.map.deinit();
-        }
+        pub fn deinit(self: *TC) void { self.map.deinit(); }
         pub fn get(self: *TC, k: [32]u8) ?u32 {
             return self.map.get(k);
         }
@@ -354,18 +342,10 @@ test "CacheTx: commit makes rollback a no-op" {
         pub fn init(alloc: std.mem.Allocator) TC {
             return .{ .map = std.AutoHashMap([32]u8, u32).init(alloc) };
         }
-        pub fn deinit(self: *TC) void {
-            self.map.deinit();
-        }
-        pub fn get(self: *TC, k: [32]u8) ?u32 {
-            return self.map.get(k);
-        }
-        pub fn put(self: *TC, k: [32]u8, v: u32) !void {
-            try self.map.put(k, v);
-        }
-        pub fn invalidate(self: *TC, k: [32]u8) void {
-            _ = self.map.remove(k);
-        }
+        pub fn deinit(self: *TC) void { self.map.deinit(); }
+        pub fn get(self: *TC, k: [32]u8) ?u32 { return self.map.get(k); }
+        pub fn put(self: *TC, k: [32]u8, v: u32) !void { try self.map.put(k, v); }
+        pub fn invalidate(self: *TC, k: [32]u8) void { _ = self.map.remove(k); }
     };
 
     const alloc = std.testing.allocator;

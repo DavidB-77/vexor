@@ -10,6 +10,17 @@ pub const txn_cache = @import("txn_cache.zig");
 pub const rewards = @import("rewards.zig");
 pub const bootstrap = @import("bootstrap.zig");
 pub const replay_stage = @import("replay_stage.zig");
+// G0 first-root latch (incident 423083743): exported so the live-path KAT
+// (src/kat_first_root_latch.zig) can name RootGuardDecision/G0Why.
+pub const root_guards = @import("root_guards.zig");
+// tool/vsd1-replay-loader (2026-07-16): pure visibility re-export, zero logic
+// change — verify_ticks.zig is std-only / no build_options dep by its own
+// header's design, and is ALREADY reached transitively via replay_stage.zig's
+// `verify_ticks_mod` import; this just gives outside tools (src/tools/
+// vsd1_replay_loader.zig) a name to reach the SAME module instance through
+// (Zig requires each source file belong to exactly one module — a separate
+// top-level module rooted at the same file conflicts with this one).
+pub const verify_ticks = @import("verify_ticks.zig");
 pub const gossip_votes = @import("gossip_votes.zig");
 pub const v2_dispatch = @import("v2_dispatch.zig");
 pub const tx_dispatcher = @import("tx_dispatcher.zig");

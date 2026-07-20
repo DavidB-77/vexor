@@ -45,8 +45,8 @@ const SYSTEM_PROG_ID: [32]u8 = [_]u8{0} ** 32;
 /// r71-fix-7-followup: bytes verified via `base58.b58decode(b58str).hex()`,
 /// replaces wrong bytes copy-pasted from executor.zig:51-115 (which had a
 /// template-copy bug — 4 of 9 builtins shared the same wrong bytes 8-27,
-/// only differing in byte 27). Hard rule: never hand-type pubkey bytes;
-/// always derive from base58.
+/// only differing in byte 27). CLAUDE.md HARD RULE: never hand-type pubkey
+/// bytes; always derive from base58.
 const BPF_LOADER_1_PROG_ID: [32]u8 = .{
     0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0x6b,
     0xbd, 0x23, 0x95, 0x85, 0x5f, 0x64, 0x04, 0xd9,
@@ -138,12 +138,39 @@ pub const MICRO_LAMPORTS_PER_LAMPORT: u64 = 1_000_000;
 ///   2 = SetComputeUnitLimit(u32)
 ///   3 = SetComputeUnitPrice(u64) — micro-lamports per CU
 ///   4 = SetLoadedAccountsDataSizeLimit(u32) — irrelevant to fee calc
+
 /// Iterate instructions of a parsed tx; extract explicit compute_unit_limit +
 /// compute_unit_price (both Optional). Caller resolves defaults.
 ///
 /// Generic over instruction type — accepts any struct with `program_id_index: u8`
 /// and `data: []const u8` fields, and any account_keys slice that yields [32]u8
 /// per index.
+/// fix/compute-budget-parse-p1 (2026-07-19) — the 3 P1 parse-layer divergences vs
+/// Agave's `ComputeBudgetInstructionDetails::try_from` +
+/// `sanitize_and_convert_to_compute_budget_limits`
+/// (compute-budget-instruction/src/compute_budget_instruction_details.rs, Agave
+/// 4.3.0-alpha.1 — re-checked against 4.2.0-beta.1's copy, byte-identical logic).
+/// All 3 are, in Agave, a whole-TRANSACTION sanitize-time rejection: the error is
+/// produced while constructing `RuntimeTransaction`/`TransactionMeta`, BEFORE fee
+/// determination or execution — the transaction cannot appear committed (not even
+/// fee-only) in a block an honest Agave leader produced. @prov:compute-budget.sanitize
+pub const SanitizeError = error{
+    /// Two compute-budget instructions of the SAME kind (RequestHeapFrame /
+    /// SetComputeUnitLimit / SetComputeUnitPrice / SetLoadedAccountsDataSizeLimit).
+    /// Agave: TransactionError::DuplicateInstruction(index) (index = the SECOND
+    /// occurrence's instruction index).
+    DuplicateInstruction,
+    /// Empty/too-short instruction data for the recognized discriminator, OR
+    /// discriminator 0 ("Unused", reserved) / >=5 (undefined) — Agave's borsh
+    /// `try_from_slice_unchecked` fails or lands on an unhandled variant.
+    /// ALSO covers an out-of-[MIN_HEAP_FRAME_BYTES,MAX_HEAP_FRAME_BYTES]-or-
+    /// non-1024-multiple RequestHeapFrame VALUE (Agave's separate
+    /// `sanitize_requested_heap_size` check inside `sanitize_and_convert_to_
+    /// compute_budget_limits` — same `TransactionError::InstructionError(index,
+    /// InstructionError::InvalidInstructionData)` error class, just raised later).
+    InvalidInstructionData,
+};
+
 pub const ComputeBudgetParsed = struct {
     /// Set if SetComputeUnitLimit instruction present
     explicit_limit: ?u32 = null,
@@ -152,6 +179,12 @@ pub const ComputeBudgetParsed = struct {
     /// Set if RequestHeapFrame instruction present (raw requested byte count,
     /// pre-sanitization — see heapSize() for the Agave-matching clamp/default).
     explicit_heap_bytes: ?u32 = null,
+    /// Instruction index of the RequestHeapFrame instruction that set
+    /// `explicit_heap_bytes` above (only meaningful when that field is non-null) —
+    /// needed to attribute a post-loop invalid-heap-VALUE sanitize error (checked
+    /// once the full instruction scan completes, mirroring Agave's
+    /// `sanitize_and_convert_to_compute_budget_limits`) to the right index.
+    explicit_heap_ix: u8 = 0,
     /// Set if SetLoadedAccountsDataSizeLimit instruction present (raw
     /// requested byte value, pre-sanitization — see loadedAccountsDataSizeLimit()).
     explicit_loaded_accounts_data_size: ?u32 = null,
@@ -160,14 +193,39 @@ pub const ComputeBudgetParsed = struct {
     builtin_count: u32 = 0,
     /// Count of instructions whose program is non-builtin (BPF) — 200,000 CU each.
     non_builtin_count: u32 = 0,
+    /// fix/compute-budget-parse-p1: non-null iff Agave would reject this WHOLE
+    /// transaction at sanitize time (see SanitizeError doc). First-occurrence-wins
+    /// (mirrors Agave's `?`-short-circuit in `ComputeBudgetInstructionDetails::
+    /// try_from` — process_instruction returns on the FIRST bad instruction; later
+    /// instructions are still scanned here to preserve the existing counting
+    /// fields' behavior for callers that don't check this field, but the reported
+    /// error/index is always the first one, matching what Agave itself would
+    /// report). NOT wired into any reject path yet — replay never sees this shape
+    /// (an honest Agave leader never produces it); the produce/admit path
+    /// (block_produce.zig admitTx/admitTxSeq) is the intended future consumer once
+    /// its txFullyModelable whitelist is relaxed to admit ComputeBudget-bearing
+    /// txs (tracked follow-up, see compute-budget-p1-fixes-2026-07-19.md).
+    sanitize_error: ?SanitizeError = null,
+    /// Instruction index the error above pertains to. Agave's own `index` field is
+    /// a `u8` (`process_instruction(index: u8, ...)`, called via `i as u8`) — same
+    /// narrow width + wrap-on-overflow, though real txs never approach 256 ixs.
+    sanitize_error_ix: u8 = 0,
 };
+
+/// True iff `parsed.sanitize_error` is set — i.e. Agave would reject this whole
+/// transaction before fee determination or execution. Convenience wrapper for
+/// future admit-path callers (see ComputeBudgetParsed.sanitize_error doc).
+pub fn hasSanitizeError(parsed: ComputeBudgetParsed) bool {
+    return parsed.sanitize_error != null;
+}
 
 pub fn parseInstructions(
     instructions: anytype,
     account_keys: []const [32]u8,
 ) ComputeBudgetParsed {
     var out = ComputeBudgetParsed{};
-    for (instructions) |ix| {
+    for (instructions, 0..) |ix, ix_idx_usize| {
+        const ix_idx: u8 = @truncate(ix_idx_usize);
         if (ix.program_id_index >= account_keys.len) {
             out.non_builtin_count +|= 1;
             continue;
@@ -180,37 +238,119 @@ pub fn parseInstructions(
             out.non_builtin_count +|= 1;
         }
         if (!is_cb) continue;
-        if (ix.data.len == 0) continue;
+        if (ix.data.len == 0) {
+            // fix/compute-budget-parse-p1 (#2): empty data — Agave's borsh decode of
+            // ComputeBudgetInstruction can't even read the discriminant byte.
+            if (out.sanitize_error == null) {
+                out.sanitize_error = error.InvalidInstructionData;
+                out.sanitize_error_ix = ix_idx;
+            }
+            continue;
+        }
         switch (ix.data[0]) {
             1 => {
                 // RequestHeapFrame(u32) — 4 bytes LE. @prov:compute-budget.heap-size —
                 // still recorded even though it's "irrelevant to fee calc" (label above
                 // predates the heap-cost-parity fix); needed now for calculate_heap_cost()
                 // at every VM creation (fix/cu-parity-batch2).
-                if (ix.data.len < 5) continue;
-                if (out.explicit_heap_bytes != null) continue; // duplicate; Agave errors, we tolerate
+                if (ix.data.len < 5) {
+                    // fix/compute-budget-parse-p1 (#2): short data.
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.InvalidInstructionData;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
+                if (out.explicit_heap_bytes != null) {
+                    // fix/compute-budget-parse-p1 (#1): duplicate — Agave:
+                    // TransactionError::DuplicateInstruction(index).
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.DuplicateInstruction;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
                 out.explicit_heap_bytes = std.mem.readInt(u32, ix.data[1..5], .little);
+                out.explicit_heap_ix = ix_idx;
             },
             2 => {
                 // SetComputeUnitLimit(u32) — 4 bytes LE
-                if (ix.data.len < 5) continue;
-                if (out.explicit_limit != null) continue; // duplicate; Agave errors, we tolerate
+                if (ix.data.len < 5) {
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.InvalidInstructionData;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
+                if (out.explicit_limit != null) {
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.DuplicateInstruction;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
                 out.explicit_limit = std.mem.readInt(u32, ix.data[1..5], .little);
             },
             3 => {
                 // SetComputeUnitPrice(u64) — 8 bytes LE
-                if (ix.data.len < 9) continue;
-                if (out.explicit_price != null) continue; // duplicate
+                if (ix.data.len < 9) {
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.InvalidInstructionData;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
+                if (out.explicit_price != null) {
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.DuplicateInstruction;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
                 out.explicit_price = std.mem.readInt(u64, ix.data[1..9], .little);
             },
             4 => {
                 // SetLoadedAccountsDataSizeLimit(u32) — 4 bytes LE. fix/cu-parity-batch2
                 // fix 3: needed for loadedAccountsDataSizeLimit() below.
-                if (ix.data.len < 5) continue;
-                if (out.explicit_loaded_accounts_data_size != null) continue; // duplicate; Agave errors, we tolerate
+                if (ix.data.len < 5) {
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.InvalidInstructionData;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
+                if (out.explicit_loaded_accounts_data_size != null) {
+                    if (out.sanitize_error == null) {
+                        out.sanitize_error = error.DuplicateInstruction;
+                        out.sanitize_error_ix = ix_idx;
+                    }
+                    continue;
+                }
                 out.explicit_loaded_accounts_data_size = std.mem.readInt(u32, ix.data[1..5], .little);
             },
-            else => {}, // 0 — deprecated/reserved, irrelevant
+            else => {
+                // fix/compute-budget-parse-p1 (#2): discriminator 0 ("Unused",
+                // reserved) or >=5 (undefined) — Agave's borsh decode either lands
+                // on an unhandled variant or fails outright; both hit the `_ =>`
+                // wildcard arm in process_instruction ⇒ InvalidInstructionData.
+                if (out.sanitize_error == null) {
+                    out.sanitize_error = error.InvalidInstructionData;
+                    out.sanitize_error_ix = ix_idx;
+                }
+            },
+        }
+    }
+    // fix/compute-budget-parse-p1 (#3): invalid RequestHeapFrame VALUE — mirrors
+    // Agave's sanitize_and_convert_to_compute_budget_limits, which runs only once
+    // try_from (the loop above) has succeeded end-to-end with no per-instruction
+    // error (its `?` short-circuit means Agave never reaches this check otherwise).
+    if (out.sanitize_error == null) {
+        if (out.explicit_heap_bytes) |raw| {
+            const valid = raw >= MIN_HEAP_FRAME_BYTES and raw <= MAX_HEAP_FRAME_BYTES and raw % 1024 == 0;
+            if (!valid) {
+                out.sanitize_error = error.InvalidInstructionData;
+                out.sanitize_error_ix = out.explicit_heap_ix;
+            }
         }
     }
     return out;
@@ -811,6 +951,182 @@ test "parseInstructions: SetLoadedAccountsDataSizeLimit(65536) parsed (previousl
     const parsed = parseInstructions(&ixs, &account_keys);
     try std.testing.expectEqual(@as(?u32, 65536), parsed.explicit_loaded_accounts_data_size);
     try std.testing.expectEqual(@as(u32, 65536), try loadedAccountsDataSizeLimit(parsed));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RED-GREEN: compute-budget-parse-divergences-2026-07-12 P1s #1-#3.
+// RED (pre-fix): these reference `parsed.sanitize_error` / `SanitizeError`, which
+// do not exist yet on the unfixed struct — compile fails, proving the gap (Agave
+// rejects the whole tx; Vexor has no mechanism to detect any of these 3 shapes at
+// all). GREEN (post-fix): compiles and the assertions hold.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test "P1#1 RED-GREEN: duplicate SetComputeUnitLimit -> DuplicateInstruction(ix1), Agave test_try_from_compute_unit_limit shape" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    // SetComputeUnitLimit(0): [2,0,0,0,0]; SetComputeUnitLimit(u32::MAX): [2,0xff,0xff,0xff,0xff]
+    const first = [_]u8{ 2, 0, 0, 0, 0 };
+    const second = [_]u8{ 2, 0xff, 0xff, 0xff, 0xff };
+    const ixs = [_]TestInstruction{
+        .{ .program_id_index = 0, .data = &first },
+        .{ .program_id_index = 0, .data = &second },
+    };
+    const parsed = parseInstructions(&ixs, &account_keys);
+    // Pre-fix Vexor tolerates this (first-wins, no signal) — assert the CORRECT,
+    // Agave-matching outcome: whole-tx sanitize-time reject at ix index 1 (the
+    // SECOND occurrence, matching Agave's `test_try_from_compute_unit_limit`).
+    try std.testing.expectEqual(@as(?SanitizeError, error.DuplicateInstruction), parsed.sanitize_error);
+    try std.testing.expectEqual(@as(u8, 1), parsed.sanitize_error_ix);
+    // First value is still recorded (Agave: Some((index, first_value)) unchanged by the Err).
+    try std.testing.expectEqual(@as(?u32, 0), parsed.explicit_limit);
+}
+
+test "P1#1 RED-GREEN: duplicate RequestHeapFrame -> DuplicateInstruction, Agave test_try_from_request_heap shape" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    const first = [_]u8{ 1, 0x00, 0xa0, 0x00, 0x00 }; // 40*1024
+    const second = [_]u8{ 1, 0x00, 0xa4, 0x00, 0x00 }; // 41*1024
+    const ixs = [_]TestInstruction{
+        .{ .program_id_index = 0, .data = &first },
+        .{ .program_id_index = 0, .data = &second },
+    };
+    const parsed = parseInstructions(&ixs, &account_keys);
+    try std.testing.expectEqual(@as(?SanitizeError, error.DuplicateInstruction), parsed.sanitize_error);
+    try std.testing.expectEqual(@as(u8, 1), parsed.sanitize_error_ix);
+}
+
+test "P1#1 RED-GREEN: duplicate SetComputeUnitPrice -> DuplicateInstruction" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    const first = [_]u8{ 3, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const second = [_]u8{ 3, 1, 0, 0, 0, 0, 0, 0, 0 };
+    const ixs = [_]TestInstruction{
+        .{ .program_id_index = 0, .data = &first },
+        .{ .program_id_index = 0, .data = &second },
+    };
+    const parsed = parseInstructions(&ixs, &account_keys);
+    try std.testing.expectEqual(@as(?SanitizeError, error.DuplicateInstruction), parsed.sanitize_error);
+    try std.testing.expectEqual(@as(u8, 1), parsed.sanitize_error_ix);
+}
+
+test "P1#1 RED-GREEN: duplicate SetLoadedAccountsDataSizeLimit -> DuplicateInstruction" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    const first = [_]u8{ 4, 0, 0, 1, 0 };
+    const second = [_]u8{ 4, 0, 0, 2, 0 };
+    const ixs = [_]TestInstruction{
+        .{ .program_id_index = 0, .data = &first },
+        .{ .program_id_index = 0, .data = &second },
+    };
+    const parsed = parseInstructions(&ixs, &account_keys);
+    try std.testing.expectEqual(@as(?SanitizeError, error.DuplicateInstruction), parsed.sanitize_error);
+    try std.testing.expectEqual(@as(u8, 1), parsed.sanitize_error_ix);
+}
+
+test "P1#2 RED-GREEN: empty CB instruction data -> InvalidInstructionData" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &[_]u8{} }};
+    const parsed = parseInstructions(&ixs, &account_keys);
+    try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+    try std.testing.expectEqual(@as(u8, 0), parsed.sanitize_error_ix);
+}
+
+test "P1#2 RED-GREEN: short SetComputeUnitLimit data (3 bytes, needs 5) -> InvalidInstructionData" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    const short = [_]u8{ 2, 0, 0 };
+    const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &short }};
+    const parsed = parseInstructions(&ixs, &account_keys);
+    try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+}
+
+test "P1#2 RED-GREEN: unknown discriminant 0 (Unused) and 5 (undefined) -> InvalidInstructionData" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    {
+        const data0 = [_]u8{0};
+        const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &data0 }};
+        const parsed = parseInstructions(&ixs, &account_keys);
+        try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+    }
+    {
+        const data5 = [_]u8{5};
+        const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &data5 }};
+        const parsed = parseInstructions(&ixs, &account_keys);
+        try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+    }
+}
+
+test "P1#3 RED-GREEN: invalid RequestHeapFrame value (too small / too large / not x1024) -> InvalidInstructionData, Agave sanitize_requested_heap_size shape" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    // 0 bytes: sanitize-fails (< MIN_HEAP_FRAME_BYTES).
+    {
+        const data = [_]u8{ 1, 0, 0, 0, 0 };
+        const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &data }};
+        const parsed = parseInstructions(&ixs, &account_keys);
+        try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+        try std.testing.expectEqual(@as(u8, 0), parsed.sanitize_error_ix);
+    }
+    // MIN_HEAP_FRAME_BYTES - 1 (not a multiple of 1024, below floor).
+    {
+        var buf: [5]u8 = undefined;
+        buf[0] = 1;
+        std.mem.writeInt(u32, buf[1..5], MIN_HEAP_FRAME_BYTES - 1, .little);
+        const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &buf }};
+        const parsed = parseInstructions(&ixs, &account_keys);
+        try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+    }
+    // MAX_HEAP_FRAME_BYTES + 1024 (over the ceiling).
+    {
+        var buf: [5]u8 = undefined;
+        buf[0] = 1;
+        std.mem.writeInt(u32, buf[1..5], MAX_HEAP_FRAME_BYTES + 1024, .little);
+        const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &buf }};
+        const parsed = parseInstructions(&ixs, &account_keys);
+        try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+    }
+    // Valid value (40*1024) -> no sanitize error.
+    {
+        var buf: [5]u8 = undefined;
+        buf[0] = 1;
+        std.mem.writeInt(u32, buf[1..5], 40 * 1024, .little);
+        const ixs = [_]TestInstruction{.{ .program_id_index = 0, .data = &buf }};
+        const parsed = parseInstructions(&ixs, &account_keys);
+        try std.testing.expectEqual(@as(?SanitizeError, null), parsed.sanitize_error);
+    }
+}
+
+test "sanitize_error: first-error-wins across multiple bad instructions (Agave try_from short-circuit)" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const account_keys = [_][32]u8{cb_program};
+    const short = [_]u8{ 2, 0, 0 }; // ix0: InvalidInstructionData (short)
+    const dup1 = [_]u8{ 3, 1, 0, 0, 0, 0, 0, 0, 0 }; // ix1: price
+    const dup2 = [_]u8{ 3, 2, 0, 0, 0, 0, 0, 0, 0 }; // ix2: DuplicateInstruction (would-be)
+    const ixs = [_]TestInstruction{
+        .{ .program_id_index = 0, .data = &short },
+        .{ .program_id_index = 0, .data = &dup1 },
+        .{ .program_id_index = 0, .data = &dup2 },
+    };
+    const parsed = parseInstructions(&ixs, &account_keys);
+    // The FIRST error (ix0, InvalidInstructionData) wins, not the later duplicate.
+    try std.testing.expectEqual(@as(?SanitizeError, error.InvalidInstructionData), parsed.sanitize_error);
+    try std.testing.expectEqual(@as(u8, 0), parsed.sanitize_error_ix);
+}
+
+test "sanitize_error: clean tx (no CB errors) -> null, unaffected by non-CB/no-limit instructions" {
+    const cb_program = COMPUTE_BUDGET_PROG_ID;
+    const other: [32]u8 = [_]u8{0x07} ** 32;
+    const account_keys = [_][32]u8{ cb_program, other };
+    const price_data = [_]u8{ 3, 0xa0, 0x86, 0x01, 0, 0, 0, 0, 0 };
+    const other_data = [_]u8{};
+    const ixs = [_]TestInstruction{
+        .{ .program_id_index = 0, .data = &price_data },
+        .{ .program_id_index = 1, .data = &other_data },
+    };
+    const parsed = parseInstructions(&ixs, &account_keys);
+    try std.testing.expectEqual(@as(?SanitizeError, null), parsed.sanitize_error);
 }
 
 test "parseComputeUnitPriceFromWire: extracts SetComputeUnitPrice from a full tx wire (and 0 when absent)" {

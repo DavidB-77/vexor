@@ -764,12 +764,12 @@ fn rej(ctr: *u64) bool {
         std.log.warn(
             "[VOTE-CHECK-REJECTS] total={d} slot_hash_mm={d} cluster_fb_would_accept={d} asc={d} too_many={d} empty={d} zero_conf={d} conf_too_large={d} slot_lt_root={d} slots_unord={d} conf_unord={d} lockout_mm={d} deser={d} vote_too_old={d} rollback={d} conf_rollback={d} lockout_conflict={d} slots_mm={d} rofork={d} ts_too_old={d} ser={d}",
             .{
-                RejectDbg.total,                  RejectDbg.slot_hash_mismatch, RejectDbg.cluster_fallback_accepts, RejectDbg.ascending_fail,
-                RejectDbg.lockouts_too_many,      RejectDbg.empty_lockouts,     RejectDbg.zero_conf,                RejectDbg.conf_too_large,
-                RejectDbg.slot_smaller_than_root, RejectDbg.slots_not_ordered,  RejectDbg.conf_not_ordered,         RejectDbg.lockout_mm,
-                RejectDbg.deser_fail,             RejectDbg.vote_too_old,       RejectDbg.root_rollback,            RejectDbg.confirmation_roll_back,
-                RejectDbg.lockout_conflict,       RejectDbg.slots_mismatch,     RejectDbg.root_on_different_fork,   RejectDbg.timestamp_too_old,
-                RejectDbg.ser_fail,
+                RejectDbg.total, RejectDbg.slot_hash_mismatch, RejectDbg.cluster_fallback_accepts, RejectDbg.ascending_fail,
+                RejectDbg.lockouts_too_many, RejectDbg.empty_lockouts, RejectDbg.zero_conf,
+                RejectDbg.conf_too_large, RejectDbg.slot_smaller_than_root, RejectDbg.slots_not_ordered,
+                RejectDbg.conf_not_ordered, RejectDbg.lockout_mm, RejectDbg.deser_fail,
+                RejectDbg.vote_too_old, RejectDbg.root_rollback, RejectDbg.confirmation_roll_back,
+                RejectDbg.lockout_conflict, RejectDbg.slots_mismatch, RejectDbg.root_on_different_fork, RejectDbg.timestamp_too_old, RejectDbg.ser_fail,
             },
         );
     }
@@ -786,14 +786,8 @@ pub fn replaceTowerStateChecked(
     proposed_last_slot_hash: ?*const [32]u8,
 ) bool {
     return replaceTowerStateCheckedWithFallback(
-        data,
-        proposed_lockouts,
-        proposed_root,
-        timestamp,
-        current_slot,
-        slot_hashes_data,
-        proposed_last_slot_hash,
-        null,
+        data, proposed_lockouts, proposed_root, timestamp, current_slot,
+        slot_hashes_data, proposed_last_slot_hash, null,
     );
 }
 
@@ -821,15 +815,8 @@ pub fn replaceTowerStateCheckedWithFallback(
     cluster_slot_hashes_fallback: ?[]const u8,
 ) bool {
     return replaceTowerStateCheckedWithFallbackTraced(
-        data,
-        proposed_lockouts,
-        proposed_root,
-        timestamp,
-        current_slot,
-        slot_hashes_data,
-        proposed_last_slot_hash,
-        cluster_slot_hashes_fallback,
-        null,
+        data, proposed_lockouts, proposed_root, timestamp, current_slot,
+        slot_hashes_data, proposed_last_slot_hash, cluster_slot_hashes_fallback, null,
         // current_epoch=null: this wrapper preserves the legacy (test/null-filter)
         // contract — get_and_update is skipped. Production passes it via …Traced.
         null,
@@ -905,9 +892,7 @@ pub fn replaceTowerStateCheckedWithFallbackTraced(
     }
 
     // Debug: track deserialization failures
-    const Dbg = struct {
-        var count: u32 = 0;
-    };
+    const Dbg = struct { var count: u32 = 0; };
     Dbg.count += 1;
     // Validate proposed lockouts are in ascending slot order
     if (proposed_lockouts.len > 1) {
@@ -2263,7 +2248,8 @@ test "V4 serialize fidelity: 521 real cluster goldens @414098450 round-trip byte
         if (!std.mem.eql(u8, &buf, golden)) {
             var d: usize = 0;
             while (d < REC and buf[d] == golden[d]) : (d += 1) {}
-            std.debug.print("[V4-FIDELITY] BYTE DIFF record {d} offset {d} written={d} got=0x{x:0>2} want=0x{x:0>2}\n", .{ i, d, written, buf[d], golden[d] });
+            std.debug.print("[V4-FIDELITY] BYTE DIFF record {d} offset {d} written={d} got=0x{x:0>2} want=0x{x:0>2}\n",
+                .{ i, d, written, buf[d], golden[d] });
             return error.RoundTripMismatch;
         }
         ok += 1;
@@ -2296,7 +2282,8 @@ fn runConversionBlob(comptime blob: []const u8, rent_rejected_out: *usize) !usiz
         pos += dlen;
 
         var vs = deserializeVoteState(data) orelse {
-            std.debug.print("[V4-CONV] deserialize FAILED rec {d} dlen={d} tag={d}\n", .{ n, dlen, std.mem.readInt(u32, data[0..4], .little) });
+            std.debug.print("[V4-CONV] deserialize FAILED rec {d} dlen={d} tag={d}\n",
+                .{ n, dlen, std.mem.readInt(u32, data[0..4], .little) });
             return error.DeserializeFailed;
         };
         const orig_node = vs.node_pubkey;
@@ -2365,7 +2352,8 @@ test "V4 conversion: 100 real tag-1 + 100 real tag-2 deserialize->convertToV4->s
     try std.testing.expect(n2 >= 100);
     // tag-2 are 3762B already → never rent-rejected by the grow guard.
     try std.testing.expectEqual(@as(usize, 0), rr2);
-    std.debug.print("[V4-CONV] tag-1 {d} (rent-exempt-converted {d}, rent-rejected {d}) + tag-2 {d} real accounts OK\n", .{ n1, n1 - rr1, rr1, n2 });
+    std.debug.print("[V4-CONV] tag-1 {d} (rent-exempt-converted {d}, rent-rejected {d}) + tag-2 {d} real accounts OK\n",
+        .{ n1, n1 - rr1, rr1, n2 });
 }
 
 test "timestamp update via round-trip" {

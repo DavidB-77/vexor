@@ -27,17 +27,17 @@
 //      System fixture is gated via `skip_reason` until it lands.
 
 const std = @import("std");
-const core = @import("core");
+const core    = @import("core");
 const fixture = @import("bpf_fixture.zig");
-const bpf = @import("root.zig");
-const elf = @import("elf_loader.zig");
-const sbpf = @import("sbpf_executor.zig");
+const bpf     = @import("root.zig");
+const elf     = @import("elf_loader.zig");
+const sbpf    = @import("sbpf_executor.zig");
 
 pub const FixtureReport = struct {
-    name: []const u8,
-    passed: bool,
-    skipped: bool,
-    skip_reason: ?[]const u8 = null,
+    name:         []const u8,
+    passed:       bool,
+    skipped:      bool,
+    skip_reason:  ?[]const u8 = null,
     /// Human-readable lines explaining the diff. Owned by the caller.
     detail_lines: std.ArrayListUnmanaged([]u8) = .{},
     /// Number of expected post-state accounts that didn't match.
@@ -72,8 +72,8 @@ pub fn runFixture(
     fix: *const fixture.BpfFixture,
 ) !FixtureReport {
     var report: FixtureReport = .{
-        .name = fix.name,
-        .passed = false,
+        .name    = fix.name,
+        .passed  = false,
         .skipped = false,
     };
     errdefer report.deinit(allocator);
@@ -102,15 +102,15 @@ pub fn runFixture(
         const buf = try allocator.dupe(u8, fix.synthesised_rodata);
         owned_synth_buf = buf;
         program = .{
-            .rodata_combined = buf,
-            .text_offset = 0,
-            .text_size = buf.len,
-            .entry_pc = fix.entry_pc,
-            .sbpf_version = .v1,
-            .rodata_vaddr = bpf.interpreter.VM_PROG_START,
-            .symbols = std.StringHashMap(u64).init(allocator),
+            .rodata_combined   = buf,
+            .text_offset       = 0,
+            .text_size         = buf.len,
+            .entry_pc          = fix.entry_pc,
+            .sbpf_version      = .v1,
+            .rodata_vaddr      = bpf.interpreter.VM_PROG_START,
+            .symbols           = std.StringHashMap(u64).init(allocator),
             .function_registry = .{},
-            .allocator = allocator,
+            .allocator         = allocator,
         };
         // We don't set owned_program=true because we own the parts ourselves.
         defer program.symbols.deinit();
@@ -123,13 +123,13 @@ pub fn runFixture(
     defer allocator.free(entries);
     for (fix.accounts_pre, 0..) |a, i| {
         entries[i] = .{
-            .pubkey = a.pubkey,
-            .owner = a.owner,
-            .lamports = a.lamports,
-            .data = a.data,
-            .executable = a.executable,
-            .rent_epoch = a.rent_epoch,
-            .is_signer = a.is_signer,
+            .pubkey      = a.pubkey,
+            .owner       = a.owner,
+            .lamports    = a.lamports,
+            .data        = a.data,
+            .executable  = a.executable,
+            .rent_epoch  = a.rent_epoch,
+            .is_signer   = a.is_signer,
             .is_writable = a.is_writable,
         };
     }
@@ -185,12 +185,8 @@ pub fn runFixture(
                 "mismatch pubkey={s} expected{{lamports={d},data_len={d},owner={s}}} got{{lamports={d},data_len={d},owner={s}}}",
                 .{
                     fmtPk(expected.pubkey),
-                    expected.lamports,
-                    expected.data.len,
-                    fmtPk(expected.owner),
-                    observed.lamports,
-                    observed.data.len,
-                    fmtPk(observed.owner),
+                    expected.lamports,        expected.data.len,        fmtPk(expected.owner),
+                    observed.lamports,        observed.data.len,        fmtPk(observed.owner),
                 },
             );
             try report.detail_lines.append(allocator, line);
@@ -206,11 +202,11 @@ pub fn runFixture(
 
 const Observed = struct {
     lamports: u64,
-    data: []const u8,
-    owner: core.Pubkey,
+    data:     []const u8,
+    owner:    core.Pubkey,
     /// Whether the executor reported a write for this pubkey. False ⇒
     /// account was untouched, observed values are the pre-state.
-    written: bool,
+    written:  bool,
 };
 
 fn pickObserved(
@@ -225,9 +221,9 @@ fn pickObserved(
             const pre = findPre(fix, pk);
             return .{
                 .lamports = m.new_lamports,
-                .data = m.data,
-                .owner = if (pre) |p| p.owner else core.Pubkey{ .data = .{0} ** 32 },
-                .written = true,
+                .data     = m.data,
+                .owner    = if (pre) |p| p.owner else core.Pubkey{ .data = .{0} ** 32 },
+                .written  = true,
             };
         }
     }
@@ -274,31 +270,28 @@ test "runFixture: synthesised no-op (just an EXIT) returns empty mutations" {
     //   opcode=0x95 dst=0 src=0 off=0 imm=0  →  bytes 95 00 00 00 00 00 00 00
     const noop_program = [_]u8{ 0x95, 0, 0, 0, 0, 0, 0, 0 };
 
-    var pre = try allocator.alloc(fixture.AccountState, 0);
+    var pre  = try allocator.alloc(fixture.AccountState, 0);
     var post = try allocator.alloc(fixture.AccountState, 0);
     var rodata = try allocator.dupe(u8, &noop_program);
-    var ix = try allocator.alloc(u8, 0);
+    var ix     = try allocator.alloc(u8, 0);
 
     var fix: fixture.BpfFixture = .{
-        .name = try allocator.dupe(u8, "noop"),
-        .skip_reason = null,
-        .program_id = .{ .data = .{0} ** 32 },
-        .program_elf = try allocator.alloc(u8, 0),
-        .synthesised_rodata = rodata,
-        .entry_pc = 0,
-        .ix_data = ix,
-        .accounts_pre = pre,
-        .accounts_post = post,
+        .name                 = try allocator.dupe(u8, "noop"),
+        .skip_reason          = null,
+        .program_id           = .{ .data = .{0} ** 32 },
+        .program_elf          = try allocator.alloc(u8, 0),
+        .synthesised_rodata   = rodata,
+        .entry_pc             = 0,
+        .ix_data              = ix,
+        .accounts_pre         = pre,
+        .accounts_post        = post,
         .return_code_expected = 0,
-        .compute_budget = 1_400_000,
+        .compute_budget       = 1_400_000,
     };
     _ = &fix; // silence "unused mutable" in older Zig
 
     defer fix.deinit(allocator);
-    _ = &rodata;
-    _ = &pre;
-    _ = &post;
-    _ = &ix;
+    _ = &rodata; _ = &pre; _ = &post; _ = &ix;
 
     var report = try runFixture(allocator, &fix);
     defer report.deinit(allocator);
@@ -311,17 +304,17 @@ test "runFixture: synthesised no-op (just an EXIT) returns empty mutations" {
 test "runFixture: skipped fixture short-circuits with skip_reason set" {
     const allocator = std.testing.allocator;
     var fix: fixture.BpfFixture = .{
-        .name = try allocator.dupe(u8, "skipme"),
-        .skip_reason = try allocator.dupe(u8, "W3 not landed"),
-        .program_id = .{ .data = .{0} ** 32 },
-        .program_elf = try allocator.alloc(u8, 0),
-        .synthesised_rodata = try allocator.alloc(u8, 0),
-        .entry_pc = 0,
-        .ix_data = try allocator.alloc(u8, 0),
-        .accounts_pre = try allocator.alloc(fixture.AccountState, 0),
-        .accounts_post = try allocator.alloc(fixture.AccountState, 0),
+        .name                 = try allocator.dupe(u8, "skipme"),
+        .skip_reason          = try allocator.dupe(u8, "W3 not landed"),
+        .program_id           = .{ .data = .{0} ** 32 },
+        .program_elf          = try allocator.alloc(u8, 0),
+        .synthesised_rodata   = try allocator.alloc(u8, 0),
+        .entry_pc             = 0,
+        .ix_data              = try allocator.alloc(u8, 0),
+        .accounts_pre         = try allocator.alloc(fixture.AccountState, 0),
+        .accounts_post        = try allocator.alloc(fixture.AccountState, 0),
         .return_code_expected = 0,
-        .compute_budget = 1_400_000,
+        .compute_budget       = 1_400_000,
     };
     defer fix.deinit(allocator);
     var report = try runFixture(allocator, &fix);

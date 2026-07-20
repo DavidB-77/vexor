@@ -1038,9 +1038,7 @@ pub const Bank = struct {
     pub fn recordTransactionCost(self: *Self, cost: TransactionCost) void {
         self.block_compute_units +|= cost.total;
         if (self.slot % 100 == 0) {
-            const CostLog = struct {
-                var last_slot: u64 = std.math.maxInt(u64);
-            };
+            const CostLog = struct { var last_slot: u64 = std.math.maxInt(u64); };
             if (CostLog.last_slot != self.slot) {
                 CostLog.last_slot = self.slot;
                 std.log.debug("[COST-MODEL] slot={d} block_cu={d}\n", .{
@@ -1075,9 +1073,10 @@ pub const Bank = struct {
         const executable_flag: u8 = if (executable) 1 else 0; // @prov:bank.lthash-account
 
         // ITEM K: route the load-bearing accountLtHash BLAKE3 through the
-        // vex_crypto.blake3 wrapper (pure-Zig stdlib implementation). Boot-time
-        // KAT in vex_crypto/blake3.zig:runBalletSelfTest proves byte-identical
-        // 2048-byte XOF output before any vote fires.
+        // vex_crypto.blake3 wrapper. With -Dballet_blake3=true this dispatches
+        // to an AVX-512 implementation; otherwise (default) it stays
+        // on stdlib. Boot-time KAT in vex_crypto/blake3.zig:runBalletSelfTest
+        // proves byte-identical 2048-byte XOF output before any vote fires.
         var b3 = vex_crypto.blake3.Blake3.init(.{});
         var lamports_le: [8]u8 = undefined;
         std.mem.writeInt(u64, &lamports_le, lamports, .little);
@@ -1118,8 +1117,7 @@ pub const Bank = struct {
 
         // Recorder-extension 2026-05-17 Tier-2: emit per-account lthash
         // contribution BEFORE the wrapping mix. Pure diagnostic — does not
-        // change LtHash math (see the accountLtHash/mixing implementation below
-        // for the invariant this must not disturb).
+        // change LtHash math (CLAUDE.md guarantee at lines 2864-2902).
         // For the 4.1% of vote-mismatches that are REAL bank_hash divergence,
         // diff'ing per-account contributions vs oracle-node pinpoints the exact
         // pubkey whose hash drifted.
@@ -1187,7 +1185,7 @@ pub const Bank = struct {
     pub fn computeBankHash(
         lthash: *const LtHash,
         prev_bank_hash: *const Hash,
-        poh_hash: *const Hash, // bank->f.poh — LAST ENTRY hash, NOT tx.recent_blockhash
+        poh_hash: *const Hash,     // bank->f.poh — LAST ENTRY hash, NOT tx.recent_blockhash
         signature_count: u64,
         hard_fork_buf: ?[8]u8,
     ) Hash {
@@ -1285,9 +1283,7 @@ pub const Bank = struct {
             // NO fallback to the snapshot's bank.stakes table — that is the
             // pre-d16 broken source whose oversized count (15,462 vs 580)
             // caused the carrier in the first place.
-            const NoEpochDbg = struct {
-                var emitted: u32 = 0;
-            };
+            const NoEpochDbg = struct { var emitted: u32 = 0; };
             if (NoEpochDbg.emitted < 5) {
                 NoEpochDbg.emitted += 1;
                 std.log.warn("[CLOCK-EPOCH-STAKES-MISS] slot={d} epoch={d} epoch_stakes_loaded={d} — returning null (Agave-faithful)\n", .{
@@ -1407,15 +1403,13 @@ pub const Bank = struct {
             });
         }
 
-        const SWDbg = struct {
-            var count: u64 = 0;
-        };
+        const SWDbg = struct { var count: u64 = 0; };
         SWDbg.count += 1;
         if (SWDbg.count <= 3 or SWDbg.count % 100 == 0) {
             std.log.warn("[CLOCK-CACHE-SAMPLES] slot={d} src=parent_state stakers={d} kept={d} read_miss={d} parse_fail={d} drop_future={d} drop_old={d} max_vote_slot={d} lag={d}\n", .{
-                self.slot,   stakes_slice.len,     samples_list.items.len,
-                read_miss,   parse_fail,           dropped_future,
-                dropped_old, max_sample_vote_slot, std.math.sub(u64, self.slot, max_sample_vote_slot) catch 0,
+                self.slot, stakes_slice.len, samples_list.items.len,
+                read_miss, parse_fail, dropped_future, dropped_old,
+                max_sample_vote_slot, std.math.sub(u64, self.slot, max_sample_vote_slot) catch 0,
             });
         }
 
@@ -1480,7 +1474,8 @@ pub const Bank = struct {
         const path = if (std.process.getEnvVarOwned(self.allocator, "VEX_CLOCK_KAT_DUMP_PATH")) |p| pblk: {
             owned_path = p;
             break :pblk p;
-        } else |_| try std.fmt.bufPrint(&path_buf, "/tmp/clock_kat_{d}.blob", .{self.slot});
+        } else |_|
+            try std.fmt.bufPrint(&path_buf, "/tmp/clock_kat_{d}.blob", .{self.slot});
         defer if (owned_path) |p| self.allocator.free(p);
 
         var out = std.array_list.Managed(u8).init(self.allocator);
@@ -1549,8 +1544,7 @@ pub const Bank = struct {
                 // accounts_db (clock_epoch_anchor, computeStakeWeightedClockEstimate).
                 // Holding the raw slice across that window caused SIGSEGV in
                 // accountLtHash → blake3.update at line 873. Same class as
-                // mmap-backed memory is read-only; dupe before use rather than
-                // holding a raw slice across a window that can free/remap it.
+                // CLAUDE.md Pitfall #5 (mmap is read-only; dupe before use).
                 if (existing.data.len > 0) {
                     old_lt_data = self.allocator.dupe(u8, existing.data) catch null;
                 }
@@ -1621,7 +1615,7 @@ pub const Bank = struct {
         // -Dsig_clock=true run can be diffed against cluster getBlockTime(slot).
         // PASS = delta flat ≈0; the pre-fix drift shows as a monotonic ramp.
         std.log.info("[CLOCK-TRAJECTORY] slot={d} computed_unix_ts={?d} clock_unix_ts={d} src={s}\n", .{
-            self.slot,                                                    computed_unix_ts, unix_ts,
+            self.slot, computed_unix_ts, unix_ts,
             if (build_options.sig_clock) "sig_live" else "selectForFork",
         });
         // Else: inherit. NO wall-clock fallback: on a catching-up validator
@@ -1769,7 +1763,8 @@ pub const Bank = struct {
             const bh_entry = entries[j - 1];
             const offset = 8 + rev_i * 40;
             @memcpy(sysvar_data[offset..][0..32], &bh_entry.blockhash.data);
-            std.mem.writeInt(u64, sysvar_data[offset + 32 ..][0..8], bh_entry.lamports_per_signature, .little);
+            std.mem.writeInt(u64, sysvar_data[offset + 32..][0..8],
+                bh_entry.lamports_per_signature, .little);
         }
 
         // Compute LtHash deltas
@@ -2311,9 +2306,9 @@ pub const Bank = struct {
         // the last byte differed between sysvars (06/04/03/07/0b/08/09/0a).
         // r35-fix copied the broken constant verbatim.
         //
-        // Program ID bytes: NEVER hand-type. Always base58-decode and verify
-        // against an independent source. This bug is the canonical example of
-        // why — cost ~1 hr of investigation cycles.
+        // CLAUDE.md Common Pitfall #3 (verbatim): "Program ID bytes: NEVER
+        // hand-type. Always base58 decode and verify." This bug is the
+        // canonical example — cost ~1 hr of investigation cycles.
         //
         // @prov:bank.sysvar-id-cross-check — verified canonical against Sig/Firedancer
         // reference IDs + an independent base58-decode.
@@ -2649,10 +2644,9 @@ pub const Bank = struct {
     pub fn readStakeHistory(self: *Self, allocator: std.mem.Allocator) ![]StakeHistoryEntry {
         // r36-fix-d: canonical SysvarStakeHistory1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u` — another instance of the
-        // never-hand-type-pubkey-bytes rule being violated (third documented
-        // case, after LRS_PUBKEY and the sysvar_cache.zig 8-placeholder
-        // constants). @prov:bank.sysvar-id-cross-check
+        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u`. CLAUDE.md Pitfall #3
+        // (third documented violation tonight after r35-fix LRS_PUBKEY +
+        // sysvar_cache.zig 8-placeholder constants). @prov:bank.sysvar-id-cross-check
         const SH_PUBKEY = Pubkey{ .data = .{
             0x06, 0xa7, 0xd5, 0x17, 0x19, 0x35, 0x84, 0xd0,
             0xfe, 0xed, 0x9b, 0xb3, 0x43, 0x1d, 0x13, 0x20,
@@ -2761,7 +2755,7 @@ pub const Bank = struct {
                     }
                     const remaining = stake - current_effective;
                     const weight: f64 = @as(f64, @floatFromInt(remaining)) /
-                        @as(f64, @floatFromInt(e.activating));
+                                        @as(f64, @floatFromInt(e.activating));
                     // CRITICAL: base is e.effective ONLY. Rate evaluated at current_epoch =
                     // epoch+1 (reference loop's prev_epoch+1). @prov:bank.stake-activation-status
                     const newly_effective_cluster: f64 = @as(f64, @floatFromInt(e.effective)) * warmupCooldownRate(epoch + 1, new_rate_activation_epoch);
@@ -2823,7 +2817,7 @@ pub const Bank = struct {
                     break;
                 }
                 const weight: f64 = @as(f64, @floatFromInt(remaining_eff)) /
-                    @as(f64, @floatFromInt(e.deactivating));
+                                    @as(f64, @floatFromInt(e.deactivating));
                 // CRITICAL: base is e.effective ONLY. Rate evaluated at current_epoch =
                 // cool_epoch+1 (reference loop's prev_epoch+1). @prov:bank.stake-activation-status
                 const newly_not_effective_cluster: f64 = @as(f64, @floatFromInt(e.effective)) * warmupCooldownRate(cool_epoch + 1, new_rate_activation_epoch);
@@ -3230,18 +3224,13 @@ pub const Bank = struct {
         const inflation_start_slot = self.getInflationStartSlot();
 
         const inflation_rewards = rewards_mod.calculatePreviousEpochInflationRewards(
-            inflation,
-            reward_sched,
-            slots_per_year,
-            capitalization,
-            self.slot,
-            inflation_start_slot,
-            prev_epoch,
+            inflation, reward_sched, slots_per_year, capitalization, self.slot, inflation_start_slot, prev_epoch,
         );
 
         std.log.warn("[EPOCH-INFLATION] slot={d} prev_epoch={d} cap={d} inflation_start={d} validator_rate={d:.17} validator_rewards={d} (canonical rate=0.07065150777974875 rewards=809764033810611)", .{
-            self.slot,                        prev_epoch,                          capitalization, inflation_start_slot,
-            inflation_rewards.validator_rate, inflation_rewards.validator_rewards,
+            self.slot, prev_epoch, capitalization, inflation_start_slot,
+            inflation_rewards.validator_rate,
+            inflation_rewards.validator_rewards,
         });
 
         // BUG-4/6 fix: propagate errors instead of silently returning success.
@@ -3332,7 +3321,9 @@ pub const Bank = struct {
         if (delay_commission_active) {
             for (db.epoch_stakes) |entry| {
                 const tgt: ?*std.AutoHashMap([32]u8, u16) =
-                    if (entry.epoch == prev_epoch) &es_comm_rewarded else if (entry.epoch == new_epoch) &es_comm_current else null;
+                    if (entry.epoch == prev_epoch) &es_comm_rewarded
+                    else if (entry.epoch == new_epoch) &es_comm_current
+                    else null;
                 if (tgt) |t| {
                     for (entry.vote_account_stakes, 0..) |vas, ci| {
                         const bps: u16 = if (commission_bps_active and ci < entry.commission_bps.len)
@@ -3460,8 +3451,8 @@ pub const Bank = struct {
         // warmup_cooldown_rate) uses 25%/epoch for epochs BEFORE the
         // `reduce_stake_warmup_cooldown` activation epoch (testnet: slot
         // 247628260 → epoch 586) and 9% from it onward, evaluated PER LOOP
-        // EPOCH inside the curve. Offline lab over all 558,757 delegations:
-        // flat 0.09 → total_points off
+        // EPOCH inside the curve. Offline lab over all 558,757 delegations
+        // (epoch973-forensics/carrier16_lab.py): flat 0.09 → total_points off
         // by +7.9e17 with filters / −9.84e10 without; rate schedule → EXACTLY
         // canonical (diff 0).
         const new_rate_activation_epoch = self.getNewRateActivationEpoch();
@@ -3500,24 +3491,12 @@ pub const Bank = struct {
             // the wire — so `state.stake.delegation.*` read every field +4 bytes
             // off. stake_state.zig's Offsets/readers exist precisely to dodge this.
             // Canonical: Agave solana-stake-interface state.rs (bincode, no padding).
-            const disc = ss.readStakeStateDiscriminant(sa.data) orelse {
-                rej_parse += 1;
-                continue;
-            };
-            if (disc != 2) {
-                rej_type += 1;
-                continue;
-            } // Only Stake type
-            if (sa.data.len < ss.STAKE_STATE_SZ) {
-                rej_parse += 1;
-                continue;
-            }
+            const disc = ss.readStakeStateDiscriminant(sa.data) orelse { rej_parse += 1; continue; };
+            if (disc != 2) { rej_type += 1; continue; } // Only Stake type
+            if (sa.data.len < ss.STAKE_STATE_SZ) { rej_parse += 1; continue; }
 
             const stake_amt = ss.readU64(sa.data, ss.Offsets.delegation_stake).?;
-            if (stake_amt == 0) {
-                rej_zero += 1;
-                continue;
-            }
+            if (stake_amt == 0) { rej_zero += 1; continue; }
             const act_epoch = ss.readU64(sa.data, ss.Offsets.activation_epoch).?;
             const deact_epoch = ss.readU64(sa.data, ss.Offsets.deactivation_epoch).?;
             const voter_pubkey = ss.readPubkey(sa.data, ss.Offsets.voter_pubkey).?;
@@ -3541,14 +3520,8 @@ pub const Bank = struct {
             // vote state deserialized into a reward accumulator (canonical: a
             // delegation whose vote account is missing from the cached vote set
             // earns 0 points and no reward — equivalent to skipping).
-            const vi = vote_idx.get(voter_pubkey) orelse {
-                rej_novote += 1;
-                continue;
-            };
-            const accum_idx = va_to_accum[vi] orelse {
-                rej_novote += 1;
-                continue;
-            };
+            const vi = vote_idx.get(voter_pubkey) orelse { rej_novote += 1; continue; };
+            const accum_idx = va_to_accum[vi] orelse { rej_novote += 1; continue; };
 
             // carrier #16: PER-EPOCH points over the vote's credit windows
             // (Agave inflation_rewards/points.rs calculate_stake_points_and_
@@ -3598,12 +3571,7 @@ pub const Bank = struct {
                         if (is_partial) @as([]const u8, "PARTIAL") else @as([]const u8, "sample"),
                         &std.fmt.bytesToHex(sa.pubkey.data, .lower),
                         &std.fmt.bytesToHex(voter_pubkey, .lower),
-                        credits_observed,
-                        ini_dbg,
-                        fin_dbg,
-                        eff_dbg,
-                        earned_dbg,
-                        sp.points,
+                        credits_observed, ini_dbg, fin_dbg, eff_dbg, earned_dbg, sp.points,
                     });
                 }
             }
@@ -3805,11 +3773,11 @@ pub const Bank = struct {
         });
         if (StakePtDump.on) {
             std.log.warn("[STAKEPT-AGG] rewarded_epoch={d} n_delegs={d} counted_rows={d} multirow_delegs={d} earned_total={d} pts_rewarded={d} pts_older={d} rows_older={d} pts_newer={d} rows_newer={d}", .{
-                StakePtDump.rewarded_epoch, StakePtDump.n_delegs,
-                StakePtDump.counted_rows,   StakePtDump.multirow_delegs,
-                StakePtDump.earned_total,   StakePtDump.pts_rewarded,
-                StakePtDump.pts_older,      StakePtDump.rows_older,
-                StakePtDump.pts_newer,      StakePtDump.rows_newer,
+                StakePtDump.rewarded_epoch,    StakePtDump.n_delegs,
+                StakePtDump.counted_rows,      StakePtDump.multirow_delegs,
+                StakePtDump.earned_total,      StakePtDump.pts_rewarded,
+                StakePtDump.pts_older,         StakePtDump.rows_older,
+                StakePtDump.pts_newer,         StakePtDump.rows_newer,
             });
             std.log.warn("[STAKEPT-SPLIT] pts_rew_normal(co==ini)={d} pts_rew_below(co<ini)={d} pts_rew_partial(ini<co<fin)={d} n_rew_partial={d}", .{
                 StakePtDump.pts_rew_normal, StakePtDump.pts_rew_below, StakePtDump.pts_rew_partial, StakePtDump.n_rew_partial,
@@ -3905,10 +3873,9 @@ pub const Bank = struct {
         // SysvarStakeHistory1111111111111111111111111
         // r36-fix-d: canonical SysvarStakeHistory1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u` — another instance of the
-        // never-hand-type-pubkey-bytes rule being violated (third documented
-        // case, after LRS_PUBKEY and the sysvar_cache.zig 8-placeholder
-        // constants). @prov:bank.sysvar-id-cross-check
+        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u`. CLAUDE.md Pitfall #3
+        // (third documented violation tonight after r35-fix LRS_PUBKEY +
+        // sysvar_cache.zig 8-placeholder constants). @prov:bank.sysvar-id-cross-check
         const SH_PUBKEY = Pubkey{ .data = .{
             0x06, 0xa7, 0xd5, 0x17, 0x19, 0x35, 0x84, 0xd0,
             0xfe, 0xed, 0x9b, 0xb3, 0x43, 0x1d, 0x13, 0x20,
@@ -4009,8 +3976,8 @@ pub const Bank = struct {
         // SysvarEpochRewards1111111111111111111111111
         // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5` — the same
-        // never-hand-type-pubkey-bytes pattern as r35-fix and the StakeHistory
+        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. CLAUDE.md Pitfall #3
+        // — same hand-typed-bytes-wrong pattern as r35-fix and the StakeHistory
         // constant fixed in this commit. @prov:bank.sysvar-id-cross-check
         const ER_PUBKEY = Pubkey{ .data = .{
             0x06, 0xa7, 0xd5, 0x17, 0x18, 0xdc, 0x3f, 0xee,
@@ -4301,8 +4268,8 @@ pub const Bank = struct {
     fn updateEpochRewardsDistributed(self: *Self) !void {
         // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5` — the same
-        // never-hand-type-pubkey-bytes pattern as r35-fix and the StakeHistory
+        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. CLAUDE.md Pitfall #3
+        // — same hand-typed-bytes-wrong pattern as r35-fix and the StakeHistory
         // constant fixed in this commit. @prov:bank.sysvar-id-cross-check
         const ER_PUBKEY = Pubkey{ .data = .{
             0x06, 0xa7, 0xd5, 0x17, 0x18, 0xdc, 0x3f, 0xee,
@@ -4374,8 +4341,8 @@ pub const Bank = struct {
     fn deactivateEpochRewardsSysvar(self: *Self) !void {
         // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5` — the same
-        // never-hand-type-pubkey-bytes pattern as r35-fix and the StakeHistory
+        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. CLAUDE.md Pitfall #3
+        // — same hand-typed-bytes-wrong pattern as r35-fix and the StakeHistory
         // constant fixed in this commit. @prov:bank.sysvar-id-cross-check
         const ER_PUBKEY = Pubkey{ .data = .{
             0x06, 0xa7, 0xd5, 0x17, 0x18, 0xdc, 0x3f, 0xee,
@@ -4629,6 +4596,7 @@ pub const Bank = struct {
         // Step 1: Update RecentBlockhashes sysvar (slot != 0, has entries)
         try self.updateRecentBlockhashes();
 
+
         // Step 2: Update SlotHistory sysvar (bitvec marking this slot present)
         try self.updateSlotHistory();
 
@@ -4726,11 +4694,11 @@ pub const Bank = struct {
             std.log.warn(
                 "[TOPVOTES-TRACE] freeze slot={d} pw_len={d} vote_inline={d} collect={d} collect_ovr={d} exec_entries={d} exec_ok={d} rolled_fail={d} rolled_tramp={d} flush_calls={d} no_acct={d} pre3={d} sig_called={d} mutate_fail={d} append_fail={d}",
                 .{
-                    self.slot,                self.pending_writes.items.len, tvt_vote_inline,
-                    self.tvt_vote_collect,    self.tvt_vote_collect_ovr,     self.tvt_vote_exec_entries,
-                    self.tvt_vote_exec_ok,    self.tvt_vote_rolled_fail,     self.tvt_vote_rolled_tramp,
-                    self.tvt_flush_calls,     self.tvt_vote_no_acct,         self.tvt_vote_pre3,
-                    self.tvt_vote_sig_called, self.tvt_vote_mutate_fail,     self.tvt_vote_append_fail,
+                    self.slot,                 self.pending_writes.items.len, tvt_vote_inline,
+                    self.tvt_vote_collect,     self.tvt_vote_collect_ovr,     self.tvt_vote_exec_entries,
+                    self.tvt_vote_exec_ok,     self.tvt_vote_rolled_fail,     self.tvt_vote_rolled_tramp,
+                    self.tvt_flush_calls,      self.tvt_vote_no_acct,         self.tvt_vote_pre3,
+                    self.tvt_vote_sig_called,  self.tvt_vote_mutate_fail,     self.tvt_vote_append_fail,
                 },
             );
             // [TOPVOTES-TRACE] ATOMIC die-point line (exact counts, race-free).
@@ -4738,32 +4706,19 @@ pub const Bank = struct {
                 "[TOPVOTES-TRACE] diepoint slot={d} sw={d} sd={d} ss={d} st={d} dsd={d} dwv={d} dsh={d} dbd={d} vrdb={d} vrov={d} vrarm={d} enter={d} build={d} rtc={d} rpre={d} rdup={d} rpdup={d} rmet={d} xin={d} xok={d} xoom={d} xsys={d} xoth={d} dfw={d} dfap={d} dfeq={d} dfaf={d}",
                 .{
                     self.slot,
-                    self.tvt2_site_worker.load(.monotonic),
-                    self.tvt2_site_dag.load(.monotonic),
-                    self.tvt2_site_serial.load(.monotonic),
-                    self.tvt2_site_tramp.load(.monotonic),
-                    self.tvt2_dag_from_serial_drain.load(.monotonic),
-                    self.tvt2_dag_from_wave.load(.monotonic),
-                    self.tvt2_dag_from_shadow.load(.monotonic),
-                    self.tvt2_dag_from_blockdag.load(.monotonic),
-                    self.tvt2_vread_db.load(.monotonic),
-                    self.tvt2_vread_overlay.load(.monotonic),
-                    self.tvt2_vread_ovr_armed.load(.monotonic),
-                    self.tvt2_enter.load(.monotonic),
-                    self.tvt2_build_done.load(.monotonic),
-                    self.tvt2_ret_tc.load(.monotonic),
-                    self.tvt2_ret_pre.load(.monotonic),
-                    self.tvt2_ret_dupe.load(.monotonic),
-                    self.tvt2_ret_pdupe.load(.monotonic),
-                    self.tvt2_ret_metas.load(.monotonic),
-                    self.tvt2_exec_enter.load(.monotonic),
-                    self.tvt2_exec_ok.load(.monotonic),
-                    self.tvt2_exec_err_oom.load(.monotonic),
-                    self.tvt2_exec_err_sysvar.load(.monotonic),
-                    self.tvt2_exec_err_other.load(.monotonic),
-                    self.tvt2_diff_writable.load(.monotonic),
-                    self.tvt2_diff_applied.load(.monotonic),
-                    self.tvt2_diff_skip_eq.load(.monotonic),
+                    self.tvt2_site_worker.load(.monotonic),         self.tvt2_site_dag.load(.monotonic),
+                    self.tvt2_site_serial.load(.monotonic),         self.tvt2_site_tramp.load(.monotonic),
+                    self.tvt2_dag_from_serial_drain.load(.monotonic), self.tvt2_dag_from_wave.load(.monotonic),
+                    self.tvt2_dag_from_shadow.load(.monotonic),     self.tvt2_dag_from_blockdag.load(.monotonic),
+                    self.tvt2_vread_db.load(.monotonic),            self.tvt2_vread_overlay.load(.monotonic),
+                    self.tvt2_vread_ovr_armed.load(.monotonic),     self.tvt2_enter.load(.monotonic),
+                    self.tvt2_build_done.load(.monotonic),          self.tvt2_ret_tc.load(.monotonic),
+                    self.tvt2_ret_pre.load(.monotonic),             self.tvt2_ret_dupe.load(.monotonic),
+                    self.tvt2_ret_pdupe.load(.monotonic),           self.tvt2_ret_metas.load(.monotonic),
+                    self.tvt2_exec_enter.load(.monotonic),          self.tvt2_exec_ok.load(.monotonic),
+                    self.tvt2_exec_err_oom.load(.monotonic),        self.tvt2_exec_err_sysvar.load(.monotonic),
+                    self.tvt2_exec_err_other.load(.monotonic),      self.tvt2_diff_writable.load(.monotonic),
+                    self.tvt2_diff_applied.load(.monotonic),        self.tvt2_diff_skip_eq.load(.monotonic),
                     self.tvt2_appfail.load(.monotonic),
                 },
             );
@@ -4935,7 +4890,7 @@ pub const Bank = struct {
         self.bank_hash = computeBankHash(
             &self.accounts_lthash,
             &self.parent_hash,
-            &self.poh_hash, // ← must be the last entry's PoH hash, NOT tx.recent_blockhash
+            &self.poh_hash,       // ← must be the last entry's PoH hash, NOT tx.recent_blockhash
             self.signature_count,
             hard_fork_buf,
         );
@@ -5003,7 +4958,7 @@ pub const Bank = struct {
                         const pk_hex = std.fmt.bytesToHex(w.pubkey.data, .lower);
                         const ow_hex = std.fmt.bytesToHex(w.owner.data, .lower);
                         // Skip SHA over w.data — by freeze time the slice may point to
-                        // freed/mmap'd memory (mmap is read-only; dupe before use). Emit data_len only;
+                        // freed/mmap'd memory (CLAUDE.md Pitfall #5). Emit data_len only;
                         // still identifies lamport diffs, missing/extra pubkeys, and
                         // data_len divergence. Data-byte diffs come from oracle-node's
                         // authoritative bank-file via per-account inspection if needed.
@@ -5022,14 +4977,10 @@ pub const Bank = struct {
         if (self.slot % 100 == 0) {
             std.log.debug("[HASH-CHECK] slot={d} local_hash={x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2} sigs={d} writes={d}\n", .{
                 self.slot,
-                self.bank_hash.data[0],
-                self.bank_hash.data[1],
-                self.bank_hash.data[2],
-                self.bank_hash.data[3],
-                self.bank_hash.data[4],
-                self.bank_hash.data[5],
-                self.bank_hash.data[6],
-                self.bank_hash.data[7],
+                self.bank_hash.data[0], self.bank_hash.data[1],
+                self.bank_hash.data[2], self.bank_hash.data[3],
+                self.bank_hash.data[4], self.bank_hash.data[5],
+                self.bank_hash.data[6], self.bank_hash.data[7],
                 self.signature_count,
                 self.pending_writes.items.len,
             });
@@ -5058,9 +5009,7 @@ test "accountLtHash: zero lamports → zero lthash" {
     const lt = Bank.accountLtHash(
         &([_]u8{1} ** 32),
         &([_]u8{0} ** 32),
-        0,
-        false,
-        &[_]u8{},
+        0, false, &[_]u8{},
     );
     for (lt.elements) |e| {
         try std.testing.expectEqual(@as(u16, 0), e);
@@ -5071,17 +5020,12 @@ test "accountLtHash: non-zero lamports → non-zero lthash" {
     const lt = Bank.accountLtHash(
         &([_]u8{1} ** 32),
         &([_]u8{0} ** 32),
-        1_000_000,
-        false,
-        &[_]u8{},
+        1_000_000, false, &[_]u8{},
     );
     // At least some elements should be non-zero
     var any_nonzero = false;
     for (lt.elements) |e| {
-        if (e != 0) {
-            any_nonzero = true;
-            break;
-        }
+        if (e != 0) { any_nonzero = true; break; }
     }
     try std.testing.expect(any_nonzero);
 }
@@ -5224,7 +5168,7 @@ test "EpochSchedule: isEpochBoundary detects boundaries (no-warmup fixture)" {
     const sched = NO_WARMUP_SCHED;
 
     // Boundaries
-    try std.testing.expect(sched.isEpochBoundary(0)); // Genesis
+    try std.testing.expect(sched.isEpochBoundary(0));       // Genesis
     try std.testing.expect(sched.isEpochBoundary(432_000)); // Epoch 1 start
     try std.testing.expect(sched.isEpochBoundary(864_000)); // Epoch 2 start
 
@@ -5266,8 +5210,8 @@ test "stake activation: bootstrap validator is immediately fully effective" {
     const status = Bank.getStakeActivationStatus(
         std.math.maxInt(u64), // activation_epoch = bootstrap sentinel
         std.math.maxInt(u64), // deactivation_epoch = never
-        1_000_000_000, // 1 SOL stake
-        100, // target_epoch
+        1_000_000_000,        // 1 SOL stake
+        100,                  // target_epoch
         &history,
         0, // nrae sentinel: always 9% (flat-rate test expectations)
     );
@@ -5317,10 +5261,10 @@ test "stake activation: warmup curve applies 9% rate per epoch" {
         .{ .epoch = 5, .effective = 10_000_000_000, .activating = 1_000_000_000, .deactivating = 0 },
     };
     const status = Bank.getStakeActivationStatus(
-        5, // activation_epoch
+        5,                    // activation_epoch
         std.math.maxInt(u64),
         stake,
-        6, // target_epoch = one epoch after activation
+        6,                    // target_epoch = one epoch after activation
         &history,
         0, // nrae sentinel: always 9% (flat-rate test expectations)
     );
@@ -5377,10 +5321,10 @@ test "stake deactivation: at deactivation epoch returns effective as deactivatin
     // Warmup loop: epoch 8, activating==0 → instant full activation → current_effective=1B
     // target_epoch(10) == deactivation_epoch(10) → return {effective:1B, deactivating:1B}
     const status = Bank.getStakeActivationStatus(
-        8, // activation_epoch
-        10, // deactivation_epoch
+        8,    // activation_epoch
+        10,   // deactivation_epoch
         stake,
-        10, // target_epoch == deactivation_epoch
+        10,   // target_epoch == deactivation_epoch
         &history,
         0, // nrae sentinel: always 9% (flat-rate test expectations)
     );
@@ -5401,9 +5345,9 @@ test "stake deactivation: cooldown decreases remaining each epoch" {
     };
     const status = Bank.getStakeActivationStatus(
         8,
-        10, // deactivation_epoch
+        10,   // deactivation_epoch
         stake,
-        11, // one epoch into cooldown
+        11,   // one epoch into cooldown
         &history,
         0, // nrae sentinel: always 9% (flat-rate test expectations)
     );
@@ -5451,7 +5395,7 @@ test "stake activation: mid-warmup null entry keeps partial accumulation" {
         5,
         std.math.maxInt(u64),
         stake,
-        7, // target = epoch 7, warmup_end = min(7, maxInt) = 7
+        7,   // target = epoch 7, warmup_end = min(7, maxInt) = 7
         &history,
         0, // nrae sentinel: always 9% (flat-rate test expectations)
     );
@@ -5471,7 +5415,7 @@ test "stake deactivation: missing deact_entry at deactivation epoch returns zero
         8,
         10,
         stake,
-        11, // past deactivation_epoch
+        11,   // past deactivation_epoch
         &history,
         0, // nrae sentinel: always 9% (flat-rate test expectations)
     );
@@ -5496,7 +5440,7 @@ test "stake deactivation: mid-cooldown null entry keeps remaining as-is" {
         8,
         10,
         stake,
-        13, // past the missing epoch
+        13,   // past the missing epoch
         &history2,
         0, // nrae sentinel: always 9% (flat-rate test expectations)
     );

@@ -730,9 +730,9 @@ test "M6: CPI handler stub returns M6_CpiHandlerNotReady" {
 }
 
 test "Wave6C2: crypto placeholders surface NAMED port-required errors (not silent stub)" {
-    // Only meaningful with the .unported bn254 backend (the pure-Zig implementation
-    // covers these syscalls for real — see test-bn254-poseidon — so the port-required
-    // stub errors no longer fire there). Skip rather than false-fail.
+    // Only meaningful with the .unported bn254 backend. Under -Dballet_bn254 these
+    // syscalls are the REAL FD impls (poseidon/alt_bn128 — covered by test-bn254-poseidon),
+    // so the port-required stub errors no longer fire. Skip rather than false-fail.
     if (vex_crypto.bn254.active_backend != .unported) return error.SkipZigTest;
     const h = try Harness.init(testing.allocator, 100_000);
     defer h.deinit();
@@ -1216,9 +1216,7 @@ test "FIX2: sol_big_mod_exp — agave stub: r0=1, ZERO CU consumed, output untou
         &h.ic,
         syscalls.nameHash("sol_big_mod_exp"),
         memory.MM_HEAP_START + 200,
-        0,
-        0,
-        0,
+        0, 0, 0,
         memory.MM_HEAP_START + 300,
     );
     try testing.expectEqual(@as(u64, 1), r);
@@ -1483,4 +1481,41 @@ test "M6: sol_secp256k1_recover rejects recovery_id > 1" {
         memory.MM_HEAP_START + 128,
         0,
     ));
+}
+
+// FIX (LANE-L-BACKPORT-AUDIT-2026-07-17 #2): G1/G2 compress() in
+// bn254/curve.zig do a bare @memcpy(out, input[0..N]) internally, which
+// PANICS (ReleaseSafe safety check: @memcpy requires disjoint src/dst) the
+// instant in_addr==out_addr -- a legitimate in-place-compress calling
+// pattern a real BPF program may use. Before this fix, this exact syscall
+// call shape crashed the entire validator process. bn254.active_backend is
+// unconditionally .pure_zig (bn254.zig:39, no stub gate), so this path is
+// live-reachable today, not merely a conformance-harness artifact.
+test "M6 alt_bn128_compression: G1 compress with in_addr==out_addr does not panic (LANE-L #2 regression)" {
+    const h = try Harness.init(testing.allocator, 100_000);
+    defer h.deinit();
+    var reg = try SyscallRegistry.init(testing.allocator, {}, {});
+    defer reg.deinit();
+
+    // (X=1, Y=2), big-endian, 32B || 32B. compress()'s fromBytesRaw only
+    // requires valid field elements (< p), not an on-curve point, so this
+    // trivial pair is sufficient to exercise the memcpy path.
+    @memset(h.heap_buf[0..64], 0);
+    h.heap_buf[31] = 1; // X = 1
+    h.heap_buf[63] = 2; // Y = 2
+
+    // op=0 == ALT_BN128_G1_COMPRESS_BE (private const in syscalls.zig).
+    const r0 = try reg.invoke(
+        &h.ic,
+        syscalls.nameHash("sol_alt_bn128_compression"),
+        0, // op = G1 compress, big-endian
+        memory.MM_HEAP_START, // in_addr
+        64, // in_len
+        memory.MM_HEAP_START, // out_addr == in_addr: the aliasing case
+        0,
+    );
+    try testing.expectEqual(@as(u64, 0), r0); // success (not a soft r0=1 fail)
+    // X survives unchanged in the compressed output (NEG flag, if any, is
+    // OR'd into byte 0 for big-endian, not byte 31 where X's low byte lives).
+    try testing.expectEqual(@as(u8, 1), h.heap_buf[31]);
 }

@@ -381,6 +381,20 @@ pub const InvokeContext = struct {
     /// FeatureSet) → no trailer, byte-identical to baseline. Set per-dispatch in
     /// v2_dispatch.zig; read by cpi.zig when it builds SerializeConfig for a CPI.
     direct_account_pointers_active: bool = false,
+    /// disable_zk_elgamal_proof_program / reenable_zk_elgamal_proof_program.
+    /// Verified against agave-4.2.0-beta.1-src/programs/zk-elgamal-proof/
+    /// src/lib.rs:172-181 (`declare_process_instruction!` entrypoint, the
+    /// FIRST thing it does, before even fetching `instruction_data`):
+    /// `if invoke_context.get_feature_set().disable_zk_elgamal_proof_program
+    /// && !invoke_context.get_feature_set().reenable_zk_elgamal_proof_program
+    /// { ic_msg!(...); return Err(InstructionError::InvalidInstructionData); }`
+    /// -- zero CU consumed (the macro's default charge is 0 and the gate
+    /// returns before any `consume_checked` call). Default false for both,
+    /// matching every other SIMD gate on this struct (pre-activation / no
+    /// live FeatureSet). Set per-dispatch in v2_dispatch.zig from the live
+    /// FeatureSet (same pattern as enable_bls12_381_syscall above).
+    disable_zk_elgamal_proof_program_active: bool = false,
+    reenable_zk_elgamal_proof_program_active: bool = false,
 
     /// (M6 RFC `RFC-invoke-ctx-syscall-bindings.md`) Active memory map for
     /// syscall pointer translation. `*anyopaque` to break the otherwise

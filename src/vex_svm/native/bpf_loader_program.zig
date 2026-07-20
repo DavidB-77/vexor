@@ -1,8 +1,8 @@
 //! BPFLoaderUpgradeable (loader-v3) native program — Vexor port.
 //!
 //! Canonical reference: Agave **4.1.0-beta.1** `programs/bpf_loader/src/lib.rs`
-//! (verified byte-identical to beta.2; this is the EXACT version our
-//! reference bank-hash oracle validator runs, so the state transitions here
+//! (verified byte-identical to beta.2; this is the EXACT version GOVNODE
+//! 38.92.24.174 runs — our bank_hash oracle — so the state transitions here
 //! match the cluster we replay against). Portable Zig cross-check:
 //! `sig/src/runtime/program/bpf_loader/execute.zig` (executeV3Write etc).
 //!

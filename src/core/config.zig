@@ -247,10 +247,20 @@ pub const Config = struct {
 
             if (std.mem.startsWith(u8, arg, "--enable-feature=")) {
                 const feature = arg["--enable-feature=".len..];
-                if (std.mem.eql(u8, feature, "af_xdp")) config.enable_af_xdp = true else if (std.mem.eql(u8, feature, "gpu")) config.enable_gpu = true else if (std.mem.eql(u8, feature, "ramdisk")) config.enable_ramdisk = true else if (std.mem.eql(u8, feature, "auto_optimize")) config.enable_auto_optimize = true else if (std.mem.eql(u8, feature, "quic")) config.enable_quic = true else if (std.mem.eql(u8, feature, "io_uring")) config.enable_io_uring = true;
+                if (std.mem.eql(u8, feature, "af_xdp")) config.enable_af_xdp = true
+                else if (std.mem.eql(u8, feature, "gpu")) config.enable_gpu = true
+                else if (std.mem.eql(u8, feature, "ramdisk")) config.enable_ramdisk = true
+                else if (std.mem.eql(u8, feature, "auto_optimize")) config.enable_auto_optimize = true
+                else if (std.mem.eql(u8, feature, "quic")) config.enable_quic = true
+                else if (std.mem.eql(u8, feature, "io_uring")) config.enable_io_uring = true;
             } else if (std.mem.startsWith(u8, arg, "--disable-feature=")) {
                 const feature = arg["--disable-feature=".len..];
-                if (std.mem.eql(u8, feature, "af_xdp")) config.enable_af_xdp = false else if (std.mem.eql(u8, feature, "gpu")) config.enable_gpu = false else if (std.mem.eql(u8, feature, "ramdisk")) config.enable_ramdisk = false else if (std.mem.eql(u8, feature, "auto_optimize")) config.enable_auto_optimize = false else if (std.mem.eql(u8, feature, "quic")) config.enable_quic = false else if (std.mem.eql(u8, feature, "io_uring")) config.enable_io_uring = false;
+                if (std.mem.eql(u8, feature, "af_xdp")) config.enable_af_xdp = false
+                else if (std.mem.eql(u8, feature, "gpu")) config.enable_gpu = false
+                else if (std.mem.eql(u8, feature, "ramdisk")) config.enable_ramdisk = false
+                else if (std.mem.eql(u8, feature, "auto_optimize")) config.enable_auto_optimize = false
+                else if (std.mem.eql(u8, feature, "quic")) config.enable_quic = false
+                else if (std.mem.eql(u8, feature, "io_uring")) config.enable_io_uring = false;
             } else if (std.mem.eql(u8, arg, "--identity")) {
                 i += 1;
                 if (i >= args.len) return error.MissingArgument;

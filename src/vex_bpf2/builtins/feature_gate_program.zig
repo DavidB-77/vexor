@@ -191,8 +191,8 @@ pub fn execute(ctx: *InvokeContext, ix_data: []const u8) Error!void {
 
 pub fn selfTest() bool {
     if (COMPUTE_UNITS != 1_500) return false;
-    // Program id must decode to the canonical on-chain bytes: never trust a
-    // hand-typed / mis-counted base58 constant.
+    // Program id must decode to the canonical on-chain bytes (CLAUDE.md
+    // pitfall #3: never trust a hand-typed / mis-counted base58).
     const EXPECT_ID = [_]u8{
         0x03, 0xc0, 0xa0, 0xcd, 0xcb, 0x06, 0xd2, 0xda,
         0xef, 0xae, 0x82, 0xd1, 0x6f, 0xee, 0x7a, 0xcf,

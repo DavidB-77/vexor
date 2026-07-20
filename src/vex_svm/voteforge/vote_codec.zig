@@ -215,6 +215,40 @@ fn parseTail(r: *Reader) CodecError!Tail {
     return t;
 }
 
+/// Identical wire shape to `parseTail` (votes / root_slot / authorized_voters)
+/// EXCEPT `votes` is `VecDeque<Lockout>` (V1_14_11 / V0_23_5 legacy layout),
+/// NOT `VecDeque<LandedVote>` — i.e. NO per-vote `latency: u8` byte. Each bare
+/// `Lockout` is stored into the shared `Tail.votes: [_]LandedVote` with
+/// `latency = 0`, exactly matching Agave's `landed_votes_from_lockouts`
+/// migration (`Lockout::into()` defaults latency to 0). @prov:voteforge.wire-format
+/// — `solana-vote-interface` `vote_state_1_14_11.rs` +
+/// `vote_state_deserialize.rs::deserialize_vote_state_into_v1_14_11`
+/// (`read_votes_as_lockouts`, 12B/entry: slot:u64, confirmation_count:u32).
+fn parseTailNoLatency(r: *Reader) CodecError!Tail {
+    var t: Tail = Tail.EMPTY;
+
+    const n_votes = try r.u64v();
+    if (n_votes > MAX_LOCKOUT_HISTORY) return error.InvalidAccountData;
+    t.votes_len = @intCast(n_votes);
+    for (0..t.votes_len) |i| {
+        t.votes[i] = .{
+            .latency = 0,
+            .lockout = .{ .slot = try r.u64v(), .confirmation_count = try r.u32v() },
+        };
+    }
+
+    t.root_slot = if (try r.optFlag()) try r.u64v() else null;
+
+    const n_av = try r.u64v();
+    if (n_av > MAX_AUTHORIZED_VOTERS) return error.InvalidAccountData;
+    t.authorized_voters_len = @intCast(n_av);
+    for (0..t.authorized_voters_len) |i| {
+        t.authorized_voters[i] = .{ .epoch = try r.u64v(), .pubkey = (try r.bytes(32)).* };
+    }
+
+    return t;
+}
+
 fn parseTailCreditsAndTs(r: *Reader, t: *Tail) CodecError!void {
     const n_ec = try r.u64v();
     if (n_ec > MAX_EPOCH_CREDITS_HISTORY) return error.InvalidAccountData;
@@ -369,6 +403,45 @@ pub const VoteStateV3 = struct {
     }
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// V1_14_11 (version tag 1). @prov:voteforge.wire-format — SAME field order and
+// fixed offsets as `VoteStateV3` (node_pubkey, authorized_withdrawer,
+// commission(u8), votes, root_slot, authorized_voters, prior_voters(opaque
+// 1545B CircBuf blob), epoch_credits, last_timestamp) with ONE wire difference:
+// `votes` is `VecDeque<Lockout>` (12B/entry, NO per-vote latency byte), NOT
+// `VecDeque<LandedVote>`. Spec: `solana-vote-interface-6.0.0`
+// `state/vote_state_1_14_11.rs` (struct field order, byte-identical to the
+// 6.0.2 pinned by `agave-4.2.0-beta.1-src/Cargo.lock`) +
+// `vote_state_deserialize.rs::deserialize_vote_state_into_v1_14_11`. The
+// prior_voters CircBuf is the SAME 1545B `CircBuf<(Pubkey,Epoch,Epoch)>` shape
+// V3 uses (not V0_23_5's differently-shaped local CircBuf). Kept OPAQUE and
+// DROPPED on migration to V4, exactly as V3's is.
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const VoteState1_14_11 = struct {
+    node_pubkey: [32]u8,
+    authorized_withdrawer: [32]u8,
+    commission: u8,
+    /// Opaque prior_voters CircBuf image (see PRIOR_VOTERS_BLOB_LEN doc).
+    prior_voters_blob: [PRIOR_VOTERS_BLOB_LEN]u8,
+    tail: Tail,
+
+    pub fn parse(data: []const u8) CodecError!struct { state: VoteState1_14_11, consumed: usize } {
+        var r = Reader{ .buf = data };
+        if (try r.u32v() != VERSION_TAG_V1_14_11) return error.InvalidAccountData;
+
+        var s: VoteState1_14_11 = undefined;
+        s.node_pubkey = (try r.bytes(32)).*;
+        s.authorized_withdrawer = (try r.bytes(32)).*;
+        s.commission = try r.u8v();
+
+        s.tail = try parseTailNoLatency(&r);
+        s.prior_voters_blob = (try r.bytes(PRIOR_VOTERS_BLOB_LEN)).*;
+        try parseTailCreditsAndTs(&r, &s.tail);
+        return .{ .state = s, .consumed = r.off };
+    }
+};
+
 /// Read just the version tag (cheap dispatch for callers).
 pub fn versionTag(data: []const u8) CodecError!u32 {
     if (data.len < 4) return error.InvalidAccountData;
@@ -383,16 +456,42 @@ pub fn versionTag(data: []const u8) CodecError!u32 {
 // dropped). Pure function, no allocation.
 // ─────────────────────────────────────────────────────────────────────────────
 
-pub fn migrateV3ToV4(v3: *const VoteStateV3, vote_account_pubkey: [32]u8) VoteStateV4 {
+/// Shared V3 / V1_14_11 -> V4 migration body. Both Agave call sites
+/// (`handler.rs::try_convert_to_vote_state_v4`'s `V3` and `V1_14_11` arms,
+/// `agave-4.2.0-beta.1-src` lines 630-658) build the identical V4 shape off
+/// `node_pubkey`/`authorized_withdrawer`/`commission`/tail-shaped fields —
+/// unified here rather than duplicated. For V1_14_11 the `votes` are already in
+/// LandedVote{latency:0,..} shape because `parseTailNoLatency` stored them that
+/// way at parse time (matching Agave's `landed_votes_from_lockouts`).
+fn migrateLegacyToV4(
+    node_pubkey: [32]u8,
+    authorized_withdrawer: [32]u8,
+    commission: u8,
+    tail: Tail,
+    vote_account_pubkey: [32]u8,
+) VoteStateV4 {
     return .{
-        .node_pubkey = v3.node_pubkey,
-        .authorized_withdrawer = v3.authorized_withdrawer,
+        .node_pubkey = node_pubkey,
+        .authorized_withdrawer = authorized_withdrawer,
         .inflation_rewards_collector = vote_account_pubkey,
-        .block_revenue_collector = v3.node_pubkey,
-        .inflation_rewards_commission_bps = @as(u16, v3.commission) * 100,
+        .block_revenue_collector = node_pubkey,
+        .inflation_rewards_commission_bps = @as(u16, commission) * 100,
         .block_revenue_commission_bps = 10_000,
         .pending_delegator_rewards = 0,
         .bls_pubkey_compressed = null,
-        .tail = v3.tail,
+        .tail = tail,
     };
+}
+
+pub fn migrateV3ToV4(v3: *const VoteStateV3, vote_account_pubkey: [32]u8) VoteStateV4 {
+    return migrateLegacyToV4(v3.node_pubkey, v3.authorized_withdrawer, v3.commission, v3.tail, vote_account_pubkey);
+}
+
+/// [agave] `handler.rs::try_convert_to_vote_state_v4`'s `V1_14_11` arm
+/// (`agave-4.2.0-beta.1-src` lines 630-644): `votes:
+/// landed_votes_from_lockouts(state.votes)` — each bare `Lockout` becomes
+/// `LandedVote{ latency: 0, lockout }`. `parseTailNoLatency` already stored
+/// `latency: 0` per entry, so `v1.tail` is already in that shape.
+pub fn migrateV1_14_11ToV4(v1: *const VoteState1_14_11, vote_account_pubkey: [32]u8) VoteStateV4 {
+    return migrateLegacyToV4(v1.node_pubkey, v1.authorized_withdrawer, v1.commission, v1.tail, vote_account_pubkey);
 }

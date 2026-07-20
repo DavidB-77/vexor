@@ -255,6 +255,7 @@ fn defaultExecCtx() vi.ExecContext {
         .leader_schedule_epoch = 10,
         .epoch_schedule = .{ .slots_per_epoch = 432_000, .leader_schedule_slot_offset = 432_000, .warmup = false, .first_normal_epoch = 0, .first_normal_slot = 0 },
         .features = .{},
+        .alloc = std.testing.allocator,
     };
 }
 

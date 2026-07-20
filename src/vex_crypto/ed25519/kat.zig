@@ -186,3 +186,4 @@ test "MATRIX: consensus vs strict vs lenient verdicts are pinned (fork-class reg
     }
     std.debug.print("[KAT c] 3-way semantic matrix: {d} vectors pinned (consensus/strict/lenient)\n", .{matrix.len});
 }
+

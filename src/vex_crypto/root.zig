@@ -7,10 +7,9 @@ pub const secp256r1 = @import("secp256r1.zig");
 // ITEM K: BLAKE3 wrapper with comptime stdlib/Ballet AVX-512 dispatch.
 // Used by bank.zig:accountLtHash (the ~3.7pp hot path).
 pub const blake3 = @import("blake3.zig");
-// Phase 2 (2026-06-19): BN254 (alt_bn128) group ops + compression + Poseidon.
-// Originally gated behind a Firedancer ballet leaf-crypto FFI flag during
-// development; that FFI backend was removed 2026-07-12 — this is Vexor's own
-// pure-Zig implementation unconditionally.
+// Phase 2 (2026-06-19): BN254 (alt_bn128) group ops + compression + Poseidon
+// via Firedancer ballet leaf-crypto FFI under `-Dballet_bn254`. Default
+// `.unported` (no archive linked → RequiresBalletBn254 error → instant revert).
 pub const bn254 = @import("bn254.zig");
 // BLS12-381 syscall ops (SIMD-0388) via the vendored blst C (same as bls_pop).
 // blstrs-faithful wrappers for sol_curve_* BLS arms. blst C is linked once via

@@ -38,8 +38,8 @@ var _mode: BpfStackMode = .v1;
 var _locked: bool = false;
 
 /// Optional override path for the shadow log. Default is
-/// `/tmp/vex-fd-shadow.log`. Set via `--bpf-stack-shadow-log=<path>`.
-var _shadow_log_path: []const u8 = "/tmp/vex-fd-shadow.log";
+/// `vex-fd-shadow.log`. Set via `--bpf-stack-shadow-log=<path>`.
+var _shadow_log_path: []const u8 = "/home/davidb/vex-fd-shadow.log";
 
 pub fn current() BpfStackMode {
     return _mode;
@@ -109,5 +109,5 @@ test "dispatch_mode: setShadowLogPath updates path" {
     setShadowLogPath("/tmp/test-shadow.log");
     try std.testing.expectEqualStrings("/tmp/test-shadow.log", shadowLogPath());
     // Restore default for any later tests.
-    setShadowLogPath("/tmp/vex-fd-shadow.log");
+    setShadowLogPath("/home/davidb/vex-fd-shadow.log");
 }

@@ -316,7 +316,9 @@ pub const ElfLoader = struct {
                     text_section = sh;
                 } else if (sh.sh_type == SHT_SYMTAB) {
                     symtab_section = sh;
-                } else if (sh.sh_type == SHT_STRTAB and !std.mem.eql(u8, name, ".shstrtab") and !std.mem.eql(u8, name, ".dynstr")) {
+                } else if (sh.sh_type == SHT_STRTAB
+                           and !std.mem.eql(u8, name, ".shstrtab")
+                           and !std.mem.eql(u8, name, ".dynstr")) {
                     // r71-fix-10 (2026-04-28): exclude `.dynstr` from generic
                     // SHT_STRTAB capture. Without this exclusion the else-if
                     // chain assigned `.dynstr` to `strtab_section` (because it
@@ -419,7 +421,9 @@ pub const ElfLoader = struct {
                 // For STT_FUNC inside .text → register PC and patch imm with the
                 // hash key. For external syscalls → patch imm with the murmur3
                 // hash so syscalls.get(imm) hits at runtime.
-                const is_func_in_text = (sym.st_info & 0x0f) == 2 and sym.st_value != 0 and sym.st_value >= text.sh_addr and sym.st_value < text.sh_addr + text.sh_size;
+                const is_func_in_text = (sym.st_info & 0x0f) == 2 and sym.st_value != 0
+                    and sym.st_value >= text.sh_addr
+                    and sym.st_value < text.sh_addr + text.sh_size;
 
                 const hash: u32 = if (is_func_in_text) blk: {
                     const target_pc = (sym.st_value - text.sh_addr) / 8;
@@ -478,40 +482,25 @@ pub const ElfLoader = struct {
                     // In-text: split LDDW imm fields (low @+4, high @+12).
                     // Out-of-text: 64-bit value at r_offset gets RODATA_START added.
                     const target_vaddr = rel.r_offset;
-                    if (target_vaddr < base_vaddr) {
-                        rel_type8_skipped_below_base += 1;
-                        continue;
-                    }
+                    if (target_vaddr < base_vaddr) { rel_type8_skipped_below_base += 1; continue; }
                     const buf_off = target_vaddr - base_vaddr;
                     const in_text = (target_vaddr >= text_v_start and target_vaddr < text_v_end);
                     if (in_text) {
                         const lo_off = buf_off + 4;
                         const hi_off = buf_off + 12;
-                        if (hi_off + 4 > combined_size) {
-                            rel_type8_skipped_oob += 1;
-                            continue;
-                        }
+                        if (hi_off + 4 > combined_size) { rel_type8_skipped_oob += 1; continue; }
                         const va_lo = std.mem.readInt(u32, combined[lo_off..][0..4], .little);
                         const va_hi = std.mem.readInt(u32, combined[hi_off..][0..4], .little);
                         var addr: u64 = (@as(u64, va_hi) << 32) | @as(u64, va_lo);
-                        if (addr == 0) {
-                            rel_type8_skipped_zero += 1;
-                            continue;
-                        }
+                        if (addr == 0) { rel_type8_skipped_zero += 1; continue; }
                         if (addr < VM_RODATA_START_RELOC) addr += VM_RODATA_START_RELOC;
                         std.mem.writeInt(u32, combined[lo_off..][0..4], @truncate(addr & 0xffffffff), .little);
                         std.mem.writeInt(u32, combined[hi_off..][0..4], @truncate(addr >> 32), .little);
                         rel_type8_applied_in_text += 1;
                     } else {
                         const imm_off = buf_off + 4;
-                        if (imm_off + 4 > combined_size) {
-                            rel_type8_skipped_oob += 1;
-                            continue;
-                        }
-                        if (buf_off + 8 > combined_size) {
-                            rel_type8_skipped_oob += 1;
-                            continue;
-                        }
+                        if (imm_off + 4 > combined_size) { rel_type8_skipped_oob += 1; continue; }
+                        if (buf_off + 8 > combined_size) { rel_type8_skipped_oob += 1; continue; }
                         const v = std.mem.readInt(u32, combined[imm_off..][0..4], .little);
                         const addr: u64 = VM_RODATA_START_RELOC + @as(u64, v);
                         std.mem.writeInt(u64, combined[buf_off..][0..8], addr, .little);
@@ -534,7 +523,9 @@ pub const ElfLoader = struct {
                 const buf_off = target_vaddr - base_vaddr;
                 if (buf_off + 8 > combined_size) continue;
 
-                const is_func_in_text = (sym.st_info & 0x0f) == 2 and sym.st_value != 0 and sym.st_value >= text.sh_addr and sym.st_value < text.sh_addr + text.sh_size;
+                const is_func_in_text = (sym.st_info & 0x0f) == 2 and sym.st_value != 0
+                    and sym.st_value >= text.sh_addr
+                    and sym.st_value < text.sh_addr + text.sh_size;
 
                 const hash: u32 = if (is_func_in_text) blk: {
                     const target_pc = (sym.st_value - text.sh_addr) / 8;
@@ -548,9 +539,9 @@ pub const ElfLoader = struct {
 
             // r75-bug-class-b-probe-2026-05-06: log relocation pass effectiveness
             std.log.warn("[BPF-RELOC] type8_seen={d} applied_in_text={d} applied_out_text={d} skipped_zero={d} skipped_oob={d} skipped_below_base={d} total_iter={d} rel_count={d}", .{
-                rel_type8_seen,         rel_type8_applied_in_text, rel_type8_applied_out_text,
-                rel_type8_skipped_zero, rel_type8_skipped_oob,     rel_type8_skipped_below_base,
-                rel_total,              rel_count,
+                rel_type8_seen, rel_type8_applied_in_text, rel_type8_applied_out_text,
+                rel_type8_skipped_zero, rel_type8_skipped_oob, rel_type8_skipped_below_base,
+                rel_total, rel_count,
             });
         }
 
@@ -612,15 +603,15 @@ pub const ElfLoader = struct {
         const rodata_vaddr_v: u64 = VM_RODATA_START + base_vaddr;
 
         return LoadedProgram{
-            .rodata_combined = combined,
-            .text_offset = text_offset,
-            .text_size = text_size,
-            .entry_pc = entry_pc,
-            .sbpf_version = parseSbpfVersionFromEflags(header.e_flags),
-            .rodata_vaddr = rodata_vaddr_v,
-            .symbols = symbols,
+            .rodata_combined   = combined,
+            .text_offset       = text_offset,
+            .text_size         = text_size,
+            .entry_pc          = entry_pc,
+            .sbpf_version      = parseSbpfVersionFromEflags(header.e_flags),
+            .rodata_vaddr      = rodata_vaddr_v,
+            .symbols           = symbols,
             .function_registry = function_registry,
-            .allocator = self.allocator,
+            .allocator         = self.allocator,
         };
     }
 
@@ -691,3 +682,4 @@ test "ElfLoader: reject wrong class" {
     const result = loader.load(&bad_data);
     try std.testing.expectError(ElfError.InvalidClass, result);
 }
+

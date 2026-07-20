@@ -120,10 +120,23 @@ test "vex-152m: gapped — every frame OK, every gap rejects" {
         try T.expectEqual(@as(u8, 0xCC), s[0]);
         _ = try r.translate(frame_addr, 4, .store);
 
-        // Crossing into the gap mid-access rejects.
-        try T.expectError(AccessError.AccessViolation, r.translate(frame_addr + 2, 4, .load));
+        // Canonical (agave memory_region.rs:109-134 / FD fd_vm_private.h:442-489,
+        // proven by conformance fixture memcpy/..._1443524.fix): an access that
+        // STARTS in a live frame and runs past the frame boundary is NOT rejected
+        // for crossing the VM gap — it reads the compacted (contiguous) host
+        // bytes — as long as the compacted end stays within the physical buffer.
+        // It rejects ONLY when the compacted end exceeds host.len, which is the
+        // case for the last frame here (host_off 14 + 4 > 16). Backport of the
+        // guard removal in zbpf 3451e50 (2026-07-18).
+        if (frame < 3) {
+            const cross = try r.translate(frame_addr + 2, 4, .load);
+            try T.expectEqual(@as(u64, 4), cross.len);
+        } else {
+            try T.expectError(AccessError.AccessViolation, r.translate(frame_addr + 2, 4, .load));
+        }
 
-        // Anywhere inside the gap rejects (load or store).
+        // A start address INSIDE a gap is still rejected (this branch is
+        // untouched by the fix — off_in_stride >= frame_size).
         try T.expectError(AccessError.AccessViolation, r.translate(gap_addr, 1, .load));
         try T.expectError(AccessError.AccessViolation, r.translate(gap_addr + 3, 1, .store));
     }
@@ -525,7 +538,7 @@ test "CARRIER 420364332 POST-fix: tx-global idx (indices[0]=2) grows the MINT" {
 // MAX_ACCOUNT_DATA_GROWTH_PER_TRANSACTION (20 MiB). A create(10240)+realloc tx
 // consumed the whole 10240 budget at creation, then every subsequent realloc was
 // refused → the account stuck at 10240 and the tx silently produced a divergent
-// bank state (RCA'd 2026-07-14).
+// bank state. See forensics/rewards-rca/HISTORY-TX-RCA-2026-07-14.md.
 
 test "constants: MAX_ACCOUNT_DATA_GROWTH_PER_TRANSACTION == 20 MiB (not 10240)" {
     // Pins the fix: the per-tx budget must be 20 MiB, distinct from the

@@ -20,19 +20,19 @@ const snapshot_writer = @import("snapshot_writer.zig");
 /// Real testnet incrementals are tens of MB; fulls are GB. 1 MB is conservative
 /// enough to leave headroom while still catching the recurring HTTP-200-with-empty-body
 /// failure mode where curl exits 0 but the server returned 0 bytes.
+/// See bf8bdc98 fix doc: vault/SNAPSHOT_DOWNLOAD_GUARD_FIX_2026_05_05.md
 pub const MIN_SNAPSHOT_DOWNLOAD_BYTES: u64 = 1 * 1024 * 1024;
 
-/// Key/endpoint isolation: hosts Vexor must NEVER fetch a snapshot from.
-/// If an operator runs a second, independently-operated validator identity
-/// co-located on the same machine (e.g. a reference/oracle node used for
-/// bank-hash cross-checks), pulling a snapshot — or even a peer list — from
-/// it would cross-pollinate consensus-affecting state between the two
-/// validators. Empty by default: a public build has no such co-located node
-/// to protect against. Operators who do run one set it via
-/// `VEXOR_SNAPSHOT_DENY_HOSTS` (comma-separated host list, no ports) — see
-/// `isDeniedSnapshotHost` below. We deny the HOST (all ports), which is
-/// stricter than denying a specific port pair.
-pub const GOVNODE_DENY_HOSTS = [_][]const u8{};
+/// RULE #1 (key/endpoint isolation): hosts Vexor must NEVER fetch a snapshot
+/// from. The host at 38.92.24.174 is the co-located Agave "oracle-node" validator
+/// (separate identity, 9F-prefix keys). Pulling a snapshot — or even a peer
+/// list — from it would cross-pollinate consensus-affecting state between two
+/// independently-operated validators on the same machine. This has happened
+/// before; that is why the rule exists. See CLAUDE.md RULE #1. We deny the
+/// HOST (all ports), which is stricter than the documented :8899/:8800 pair.
+pub const GOVNODE_DENY_HOSTS = [_][]const u8{
+    "38.92.24.174",
+};
 
 /// Extract the bare host from a snapshot endpoint/peer address. Accepts any of:
 ///   "https://api.testnet.solana.com"      -> "api.testnet.solana.com"
@@ -52,95 +52,70 @@ pub fn extractHostFromAddr(addr: []const u8) []const u8 {
     return s;
 }
 
-/// True if `host` (already extracted, no scheme/path/port) is in `deny_list`.
-/// Matches the full host token exactly (NOT a substring), so a deny-listed
-/// a deny-listed "10.0.0.5" does not also match "110.0.0.5". Pure/allocation-free —
-/// this is what the unit tests below exercise directly.
-pub fn isDeniedHostInList(host: []const u8, deny_list: []const []const u8) bool {
-    for (deny_list) |denied| {
+/// True if `addr`'s host is on the RULE #1 deny-list. Matches the full host
+/// token exactly (NOT a substring) so "138.92.24.174" does not match
+/// "38.92.24.174".
+pub fn isDeniedSnapshotHost(addr: []const u8) bool {
+    const host = extractHostFromAddr(addr);
+    for (GOVNODE_DENY_HOSTS) |denied| {
         if (std.mem.eql(u8, host, denied)) return true;
     }
     return false;
 }
 
-/// True if `addr`'s host is on the deny-list: the compiled-in
-/// `GOVNODE_DENY_HOSTS` (empty by default) plus any hosts an operator has
-/// added via the `VEXOR_SNAPSHOT_DENY_HOSTS` env var (comma-separated, no
-/// ports, e.g. "10.0.0.5,10.0.0.6").
-pub fn isDeniedSnapshotHost(addr: []const u8) bool {
-    const host = extractHostFromAddr(addr);
-    if (isDeniedHostInList(host, &GOVNODE_DENY_HOSTS)) return true;
-
-    const raw = std.process.getEnvVarOwned(std.heap.page_allocator, "VEXOR_SNAPSHOT_DENY_HOSTS") catch return false;
-    defer std.heap.page_allocator.free(raw);
-    var it = std.mem.tokenizeScalar(u8, raw, ',');
-    while (it.next()) |denied| {
-        if (std.mem.eql(u8, host, std.mem.trim(u8, denied, " \t"))) return true;
-    }
-    return false;
-}
-
-test "snapshot deny-list: denied host blocked, substring trap allowed" {
+test "RULE#1 snapshot deny-list: govnode host blocked, substring trap allowed" {
     // Host extraction across every form a seed / getClusterNodes "rpc" can take.
     try std.testing.expectEqualStrings("api.testnet.solana.com", extractHostFromAddr("https://api.testnet.solana.com"));
     try std.testing.expectEqualStrings("1.2.3.4", extractHostFromAddr("http://1.2.3.4:8899/snapshot.tar.zst"));
-    try std.testing.expectEqualStrings("203.0.113.10", extractHostFromAddr("203.0.113.10:8899")); // getClusterNodes "rpc" form
+    try std.testing.expectEqualStrings("38.92.24.174", extractHostFromAddr("38.92.24.174:8899")); // getClusterNodes "rpc" form
 
-    // A test-only deny-list (RFC 5737 TEST-NET-3 address — not a real host).
-    const test_deny = [_][]const u8{"203.0.113.10"};
-
-    // DENIED: every scheme/port of the denied host.
-    try std.testing.expect(isDeniedHostInList(extractHostFromAddr("203.0.113.10"), &test_deny));
-    try std.testing.expect(isDeniedHostInList(extractHostFromAddr("203.0.113.10:8899"), &test_deny)); // RPC
-    try std.testing.expect(isDeniedHostInList(extractHostFromAddr("203.0.113.10:8800"), &test_deny)); // gossip
-    try std.testing.expect(isDeniedHostInList(extractHostFromAddr("http://203.0.113.10:8899/snapshot-1-a.tar.zst"), &test_deny));
+    // DENIED: every scheme/port of the oracle-node host.
+    try std.testing.expect(isDeniedSnapshotHost("38.92.24.174"));
+    try std.testing.expect(isDeniedSnapshotHost("38.92.24.174:8899")); // RPC
+    try std.testing.expect(isDeniedSnapshotHost("38.92.24.174:8800")); // gossip
+    try std.testing.expect(isDeniedSnapshotHost("http://38.92.24.174:8899/snapshot-1-a.tar.zst"));
 
     // ALLOWED: the substring trap + legitimate peers (host-exact match, not substring).
-    try std.testing.expect(!isDeniedHostInList(extractHostFromAddr("1203.0.113.10:8899"), &test_deny));
-    try std.testing.expect(!isDeniedHostInList(extractHostFromAddr("203.0.113.100:8899"), &test_deny));
-    try std.testing.expect(!isDeniedHostInList(extractHostFromAddr("https://api.testnet.solana.com"), &test_deny));
-    try std.testing.expect(!isDeniedHostInList(extractHostFromAddr("http://198.51.100.23:8899"), &test_deny));
-
-    // Compiled-in default is empty: nothing is denied absent an env override.
-    try std.testing.expect(!isDeniedSnapshotHost("203.0.113.10"));
+    try std.testing.expect(!isDeniedSnapshotHost("138.92.24.174:8899"));
+    try std.testing.expect(!isDeniedSnapshotHost("38.92.24.1740:8899"));
+    try std.testing.expect(!isDeniedSnapshotHost("https://api.testnet.solana.com"));
+    try std.testing.expect(!isDeniedSnapshotHost("http://64.130.37.162:8899"));
 }
 
-test "deny-list filters a denied host out of a getClusterNodes response (wiring)" {
+test "RULE#1 deny-list filters govnode out of a getClusterNodes response (wiring)" {
     // Exercises the EXACT extraction + skip the peer loops use
     // (discoverSnapshotPairFromCluster / findIncrementalAcrossPeers), over a
-    // realistic payload: a null-rpc node (not matched by the pattern), the
-    // denied host (must be skipped), a substring-trap host + two legit peers
-    // (must survive).
+    // realistic payload: a null-rpc node (not matched by the pattern), the oracle-node
+    // (must be skipped), a substring-trap host + two legit peers (must survive).
     const response =
         \\{"jsonrpc":"2.0","result":[
         \\{"pubkey":"A","rpc":null,"gossip":"1.1.1.1:8001"},
-        \\{"pubkey":"DENIED","rpc":"203.0.113.10:8899","gossip":"203.0.113.10:8800"},
-        \\{"pubkey":"TRAP","rpc":"1203.0.113.10:8899"},
-        \\{"pubkey":"P1","rpc":"198.51.100.23:8899"},
+        \\{"pubkey":"GOV","rpc":"38.92.24.174:8899","gossip":"38.92.24.174:8800"},
+        \\{"pubkey":"TRAP","rpc":"138.92.24.174:8899"},
+        \\{"pubkey":"P1","rpc":"64.130.37.162:8899"},
         \\{"pubkey":"P2","rpc":"5.6.7.8:8899"}
         \\],"id":1}
     ;
-    const test_deny = [_][]const u8{"203.0.113.10"};
     var kept = std.ArrayListUnmanaged([]const u8){};
     defer kept.deinit(std.testing.allocator);
     var pos: usize = 0;
-    var denied_seen = false;
+    var govnode_seen = false;
     while (std.mem.indexOf(u8, response[pos..], "\"rpc\":\"")) |idx| {
         const start = pos + idx + 7;
         const end = std.mem.indexOf(u8, response[start..], "\"") orelse break;
         const rpc_addr = response[start .. start + end];
         pos = start + end; // advance BEFORE any skip — no infinite loop / mis-advance
         if (rpc_addr.len == 0 or std.mem.eql(u8, rpc_addr, "null")) continue;
-        if (isDeniedHostInList(extractHostFromAddr(rpc_addr), &test_deny)) {
-            denied_seen = true;
+        if (isDeniedSnapshotHost(rpc_addr)) {
+            govnode_seen = true;
             continue; // the peer-loop deny skip
         }
         try kept.append(std.testing.allocator, rpc_addr);
     }
-    try std.testing.expect(denied_seen); // denied host WAS present in the blob…
-    for (kept.items) |a| try std.testing.expect(!std.mem.eql(u8, a, "203.0.113.10:8899")); // …and filtered out
+    try std.testing.expect(govnode_seen); // govnode WAS present in the blob…
+    for (kept.items) |a| try std.testing.expect(!std.mem.eql(u8, a, "38.92.24.174:8899")); // …and filtered out
     try std.testing.expectEqual(@as(usize, 3), kept.items.len); // TRAP + P1 + P2 survive
-    try std.testing.expectEqualStrings("1203.0.113.10:8899", kept.items[0]); // substring-trap host kept
+    try std.testing.expectEqualStrings("138.92.24.174:8899", kept.items[0]); // substring-trap host kept
 }
 
 /// Snapshot metadata
@@ -336,18 +311,18 @@ pub const SnapshotManager = struct {
 
     /// Add an RPC endpoint to try for downloads.
     ///
-    /// Chokepoint: every snapshot RPC seed funnels through here, so this is
-    /// the single place to enforce the deny-list for OPERATOR-supplied seeds
-    /// (e.g. `--rpc-url`). An explicit operator seed pointing at a denied
+    /// RULE #1 chokepoint: every snapshot RPC seed funnels through here, so this
+    /// is the single place to enforce the oracle-node deny-list for OPERATOR-supplied
+    /// seeds (e.g. `--rpc-url`). An explicit operator seed pointing at a denied
     /// host is a hard error — we refuse rather than silently ignore the operator's
     /// instruction, so the misconfiguration is loud at boot. (Discovered cluster
     /// peers are filtered silently in the peer loops; see isDeniedSnapshotHost.)
     pub fn addRpcEndpoint(self: *Self, endpoint: []const u8) !void {
         if (isDeniedSnapshotHost(endpoint)) {
             std.log.err(
-                "[Snapshot][deny-list] REFUSING snapshot RPC endpoint '{s}' — host is on the " ++
-                    "snapshot deny-list (GOVNODE_DENY_HOSTS / VEXOR_SNAPSHOT_DENY_HOSTS). " ++
-                    "Fix --rpc-url / VEX_RPC_URL.",
+                "[Snapshot][RULE#1] REFUSING snapshot RPC endpoint '{s}' — host is on the " ++
+                    "oracle-node deny-list. Vexor must never fetch snapshot/state from the " ++
+                    "co-located Agave validator. Fix --rpc-url / VEX_RPC_URL.",
                 .{endpoint},
             );
             return error.DeniedRpcEndpoint;
@@ -364,8 +339,9 @@ pub const SnapshotManager = struct {
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{
-                "/usr/bin/curl", "-sL",                            "--max-time", "15",
-                "-H",            "Content-Type: application/json", "-d",         json_body,
+                "/usr/bin/curl", "-sL", "--max-time", "15",
+                "-H", "Content-Type: application/json",
+                "-d", json_body,
                 url,
             },
             .max_output_bytes = 512 * 1024,
@@ -383,9 +359,10 @@ pub const SnapshotManager = struct {
         const result = std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &.{
-                "/usr/bin/curl", "-sL",       "--max-time", "10",
-                "-o",            "/dev/null", "-w",         "%{http_code}|%{size_download}|%{content_type}",
-                "-I",            url,
+                "/usr/bin/curl", "-sL", "--max-time", "10",
+                "-o", "/dev/null",
+                "-w", "%{http_code}|%{size_download}|%{content_type}",
+                "-I", url,
             },
             .max_output_bytes = 2048,
         }) catch return error.CurlFailed;
@@ -461,206 +438,209 @@ pub const SnapshotManager = struct {
         }
     }
 
-    // ── Snapshot pair: full + optional incremental ────────────────────────────────
+// ── Snapshot pair: full + optional incremental ────────────────────────────────
 
-    /// A matched pair of full and incremental snapshots from the same peer.
-    /// The incremental's base_slot must equal the full's slot.
-    pub const SnapshotPair = struct {
-        full: SnapshotInfo,
-        incremental: ?SnapshotInfo,
+/// A matched pair of full and incremental snapshots from the same peer.
+/// The incremental's base_slot must equal the full's slot.
+pub const SnapshotPair = struct {
+    full: SnapshotInfo,
+    incremental: ?SnapshotInfo,
+};
+
+// ── Canonical URL discovery ───────────────────────────────────────────────────
+
+/// Discover the canonical URL of a snapshot endpoint by following HTTP redirects.
+/// Many validators serve /snapshot.tar.zst → redirect → /snapshot-SLOT-HASH.tar.zst
+/// Returns the final URL (after redirects) or null on failure.
+/// Caller owns the returned slice.
+fn discoverCanonicalUrl(self: *Self, endpoint_url: []const u8) !?[]u8 {
+    // curl -sL: follow redirects, output: "STATUS_CODE|FINAL_URL"
+    // We check the HTTP status code to detect 404 vs 200 vs redirect.
+    const result = std.process.Child.run(.{
+        .allocator = self.allocator,
+        .argv = &.{
+            "/usr/bin/curl", "-sL", "--max-time", "10",
+            "-o", "/dev/null",
+            "-w", "%{http_code}|%{url_effective}",
+            endpoint_url,
+        },
+        .max_output_bytes = 2048,
+    }) catch return null;
+    defer self.allocator.free(result.stderr);
+
+    const raw = std.mem.trim(u8, result.stdout, " \r\n");
+    defer self.allocator.free(result.stdout);
+
+    // Parse "STATUS|URL"
+    const pipe = std.mem.indexOf(u8, raw, "|") orelse return null;
+    const status_str = raw[0..pipe];
+    const url = raw[pipe + 1..];
+
+    const status = std.fmt.parseInt(u32, status_str, 10) catch return null;
+    if (status < 200 or status >= 400) {
+        // 404, 403, 503, etc — server doesn't have this file
+        return null;
+    }
+    if (url.len == 0 or !std.mem.startsWith(u8, url, "http")) return null;
+
+    return self.allocator.dupe(u8, url) catch null;
+}
+
+/// Extract the node base URL from a full snapshot download URL.
+/// "http://IP:PORT/snapshot-SLOT-HASH.tar.zst" → "http://IP:PORT"
+fn extractNodeBase(url: []const u8) ?[]const u8 {
+    // Skip protocol
+    var pos: usize = 0;
+    if (std.mem.startsWith(u8, url, "http://")) pos = 7
+    else if (std.mem.startsWith(u8, url, "https://")) pos = 8
+    else return null;
+    // Find first slash after host:port
+    const slash = std.mem.indexOfScalarPos(u8, url, pos, '/') orelse return url;
+    return url[0..slash];
+}
+
+/// Try to discover and download the incremental snapshot from a node,
+/// given we already have the full snapshot at full_slot from that node_base.
+/// Returns SnapshotInfo for the incremental, or null if not available.
+/// Caller must free info.download_url if non-null.
+/// Query a validator node's getHighestSnapshotSlot RPC to get the incremental
+/// slot number. Returns null if the incremental slot doesn't match full_slot
+/// as the base, or if the RPC call fails.
+fn queryIncrementalSlotFromNode(self: *Self, node_url: []const u8, full_slot: u64) ?u64 {
+    const body_str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHighestSnapshotSlot\"}";
+    const resp = self.curlPost(node_url, body_str) catch return null;
+    defer self.allocator.free(resp);
+
+    // Parse: {"result":{"full":397941437,"incremental":398009908}}
+    const full_key = "\"full\":";
+    const full_idx = std.mem.indexOf(u8, resp, full_key) orelse return null;
+    var pos = full_idx + full_key.len;
+    while (pos < resp.len and resp[pos] == ' ') pos += 1;
+    var end = pos;
+    while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
+    const resp_full = std.fmt.parseInt(u64, resp[pos..end], 10) catch return null;
+
+    if (resp_full != full_slot) return null; // This node has a different full snapshot base
+
+    const inc_key = "\"incremental\":";
+    const inc_idx = std.mem.indexOf(u8, resp, inc_key) orelse return null;
+    pos = inc_idx + inc_key.len;
+    while (pos < resp.len and resp[pos] == ' ') pos += 1;
+    end = pos;
+    while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
+    return std.fmt.parseInt(u64, resp[pos..end], 10) catch null;
+}
+
+fn tryNodeIncrementalSnapshot(
+    self: *Self,
+    node_base: []const u8,
+    full_slot: u64,
+) !?SnapshotInfo {
+
+    // Try both .tar.zst and .tar.bz2 — same approach that works for full snapshots.
+    // Some validators redirect to canonical name only on .tar.bz2, not .tar.zst.
+    const inc_candidates = [_][]const u8{
+        "incremental-snapshot.tar.zst",
+        "incremental-snapshot.tar.bz2",
     };
 
-    // ── Canonical URL discovery ───────────────────────────────────────────────────
+    for (inc_candidates) |inc_suffix| {
+    const redirect_url = try std.fmt.allocPrint(
+        self.allocator, "{s}/{s}", .{ node_base, inc_suffix }
+    );
+    defer self.allocator.free(redirect_url);
 
-    /// Discover the canonical URL of a snapshot endpoint by following HTTP redirects.
-    /// Many validators serve /snapshot.tar.zst → redirect → /snapshot-SLOT-HASH.tar.zst
-    /// Returns the final URL (after redirects) or null on failure.
-    /// Caller owns the returned slice.
-    fn discoverCanonicalUrl(self: *Self, endpoint_url: []const u8) !?[]u8 {
-        // curl -sL: follow redirects, output: "STATUS_CODE|FINAL_URL"
-        // We check the HTTP status code to detect 404 vs 200 vs redirect.
-        const result = std.process.Child.run(.{
-            .allocator = self.allocator,
-            .argv = &.{
-                "/usr/bin/curl", "-sL",       "--max-time", "10",
-                "-o",            "/dev/null", "-w",         "%{http_code}|%{url_effective}",
-                endpoint_url,
-            },
-            .max_output_bytes = 2048,
-        }) catch return null;
-        defer self.allocator.free(result.stderr);
+    std.log.debug("[Snapshot] Probing incremental at {s}\n", .{redirect_url});
 
-        const raw = std.mem.trim(u8, result.stdout, " \r\n");
-        defer self.allocator.free(result.stdout);
+    // Follow redirect to get canonical filename with slot+hash
+    const canonical = (try self.discoverCanonicalUrl(redirect_url)) orelse {
+        std.log.debug("[Snapshot] No redirect for {s}\n", .{redirect_url});
+        continue; // Try next candidate (.tar.bz2)
+    };
+    defer self.allocator.free(canonical);
 
-        // Parse "STATUS|URL"
-        const pipe = std.mem.indexOf(u8, raw, "|") orelse return null;
-        const status_str = raw[0..pipe];
-        const url = raw[pipe + 1 ..];
+    // Extract just the filename from the canonical URL
+    const filename = if (std.mem.lastIndexOf(u8, canonical, "/")) |idx|
+        canonical[idx + 1 ..]
+    else
+        canonical;
 
-        const status = std.fmt.parseInt(u32, status_str, 10) catch return null;
-        if (status < 200 or status >= 400) {
-            // 404, 403, 503, etc — server doesn't have this file
-            return null;
-        }
-        if (url.len == 0 or !std.mem.startsWith(u8, url, "http")) return null;
+    std.log.debug("[Snapshot] Incremental canonical: {s}\n", .{filename});
 
-        return self.allocator.dupe(u8, url) catch null;
-    }
-
-    /// Extract the node base URL from a full snapshot download URL.
-    /// "http://IP:PORT/snapshot-SLOT-HASH.tar.zst" → "http://IP:PORT"
-    fn extractNodeBase(url: []const u8) ?[]const u8 {
-        // Skip protocol
-        var pos: usize = 0;
-        if (std.mem.startsWith(u8, url, "http://")) pos = 7 else if (std.mem.startsWith(u8, url, "https://")) pos = 8 else return null;
-        // Find first slash after host:port
-        const slash = std.mem.indexOfScalarPos(u8, url, pos, '/') orelse return url;
-        return url[0..slash];
-    }
-
-    /// Try to discover and download the incremental snapshot from a node,
-    /// given we already have the full snapshot at full_slot from that node_base.
-    /// Returns SnapshotInfo for the incremental, or null if not available.
-    /// Caller must free info.download_url if non-null.
-    /// Query a validator node's getHighestSnapshotSlot RPC to get the incremental
-    /// slot number. Returns null if the incremental slot doesn't match full_slot
-    /// as the base, or if the RPC call fails.
-    fn queryIncrementalSlotFromNode(self: *Self, node_url: []const u8, full_slot: u64) ?u64 {
-        const body_str = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHighestSnapshotSlot\"}";
-        const resp = self.curlPost(node_url, body_str) catch return null;
-        defer self.allocator.free(resp);
-
-        // Parse: {"result":{"full":397941437,"incremental":398009908}}
-        const full_key = "\"full\":";
-        const full_idx = std.mem.indexOf(u8, resp, full_key) orelse return null;
-        var pos = full_idx + full_key.len;
-        while (pos < resp.len and resp[pos] == ' ') pos += 1;
-        var end = pos;
-        while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
-        const resp_full = std.fmt.parseInt(u64, resp[pos..end], 10) catch return null;
-
-        if (resp_full != full_slot) return null; // This node has a different full snapshot base
-
-        const inc_key = "\"incremental\":";
-        const inc_idx = std.mem.indexOf(u8, resp, inc_key) orelse return null;
-        pos = inc_idx + inc_key.len;
-        while (pos < resp.len and resp[pos] == ' ') pos += 1;
-        end = pos;
-        while (end < resp.len and resp[end] >= '0' and resp[end] <= '9') end += 1;
-        return std.fmt.parseInt(u64, resp[pos..end], 10) catch null;
-    }
-
-    fn tryNodeIncrementalSnapshot(
-        self: *Self,
-        node_base: []const u8,
-        full_slot: u64,
-    ) !?SnapshotInfo {
-
-        // Try both .tar.zst and .tar.bz2 — same approach that works for full snapshots.
-        // Some validators redirect to canonical name only on .tar.bz2, not .tar.zst.
-        const inc_candidates = [_][]const u8{
-            "incremental-snapshot.tar.zst",
-            "incremental-snapshot.tar.bz2",
-        };
-
-        for (inc_candidates) |inc_suffix| {
-            const redirect_url = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ node_base, inc_suffix });
-            defer self.allocator.free(redirect_url);
-
-            std.log.debug("[Snapshot] Probing incremental at {s}\n", .{redirect_url});
-
-            // Follow redirect to get canonical filename with slot+hash
-            const canonical = (try self.discoverCanonicalUrl(redirect_url)) orelse {
-                std.log.debug("[Snapshot] No redirect for {s}\n", .{redirect_url});
-                continue; // Try next candidate (.tar.bz2)
-            };
-            defer self.allocator.free(canonical);
-
-            // Extract just the filename from the canonical URL
-            const filename = if (std.mem.lastIndexOf(u8, canonical, "/")) |idx|
-                canonical[idx + 1 ..]
-            else
-                canonical;
-
-            std.log.debug("[Snapshot] Incremental canonical: {s}\n", .{filename});
-
-            // Try to parse slot+hash from canonical filename
-            if (SnapshotInfo.fromFilename(filename)) |parsed| {
-                // Full canonical URL with slot+hash — verify base matches and return
-                if (parsed.base_slot) |base| {
-                    if (base != full_slot) {
-                        std.log.warn("[Snapshot] Incremental base {d} != full slot {d} — skipping", .{
-                            base, full_slot,
-                        });
-                        return null;
-                    }
-                } else {
-                    return null;
-                }
-
-                var info = parsed;
-                info.download_url = try self.allocator.dupe(u8, canonical);
-                std.log.info("[Snapshot] Incremental found via canonical URL: slot {d} (base {d})", .{
-                    info.slot, full_slot,
+    // Try to parse slot+hash from canonical filename
+    if (SnapshotInfo.fromFilename(filename)) |parsed| {
+        // Full canonical URL with slot+hash — verify base matches and return
+        if (parsed.base_slot) |base| {
+            if (base != full_slot) {
+                std.log.warn("[Snapshot] Incremental base {d} != full slot {d} — skipping", .{
+                    base, full_slot,
                 });
-                return info;
+                return null;
             }
+        } else { return null; }
 
-            // Generic URL (no slot/hash in filename) — try querying this node's RPC to get the
-            // incremental slot number, then accept the generic URL as the download source.
-            // Many validators serve at /incremental-snapshot.tar.zst directly without redirect.
-            const rpc_url = try std.fmt.allocPrint(self.allocator, "{s}", .{node_base});
-            defer self.allocator.free(rpc_url);
-
-            const inc_slot = self.queryIncrementalSlotFromNode(rpc_url, full_slot) orelse {
-                std.log.debug("[Snapshot] Cannot determine incremental slot from {s}\n", .{node_base});
-                continue; // Try next candidate
-            };
-
-            const download_url = try self.allocator.dupe(u8, canonical);
-            errdefer self.allocator.free(download_url);
-
-            std.log.info("[Snapshot] Incremental found via generic URL: slot {d} (base {d}) from {s}", .{
-                inc_slot, full_slot, node_base,
-            });
-
-            return SnapshotInfo{
-                .slot = inc_slot,
-                .hash = std.mem.zeroes([32]u8),
-                .base_slot = full_slot,
-                .lamports = 0,
-                .capitalization = 0,
-                .accounts_count = 0,
-                .size_bytes = 0,
-                .is_incremental = true,
-                .download_url = download_url,
-                .filename = null,
-                .hash_str = std.mem.zeroes([64]u8),
-                .hash_str_len = 0,
-            };
-        } // end for inc_candidates
-        return null;
+        var info = parsed;
+        info.download_url = try self.allocator.dupe(u8, canonical);
+        std.log.info("[Snapshot] Incremental found via canonical URL: slot {d} (base {d})", .{
+            info.slot, full_slot,
+        });
+        return info;
     }
 
-    /// Find the best available (full + incremental) snapshot pair.
-    /// Checks each cluster node for BOTH full AND incremental in a single pass
-    /// so the pair always comes from the same source with the same base slot.
-    pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
-        if (try self.envSnapshotOverride()) |info| {
-            return SnapshotPair{ .full = info, .incremental = null };
-        }
+    // Generic URL (no slot/hash in filename) — try querying this node's RPC to get the
+    // incremental slot number, then accept the generic URL as the download source.
+    // Many validators serve at /incremental-snapshot.tar.zst directly without redirect.
+    const rpc_url = try std.fmt.allocPrint(self.allocator, "{s}", .{node_base});
+    defer self.allocator.free(rpc_url);
 
-        for (self.rpc_endpoints.items) |endpoint| {
-            std.log.debug("[Snapshot] Querying: {s}\n", .{endpoint});
-            if (try self.discoverSnapshotPairFromCluster(endpoint, 0)) |pair| {
-                return pair;
-            }
-        }
+    const inc_slot = self.queryIncrementalSlotFromNode(rpc_url, full_slot) orelse {
+        std.log.debug("[Snapshot] Cannot determine incremental slot from {s}\n", .{node_base});
+        continue; // Try next candidate
+    };
 
-        std.log.debug("[Snapshot] No snapshot found from any endpoint\n", .{});
-        return null;
+    const download_url = try self.allocator.dupe(u8, canonical);
+    errdefer self.allocator.free(download_url);
+
+    std.log.info("[Snapshot] Incremental found via generic URL: slot {d} (base {d}) from {s}", .{
+        inc_slot, full_slot, node_base,
+    });
+
+    return SnapshotInfo{
+        .slot = inc_slot,
+        .hash = std.mem.zeroes([32]u8),
+        .base_slot = full_slot,
+        .lamports = 0,
+        .capitalization = 0,
+        .accounts_count = 0,
+        .size_bytes = 0,
+        .is_incremental = true,
+        .download_url = download_url,
+        .filename = null,
+        .hash_str = std.mem.zeroes([64]u8),
+        .hash_str_len = 0,
+    };
+    } // end for inc_candidates
+    return null;
+}
+
+/// Find the best available (full + incremental) snapshot pair.
+/// Checks each cluster node for BOTH full AND incremental in a single pass
+/// so the pair always comes from the same source with the same base slot.
+pub fn findBestSnapshotPair(self: *Self) !?SnapshotPair {
+    if (try self.envSnapshotOverride()) |info| {
+        return SnapshotPair{ .full = info, .incremental = null };
     }
+
+    for (self.rpc_endpoints.items) |endpoint| {
+        std.log.debug("[Snapshot] Querying: {s}\n", .{endpoint});
+        if (try self.discoverSnapshotPairFromCluster(endpoint, 0)) |pair| {
+            return pair;
+        }
+    }
+
+    std.log.debug("[Snapshot] No snapshot found from any endpoint\n", .{});
+    return null;
+}
 
     pub fn findBestSnapshot(self: *Self) !?SnapshotInfo {
         std.log.debug("[Snapshot] findBestSnapshot called, {d} endpoints\n", .{self.rpc_endpoints.items.len});
@@ -685,17 +665,18 @@ pub const SnapshotManager = struct {
         const url = std.process.getEnvVarOwned(self.allocator, "VEXOR_SNAPSHOT_URL") catch return null;
         defer self.allocator.free(url);
 
-        // Fourth ingress: VEXOR_SNAPSHOT_URL is the operator's direct
+        // RULE #1 (fourth ingress): VEXOR_SNAPSHOT_URL is the operator's direct
         // download-URL override — it bypasses addRpcEndpoint and the peer loops
         // entirely (findBestSnapshotPair returns it before iterating rpc_endpoints),
-        // so the deny-list MUST be enforced here too, or a
-        // VEXOR_SNAPSHOT_URL pointed at a deny-listed host would pull straight
-        // from it. Hard-fail (consistent with --rpc-url): refuse rather than
-        // silently ignore an explicit operator URL.
+        // so the deny-list MUST be enforced here too or a
+        // VEXOR_SNAPSHOT_URL=http://38.92.24.174:.../snapshot.tar.zst would pull
+        // straight from the oracle-node. Hard-fail (consistent with --rpc-url): refuse
+        // rather than silently ignore an explicit operator URL.
         if (isDeniedSnapshotHost(url)) {
             std.log.err(
-                "[Snapshot][deny-list] REFUSING VEXOR_SNAPSHOT_URL '{s}' — host is on the " ++
-                    "snapshot deny-list (GOVNODE_DENY_HOSTS / VEXOR_SNAPSHOT_DENY_HOSTS).",
+                "[Snapshot][RULE#1] REFUSING VEXOR_SNAPSHOT_URL '{s}' — host is on the " ++
+                    "oracle-node deny-list. Vexor must never fetch snapshot/state from the " ++
+                    "co-located Agave validator.",
                 .{url},
             );
             return error.DeniedRpcEndpoint;
@@ -852,10 +833,10 @@ pub const SnapshotManager = struct {
             pos = start + end;
 
             if (rpc_addr.len == 0 or std.mem.eql(u8, rpc_addr, "null")) continue;
-            // Never probe/download from a deny-listed peer.
+            // RULE #1: never probe/download from the co-located Agave oracle-node.
             // Discovered-peer case → silent skip (normal cluster filtering).
             if (isDeniedSnapshotHost(rpc_addr)) {
-                std.log.debug("[Snapshot][deny-list] skipping deny-listed peer {s}\n", .{rpc_addr});
+                std.log.debug("[Snapshot][RULE#1] skipping deny-listed peer {s}\n", .{rpc_addr});
                 continue;
             }
             nodes_tried += 1;
@@ -872,7 +853,7 @@ pub const SnapshotManager = struct {
             // Try to get full snapshot from this node
             const full = (try self.tryNodeSnapshot(node_url, target_slot)) orelse continue;
 
-            std.log.debug("[Snapshot] ✅ Found full from {s}: slot {d}\n", .{ rpc_addr, full.slot });
+            std.log.debug("[Snapshot] ✅ Found full from {s}: slot {d}\n", .{rpc_addr, full.slot});
 
             // Immediately try incremental from the SAME node (same base slot guaranteed)
             const node_base = extractNodeBase(full.download_url orelse {
@@ -880,7 +861,7 @@ pub const SnapshotManager = struct {
             }) orelse return SnapshotPair{ .full = full, .incremental = null };
 
             if (try self.tryNodeIncrementalSnapshot(node_base, full.slot)) |inc| {
-                std.log.debug("[Snapshot] ✅✅ PAIR FOUND: full {d} + incremental {d} from {s}\n", .{ full.slot, inc.slot, rpc_addr });
+                std.log.debug("[Snapshot] ✅✅ PAIR FOUND: full {d} + incremental {d} from {s}\n", .{full.slot, inc.slot, rpc_addr});
                 return SnapshotPair{ .full = full, .incremental = inc };
             }
 
@@ -925,8 +906,8 @@ pub const SnapshotManager = struct {
             pos = start + end;
 
             if (rpc_addr.len == 0 or std.mem.eql(u8, rpc_addr, "null")) continue;
-            // Never rotate to a deny-listed host for an incremental —
-            // silent skip (discovered-peer case).
+            // RULE #1: never rotate to the co-located Agave oracle-node for an
+            // incremental — silent skip (discovered-peer case).
             if (isDeniedSnapshotHost(rpc_addr)) continue;
 
             // Skip peers already tried
@@ -967,7 +948,9 @@ pub const SnapshotManager = struct {
         const candidates = [_][]const u8{ "snapshot.tar.zst", "snapshot.tar.bz2" };
 
         for (candidates) |suffix| {
-            const probe_url = std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ node_url, suffix }) catch continue;
+            const probe_url = std.fmt.allocPrint(
+                self.allocator, "{s}/{s}", .{ node_url, suffix }
+            ) catch continue;
             defer self.allocator.free(probe_url);
 
             std.log.debug("[Snapshot] Probing full snapshot: {s}\n", .{probe_url});
@@ -1000,7 +983,7 @@ pub const SnapshotManager = struct {
                 };
                 var info = info_parsed;
                 info.download_url = download_url;
-                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (canonical)\n", .{ node_url, info.slot });
+                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (canonical)\n", .{node_url, info.slot});
                 return info;
             }
             std.log.debug("[Snapshot] fromFilename returned null for: {s}\n", .{filename});
@@ -1024,15 +1007,12 @@ pub const SnapshotManager = struct {
 
             if (slot) |s| {
                 const download_url = self.allocator.dupe(u8, canonical) catch continue;
-                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (direct serve)\n", .{ node_url, s });
+                std.log.debug("[Snapshot] ✅ Found full snapshot at {s}: slot {d} (direct serve)\n", .{node_url, s});
                 return SnapshotInfo{
                     .slot = s,
                     .hash = std.mem.zeroes([32]u8),
                     .base_slot = null,
-                    .lamports = 0,
-                    .capitalization = 0,
-                    .accounts_count = 0,
-                    .size_bytes = 0,
+                    .lamports = 0, .capitalization = 0, .accounts_count = 0, .size_bytes = 0,
                     .is_incremental = false,
                     .download_url = download_url,
                     .filename = null,
@@ -1066,7 +1046,7 @@ pub const SnapshotManager = struct {
         const url = info.download_url orelse return error.NoDownloadUrl;
 
         // Derive local filename from the download URL
-        const url_filename = if (std.mem.lastIndexOf(u8, url, "/")) |idx| url[idx + 1 ..] else url;
+        const url_filename = if (std.mem.lastIndexOf(u8, url, "/")) |idx| url[idx + 1..] else url;
         const filename = if (SnapshotInfo.fromFilename(url_filename) != null)
             try self.allocator.dupe(u8, url_filename)
         else
@@ -1102,6 +1082,7 @@ pub const SnapshotManager = struct {
             });
         }
     }
+
 
     // httpDownload replaced by curlDownload helper above
 
@@ -1196,6 +1177,7 @@ pub const SnapshotManager = struct {
     }
 
     /// Load snapshot into accounts database
+
     /// Parsed bank metadata from snapshot binary.
     pub fn loadSnapshot(self: *Self, snapshot_dir: []const u8, accounts_db: anytype) !LoadResult {
         std.log.debug("[DEBUG] loadSnapshot: entering function, dir={s}\n", .{snapshot_dir});
@@ -2259,10 +2241,10 @@ pub const SnapshotManager = struct {
                 argv_len = 3;
             }
             const tar_tail = [_][]const u8{
-                "ionice",           "-c",                     "3",
-                "nice",             "-n",                     "19",
-                "tar",              "--use-compress-program", "zstd -T1",
-                "-cf",              tmp_path,                 "-C",
+                "ionice", "-c",                     "3",
+                "nice",   "-n",                     "19",
+                "tar",    "--use-compress-program", "zstd -T1",
+                "-cf",    tmp_path,                 "-C",
                 self.snapshots_dir, dir_name,
             };
             for (tar_tail) |a| {

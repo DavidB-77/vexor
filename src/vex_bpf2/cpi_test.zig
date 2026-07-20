@@ -85,7 +85,7 @@ const stub_vtable = interpreter.SyscallRegistry.VTable{
 };
 
 fn mkSyscalls() interpreter.SyscallRegistry {
-    return .{ .ctx = @ptrCast(@constCast(&stub_vtable)), .vtable = &stub_vtable };
+    return .{ .ctx = @constCast(@ptrCast(&stub_vtable)), .vtable = &stub_vtable };
 }
 
 /// Stub ProgramResolver that always returns null.
@@ -94,7 +94,7 @@ fn stubResolveNull(_: *anyopaque, _: Pubkey32) ?*const @import("elf.zig").Execut
 }
 const null_resolver_vtable = cpi.ProgramResolver.VTable{ .resolve = stubResolveNull };
 fn mkNullResolver() cpi.ProgramResolver {
-    return .{ .ctx = @ptrCast(@constCast(&null_resolver_vtable)), .vtable = &null_resolver_vtable };
+    return .{ .ctx = @constCast(@ptrCast(&null_resolver_vtable)), .vtable = &null_resolver_vtable };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -260,16 +260,7 @@ test "M7: translateInstruction rejects data_len > MAX_INSTRUCTION_DATA_LEN" {
     defer ctx.deinit();
 
     const result = cpi.handleSolInvokeSigned(
-        &ctx,
-        .c,
-        memory.MM_INPUT_START,
-        memory.MM_INPUT_START + 0x100,
-        0,
-        0,
-        0,
-        &mm,
-        null,
-        mkSyscalls(),
+        &ctx, .c, memory.MM_INPUT_START, memory.MM_INPUT_START + 0x100, 0, 0, 0, &mm, null, mkSyscalls(),
     );
     try testing.expectError(error.M7_InstructionTooLarge, result);
 }
@@ -303,16 +294,7 @@ test "M7: bad instruction_addr → M7_TranslateFailed" {
 
     // Address 0xDEADBEEF doesn't fall in any real region's u64-truncated index.
     const result = cpi.handleSolInvokeSigned(
-        &ctx,
-        .c,
-        0xDEADBEEF,
-        0xDEADBEEF,
-        0,
-        0,
-        0,
-        &mm,
-        null,
-        mkSyscalls(),
+        &ctx, .c, 0xDEADBEEF, 0xDEADBEEF, 0, 0, 0, &mm, null, mkSyscalls(),
     );
     try testing.expectError(error.M7_TranslateFailed, result);
 }
@@ -352,13 +334,13 @@ fn buildE2EInput(
     //   [0x600..] ix_data (4B)
 
     const program_id_addr = memory.MM_INPUT_START + 0x200;
-    const meta_addr = memory.MM_INPUT_START + 0x300;
-    const data_addr = memory.MM_INPUT_START + 0x600;
-    const acct_pk_addr = memory.MM_INPUT_START + 0x400;
+    const meta_addr       = memory.MM_INPUT_START + 0x300;
+    const data_addr       = memory.MM_INPUT_START + 0x600;
+    const acct_pk_addr    = memory.MM_INPUT_START + 0x400;
     const acct_owner_addr = memory.MM_INPUT_START + 0x440;
-    const acct_lam_addr = memory.MM_INPUT_START + 0x460;
-    const acct_data_addr = memory.MM_INPUT_START + 0x500;
-    const acct_info_addr = memory.MM_INPUT_START + 0x100;
+    const acct_lam_addr   = memory.MM_INPUT_START + 0x460;
+    const acct_data_addr  = memory.MM_INPUT_START + 0x500;
+    const acct_info_addr  = memory.MM_INPUT_START + 0x100;
 
     const ix = cpi.SolInstructionC{
         .program_id_addr = program_id_addr,
@@ -545,7 +527,7 @@ test "M7: writeback path wires lamports/owner/data through host slices" {
     // We reach the same code by constructing a minimal public re-entry.
     // The simplest path: assert the slices were captured correctly (the
     // copying logic itself is exercised in test 6).
-    try testing.expectEqualSlices(u8, input[0x100..0x108], &.{ 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA });
+    try testing.expectEqualSlices(u8, input[0x100..0x108], &.{0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA});
     _ = ca;
 }
 
@@ -617,28 +599,10 @@ test "M7: SolInstructionC and StableInstructionRust produce same translated ix" 
     // the Rust path. Both should error out with the SAME reason
     // (M7_AccountNotInTransaction — pubkey 0xCC isn't in tx.accounts).
     const r_c = cpi.handleSolInvokeSigned(
-        &ctx,
-        .c,
-        memory.MM_INPUT_START + 0,
-        memory.MM_INPUT_START + 0x100,
-        0,
-        0,
-        0,
-        &mm,
-        null,
-        mkSyscalls(),
+        &ctx, .c, memory.MM_INPUT_START + 0, memory.MM_INPUT_START + 0x100, 0, 0, 0, &mm, null, mkSyscalls(),
     );
     const r_r = cpi.handleSolInvokeSigned(
-        &ctx,
-        .rust,
-        memory.MM_INPUT_START + 0xA00,
-        memory.MM_INPUT_START + 0x100,
-        0,
-        0,
-        0,
-        &mm,
-        null,
-        mkSyscalls(),
+        &ctx, .rust, memory.MM_INPUT_START + 0xA00, memory.MM_INPUT_START + 0x100, 0, 0, 0, &mm, null, mkSyscalls(),
     );
     try testing.expectError(error.M7_AccountNotInTransaction, r_c);
     try testing.expectError(error.M7_AccountNotInTransaction, r_r);
@@ -672,16 +636,8 @@ test "M7: non-builtin pid + null resolver → M7_RecursiveLoadFailed" {
     defer ctx.pop();
 
     const result = cpi.handleSolInvokeSigned(
-        &ctx,
-        .c,
-        memory.MM_INPUT_START + 0,
-        memory.MM_INPUT_START + 0x100,
-        1,
-        0,
-        0,
-        &mm,
-        mkNullResolver(),
-        mkSyscalls(),
+        &ctx, .c, memory.MM_INPUT_START + 0, memory.MM_INPUT_START + 0x100, 1, 0, 0, &mm,
+        mkNullResolver(), mkSyscalls(),
     );
     try testing.expectError(error.M7_RecursiveLoadFailed, result);
 }
@@ -734,16 +690,8 @@ test "M7 ALT-CPI (F3): migrated ALT CPI falls through to resolver, not M9 stub" 
     defer ctx.pop();
 
     const result = cpi.handleSolInvokeSigned(
-        &ctx,
-        .c,
-        memory.MM_INPUT_START + 0,
-        memory.MM_INPUT_START + 0x100,
-        1,
-        0,
-        0,
-        &mm,
-        mkNullResolver(),
-        mkSyscalls(),
+        &ctx, .c, memory.MM_INPUT_START + 0, memory.MM_INPUT_START + 0x100, 1, 0, 0, &mm,
+        mkNullResolver(), mkSyscalls(),
     );
     // Resolver path taken (miss → M7_RecursiveLoadFailed). Pre-fix this was
     // M7_BuiltinFailed from the M9 stub — the F3 divergence reproducer.
@@ -776,16 +724,8 @@ test "M7 ALT-CPI (F3): gate OFF (pre-activation) keeps legacy builtin routing" {
     defer ctx.pop();
 
     const result = cpi.handleSolInvokeSigned(
-        &ctx,
-        .c,
-        memory.MM_INPUT_START + 0,
-        memory.MM_INPUT_START + 0x100,
-        1,
-        0,
-        0,
-        &mm,
-        mkNullResolver(),
-        mkSyscalls(),
+        &ctx, .c, memory.MM_INPUT_START + 0, memory.MM_INPUT_START + 0x100, 1, 0, 0, &mm,
+        mkNullResolver(), mkSyscalls(),
     );
     try testing.expectError(error.M7_BuiltinFailed, result);
 }
@@ -819,16 +759,8 @@ test "M7 guard: System CPI with a live resolver still dispatches builtin" {
     defer ctx.pop();
 
     const result = cpi.handleSolInvokeSigned(
-        &ctx,
-        .c,
-        memory.MM_INPUT_START + 0,
-        memory.MM_INPUT_START + 0x100,
-        1,
-        0,
-        0,
-        &mm,
-        mkNullResolver(),
-        mkSyscalls(),
+        &ctx, .c, memory.MM_INPUT_START + 0, memory.MM_INPUT_START + 0x100, 1, 0, 0, &mm,
+        mkNullResolver(), mkSyscalls(),
     );
     try testing.expectError(error.M7_BuiltinFailed, result);
 }

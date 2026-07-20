@@ -120,10 +120,12 @@ pub const Inflation = struct {
 /// by an exhaustive differential fuzz (158,001,954 checks across two
 /// independently-seeded runs — random/boundary/edge-case/subnormal
 /// (base,exp) pairs, including this exact epoch-990 KAT — 0 mismatches
-/// against the box's linked `extern fn pow`) before this swap was made.
+/// against the box's linked `extern fn pow`) before this swap was made; see
+/// forensics/PUREZIG-POW-PROGRESS.log for the run record.
 /// The old libm extern is kept below, commented out, as a documented
 /// fallback if a future glibc/table mismatch is ever suspected:
 ///   extern fn pow(x: f64, y: f64) f64;
+
 /// Total inflation rate at a given year in the schedule.
 /// fd_rewards.c:17 — agave: sdk/src/inflation.rs#L85 Inflation::total()
 pub fn inflationTotal(inf: Inflation, year: f64) f64 {

@@ -36,7 +36,7 @@ const std = @import("std");
 // 0277a6af97339b7ac88d1892c90446f50002309266f62e53c118244982000000, and
 // against the independent comptime-decoded copy in vex_bpf2/builtins/mod.zig
 // (ADDRESS_LOOKUP_TABLE_PROGRAM_ID = decodeBase58Pubkey("AddressLookupTab1e…")).
-// (never hand-type program-id bytes — always derive from base58.)
+// (CLAUDE.md pitfall #3: never hand-type program-id bytes.)
 pub const PROGRAM_ID: [32]u8 = .{
     0x02, 0x77, 0xa6, 0xaf, 0x97, 0x33, 0x9b, 0x7a,
     0xc8, 0x8d, 0x18, 0x92, 0xc9, 0x04, 0x46, 0xf5,

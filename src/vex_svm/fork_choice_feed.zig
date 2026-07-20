@@ -139,9 +139,9 @@ pub fn EpochStakeLookup(comptime EpochStakesSlice: type) type {
 /// Result counters for the bootstrap seed. Surfaced via the warn-level
 /// log line so the soak-watcher can confirm the seed fired.
 pub const SeedStats = struct {
-    candidates: usize, // voters with non-zero stake in current_epoch
-    emitted: usize, // PubkeyVote entries produced
-    no_account: usize, // db.getAccount returned null for the vote pubkey
+    candidates: usize,   // voters with non-zero stake in current_epoch
+    emitted: usize,      // PubkeyVote entries produced
+    no_account: usize,   // db.getAccount returned null for the vote pubkey
     no_last_vote: usize, // getLastVotedSlot returned null (no votes yet)
     no_bank_hash: usize, // bank_hash_ctx.lookup returned null (vote outside horizon)
 };
@@ -238,10 +238,10 @@ pub fn buildSeedBatch(
 /// Per-bank vote-account scan stats — mirrors Agave `compute_bank_stats` book-keeping.
 pub const VoteAccountBatchStats = struct {
     vote_accounts: usize, // top_votes entries scanned (≈ all known voters)
-    emitted: usize, // PubkeyVote entries produced
-    duplicates: usize, // always 0 (top_votes is keyed by unique pubkey); kept for log-line compat
-    no_last_vote: usize, // TopVote.latestVotedSlot() returned null (empty tower)
-    no_bank_hash: usize, // bank_hash_ctx.lookup returned null (vote outside frozen-bank horizon)
+    emitted: usize,       // PubkeyVote entries produced
+    duplicates: usize,    // always 0 (top_votes is keyed by unique pubkey); kept for log-line compat
+    no_last_vote: usize,  // TopVote.latestVotedSlot() returned null (empty tower)
+    no_bank_hash: usize,  // bank_hash_ctx.lookup returned null (vote outside frozen-bank horizon)
     // DIAG (2026-06-03, A-vs-B disambiguation): of all candidates (those with a
     // non-null latestVotedSlot), how many have a FRESH voted_slot — within
     // RECENT_WINDOW of the highest voted_slot seen this scan — and of those,
@@ -253,7 +253,7 @@ pub const VoteAccountBatchStats = struct {
     //     fresh votes (candidate B: bank retention at read time).
     recent: usize = 0,
     recent_resolved: usize = 0,
-    max_voted: u64 = 0, // highest voted_slot among candidates (the scan frontier)
+    max_voted: u64 = 0,   // highest voted_slot among candidates (the scan frontier)
 };
 
 /// Freshness window for `recent`/`recent_resolved`: a candidate counts as "recent"
@@ -372,6 +372,143 @@ pub fn buildVoteAccountBatch(
         batch.appendAssumeCapacity(.{
             .pubkey = c.pubkey,
             .slot_hash = .{ .slot = c.voted_slot, .hash = bh },
+        });
+        stats.emitted += 1;
+    }
+
+    return .{ .votes = try batch.toOwnedSlice(allocator), .stats = stats };
+}
+
+/// Stats for the fork-aware fresh scan (mirrors VoteAccountBatchStats' shape
+/// for [SWITCH-VOTE-FRESH] log-line compat).
+pub const FreshBatchStats = struct {
+    candidates: usize,   // staked (stake>0) voters in the epoch_stakes table
+    emitted: usize,      // PubkeyVote entries produced
+    no_account: usize,   // getAccountInSlot returned null (no vote account on this fork's ancestry)
+    no_last_vote: usize, // getLastVotedSlot returned null (empty tower)
+    no_bank_hash: usize, // bank_hash_ctx.lookup returned null (voted slot outside our frozen-bank horizon)
+    parse_fail: usize,   // account data too large for the scratch buffer (defensive; should not fire)
+};
+
+/// Scratch buffer sized for the largest known vote-state encoding (V4 frame =
+/// 3762 B per bank.zig:1364's carrier-#15 precedent; 8 KiB covers every
+/// historical vote-state size with wide margin).
+const VOTE_ACCOUNT_SCRATCH_BYTES: usize = 8192;
+
+/// Build a `PubkeyVote` batch by reading EVERY staked voter's vote-account
+/// state DIRECTLY from `db`, fork-aware, at the exact candidate bank
+/// (`slot`, `ancestors`) — no persistent cross-call cache in the path.
+///
+/// WHY THIS EXISTS (switch-proof gossip-arming wedge, live specimen slot
+/// 422521275, 2026-07-17): `buildVoteAccountBatch` (above) sources
+/// (pubkey, voted_slot) from `db.top_votes`, a side cache upserted ONLY via
+/// `AccountsDb.refreshTopVoteForWrite`, itself called ONLY from
+/// `flushPendingWritesToDb` / `flushPendingWritesFromIndex` /
+/// `promoteRootedChain` (replay_stage.zig / accounts_db.zig). On the live
+/// wedged node that cache stopped advancing at slot 422521280 (TOPVOTES-DIAG
+/// log line count: 0 for the ~25,000 replayed slots since) while replay
+/// itself stayed healthy at the cluster tip (bank_hash matched, no
+/// divergence) — proving the CACHE went stale relative to the CANONICAL
+/// account state the bank actually committed, not that replay stalled. The
+/// switch-proof landed loop (fork_choice.zig checkSwitchThresholdGossip)
+/// consumes exactly that stale cache via `fc.latest_votes`
+/// (fed by `buildVoteAccountBatch` in replay_stage.zig's phase2_delta), so it
+/// could never observe any voter but ourselves — locked_out stayed 0/T
+/// forever, and switch-proof could never arm.
+///
+/// This is the SAME bug CLASS already fixed once in this codebase for the
+/// Clock sysvar estimator (carrier #15, 2026-06-11, @414723807,
+/// bank.zig:1308-1339 `computeStakeWeightedClockEstimate`): "sample PARENT-
+/// BANK VOTE STATE through the fork-aware AccountsDb read path — NOT the
+/// global top_votes cache." This function applies the identical fix shape to
+/// the switch-proof vote source.
+///
+/// Agave canonical: `core/src/consensus.rs:407` `collect_vote_lockouts`,
+/// called by `core/src/replay_stage.rs:4391` `compute_bank_stats` for EVERY
+/// newly-frozen bank. It iterates `vote_accounts: &VoteAccountsHashMap` —
+/// `bank.vote_accounts()`, the frozen BANK'S OWN live vote-program account
+/// state (backed by Agave's `StakesCache`, which is updated at the account-
+/// commit primitive itself, not a downstream flush-orchestration hook a
+/// future execution engine could bypass) — and feeds each voter's
+/// `last_voted_slot()` into `latest_validator_votes_for_frozen_banks`
+/// (consensus.rs:472-479 `check_add_vote`), the SAME structure the switch-
+/// proof's `max_gossip_frozen_votes()` loop reads (consensus.rs:1222). There
+/// is no persistent side cache in Agave's landed path that a bypassed write
+/// path could leave stale: every bank re-derives the full staked-voter view
+/// from the bank's committed account state.
+///
+/// `db.getAccountInSlot(pubkey, slot, ancestors) ?AccountView` — fork-aware
+/// read (already used for exactly this purpose by the Clock estimator and by
+/// ordinary transaction execution reads).
+/// `epoch_stakes` / `bank_hash_ctx` — same contracts as `buildSeedBatch`.
+///
+/// Cost: ~600-2000 staked-voter reads+parses per bank (the epoch_stakes
+/// staked set, NOT the ~15,522-entry raw table) — the SAME per-bank cost
+/// class already proven affordable by the Clock estimator's identical scan
+/// (bank.zig:1370 "~600 reads/slot without strain").
+pub fn buildVoteAccountBatchFresh(
+    allocator: std.mem.Allocator,
+    db: anytype,
+    epoch_stakes: anytype,
+    current_epoch: u64,
+    slot: u64,
+    ancestors: []const u64,
+    bank_hash_ctx: anytype,
+) !struct { votes: []PubkeyVote, stats: FreshBatchStats } {
+    var batch = std.ArrayListUnmanaged(PubkeyVote){};
+    errdefer batch.deinit(allocator);
+
+    var stats = FreshBatchStats{
+        .candidates = 0,
+        .emitted = 0,
+        .no_account = 0,
+        .no_last_vote = 0,
+        .no_bank_hash = 0,
+        .parse_fail = 0,
+    };
+
+    var stakes_opt: ?@TypeOf(epoch_stakes[0].vote_account_stakes) = null;
+    for (epoch_stakes) |entry| {
+        if (entry.epoch == current_epoch) {
+            stakes_opt = entry.vote_account_stakes;
+            break;
+        }
+    }
+    const stakes = stakes_opt orelse {
+        return .{ .votes = try batch.toOwnedSlice(allocator), .stats = stats };
+    };
+
+    try batch.ensureTotalCapacity(allocator, stakes.len);
+
+    // r55-E class (bank.zig:1360-1364 precedent): getAccountInSlot returns
+    // slices into mmap'd/unflushed storage a concurrent flush can remap —
+    // copy into a fixed scratch buffer before parsing.
+    var data_buf: [VOTE_ACCOUNT_SCRATCH_BYTES]u8 = undefined;
+
+    for (stakes) |vas| {
+        if (vas.stake == 0) continue; // zero-stake voters contribute nothing (Agave: epoch_vote_accounts is the staked set only)
+        stats.candidates += 1;
+        const pubkey = core.Pubkey{ .data = vas.vote_pubkey };
+        const account = db.getAccountInSlot(&pubkey, slot, ancestors) orelse {
+            stats.no_account += 1;
+            continue;
+        };
+        if (account.data.len == 0 or account.data.len > data_buf.len) {
+            stats.parse_fail += 1;
+            continue;
+        }
+        @memcpy(data_buf[0..account.data.len], account.data);
+        const voted_slot = vote_state_serde.getLastVotedSlot(data_buf[0..account.data.len]) orelse {
+            stats.no_last_vote += 1;
+            continue;
+        };
+        const bh = bank_hash_ctx.lookup(voted_slot) orelse {
+            stats.no_bank_hash += 1;
+            continue;
+        };
+        batch.appendAssumeCapacity(.{
+            .pubkey = pubkey,
+            .slot_hash = .{ .slot = voted_slot, .hash = bh },
         });
         stats.emitted += 1;
     }
@@ -635,4 +772,234 @@ test "buildSeedBatch end-to-end with stub AccountsDb" {
     try testing.expectEqual(@as(usize, 1), out.stats.no_bank_hash);
     try testing.expectEqual(@as(usize, 1), out.votes.len);
     try testing.expectEqual(@as(u64, 100), out.votes[0].slot_hash.slot);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// KAT — live wedge slot 422521275 (2026-07-17, fix/switchproof-gossip-arming)
+//
+// Reconstructs the ACTUAL captured incident numbers from
+// forensics/incident-lockout-422521275-20260717-0757/ and
+// vex-fd-dev_testnet.log:
+//   * rooted        = 422521202  (tower root; frozen for the whole wedge — we
+//                       never voted again, so accounts_db.rooted_slot / the
+//                       tower root never advances)
+//   * last_vote     = 422521275  (our tower's last CAST vote — on the fork
+//                       that never landed; RPC confirms only 422503891 ever
+//                       landed, but Agave's own `last_voted_slot_hash()` is
+//                       the tower's cast vote too — consensus.rs:960 — so
+//                       this is canonical, not the bug)
+//   * candidate/tip = 422525390  (first switch-slot named in the live refusal
+//                       log: "InvalidRootSlot ... candidate 422525390")
+//                     422532524  (tip slot from the last captured
+//                       [FORK-CHOICE-DELTA] / [TOWER-LOCKOUT] lines)
+//   * max_voted     = 422521274  (the EXACT plateau value `db.top_votes`
+//                       froze at, live: FORK-CHOICE-DELTA "max_voted=422521274"
+//                       repeating for 11,000+ consecutive replayed slots)
+//
+// The KAT below does NOT invent a mechanism — it drives the REAL
+// `buildVoteAccountBatch` (stale, top_votes-sourced — the pre-fix production
+// path) and `buildVoteAccountBatchFresh` (fork-aware direct read — the fix)
+// against the SAME underlying voter state, then feeds each batch's output
+// into the REAL `HeaviestSubtreeForkChoice.checkSwitchThreshold` (the same
+// switch-proof engine replay_stage.zig calls) to prove:
+//   1. PRE-FIX shape: the stale batch's slot (422521274) is <= last_vote
+//      (422521275) → the switch-proof's strictly-newer filter (canonical,
+//      Agave consensus.rs:1228) drops it → 0 stake observed → refuses
+//      forever, byte-identical to the live specimen's
+//      `locked_out=0/... gossip_cnt=0/...` shape.
+//   2. POST-FIX shape: the fresh batch's slot reflects the voter's CURRENT
+//      on-chain vote (past last_vote, on the canonical fork) → passes the
+//      filter → counted → arms when stake crosses 38%.
+//   3. Both-directions safety: the fresh path does NOT arm when the other
+//      fork's observed stake stays under 38% — the fix does not make Vexor
+//      switch more eagerly than Agave would.
+const wedge_test = struct {
+    const HSFC = vex_consensus.fork_choice.HeaviestSubtreeForkChoice;
+    const PSLK = struct {
+        entries: []const struct { pubkey: core.Pubkey, stake: u64 },
+        pub fn lookup(self: @This(), pk: core.Pubkey, _: core.Slot) u64 {
+            for (self.entries) |e| if (std.mem.eql(u8, &e.pubkey.data, &pk.data)) return e.stake;
+            return 0;
+        }
+    };
+
+    /// root(422521202) → dead(422521275) [our abandoned last-vote fork]
+    ///                 → canon_mid(422525390) → canon_tip(422532524) [the
+    ///                   REAL fork the rest of the cluster kept building —
+    ///                   the exact candidate/tip slots from the live log].
+    const Tree = struct {
+        root: SlotHashKey,
+        dead: SlotHashKey,
+        canon_mid: SlotHashKey,
+        canon_tip: SlotHashKey,
+        fn k(slot: u64, tag: u8) SlotHashKey {
+            return .{ .slot = slot, .hash = .{ .data = [_]u8{tag} ** 32 } };
+        }
+        fn build(fc: *HSFC) !Tree {
+            const root = k(422521202, 0x10);
+            try fc.seedRoot(root);
+            const dead = k(422521275, 0xDE);
+            const canon_mid = k(422525390, 0xC1);
+            const canon_tip = k(422532524, 0xC2);
+            try fc.addNewLeafSlot(dead, root);
+            try fc.addNewLeafSlot(canon_mid, root);
+            try fc.addNewLeafSlot(canon_tip, canon_mid);
+            return .{ .root = root, .dead = dead, .canon_mid = canon_mid, .canon_tip = canon_tip };
+        }
+    };
+
+    const FreshDb = struct {
+        accounts: std.AutoHashMapUnmanaged(core.Pubkey, TestAccountView) = .{},
+        pub fn getAccountInSlot(self: *const @This(), pubkey: *const core.Pubkey, _: u64, _: []const u64) ?TestAccountView {
+            return self.accounts.get(pubkey.*);
+        }
+    };
+
+    fn voteBlob(buf: *[vote_state_serde.VOTE_STATE_V3_SZ]u8, voted_slot: u64) void {
+        @memset(buf, 0);
+        var vs = vote_state_serde.VoteState.init();
+        vs.version = 2;
+        vs.av_count = 1;
+        vs.authorized_voters[0] = .{ .epoch = 0, .pubkey = [_]u8{0} ** 32 };
+        vs.lockout_count = 1;
+        vs.lockouts[0] = .{ .slot = voted_slot, .confirmation_count = 1 };
+        _ = vote_state_serde.serializeVoteState(&vs, buf);
+    }
+};
+
+test "KAT wedge-422521275: stale top_votes batch is filtered to zero (reproduces the live refusal)" {
+    // Two voters, 50%+15% of a 1000-unit total stake — well past the 38% bar
+    // IF their fresh votes counted.
+    const pk1 = core.Pubkey{ .data = [_]u8{0x41} ** 32 };
+    const pk2 = core.Pubkey{ .data = [_]u8{0x42} ** 32 };
+
+    // db.top_votes: BOTH voters frozen at the live-captured plateau value
+    // (422521274 == last_vote - 1, exactly what [FORK-CHOICE-DELTA] logged
+    // for 11,000+ consecutive slots on the live node).
+    var db = TestDb.init(testing.allocator);
+    defer db.deinit();
+    try db.top_votes.put(pk1.data, .{ .tower_last_voted_slot = 422521274 });
+    try db.top_votes.put(pk2.data, .{ .tower_last_voted_slot = 422521274 });
+
+    var bh = TestBankHash{};
+    defer bh.deinit(testing.allocator);
+    try bh.table.put(testing.allocator, 422521274, core.Hash{ .data = [_]u8{0xF0} ** 32 });
+    try bh.table.put(testing.allocator, 422532524, core.Hash{ .data = [_]u8{0xC2} ** 32 }); // == canon_tip hash
+
+    const out = try buildVoteAccountBatch(testing.allocator, &db, &bh);
+    defer testing.allocator.free(out.votes);
+    try testing.expectEqual(@as(usize, 2), out.votes.len);
+    // Both entries resolve (bank_hash_ctx DOES have 422521274 cached — isolating
+    // the bug to the SOURCE, not the hash lookup) but at the STALE slot.
+    for (out.votes) |v| try testing.expectEqual(@as(u64, 422521274), v.slot_hash.slot);
+
+    // Feed the REAL switch-proof engine — this is exactly replay_stage.zig's
+    // phase2_delta → fc.addVotes → fc.checkSwitchThreshold call shape.
+    var fc = wedge_test.HSFC.init(testing.allocator);
+    defer fc.deinit();
+    const t = try wedge_test.Tree.build(&fc);
+    const stakes = wedge_test.PSLK{ .entries = &.{
+        .{ .pubkey = pk1, .stake = 500 },
+        .{ .pubkey = pk2, .stake = 150 },
+    } };
+    _ = try fc.addVotes(out.votes, stakes);
+    const d = fc.checkSwitchThreshold(422521275, t.canon_tip.slot, 1000, stakes);
+    // PROVEN: byte-identical to the live specimen's
+    // `locked_out=0/... authorize=false` — the strictly-newer filter
+    // (canonical, consensus.rs:1228) drops both entries because 422521274 <=
+    // last_vote(422521275), even though 65% of stake HAS actually moved on.
+    try testing.expect(!d.would_switch);
+    try testing.expectEqual(@as(u64, 0), d.locked_out_stake);
+}
+
+test "KAT wedge-422521275: fresh accounts_db read arms the switch (fix verified)" {
+    const pk1 = core.Pubkey{ .data = [_]u8{0x41} ** 32 };
+    const pk2 = core.Pubkey{ .data = [_]u8{0x42} ** 32 };
+
+    // The SAME two voters' CURRENT on-chain vote-account state — they voted
+    // canon_tip (422532524), same as the rest of the live cluster did while
+    // we sat wedged on the dead fork.
+    var blob1: [vote_state_serde.VOTE_STATE_V3_SZ]u8 = undefined;
+    wedge_test.voteBlob(&blob1, 422532524);
+    var blob2: [vote_state_serde.VOTE_STATE_V3_SZ]u8 = undefined;
+    wedge_test.voteBlob(&blob2, 422532524);
+    var fdb = wedge_test.FreshDb{};
+    defer fdb.accounts.deinit(testing.allocator);
+    const vote_owner: core.Pubkey = .{ .data = VOTE_PROGRAM_ID };
+    try fdb.accounts.put(testing.allocator, pk1, .{ .lamports = 1, .owner = vote_owner, .executable = false, .rent_epoch = 0, .data = &blob1 });
+    try fdb.accounts.put(testing.allocator, pk2, .{ .lamports = 1, .owner = vote_owner, .executable = false, .rent_epoch = 0, .data = &blob2 });
+
+    var bh = TestBankHash{};
+    defer bh.deinit(testing.allocator);
+    try bh.table.put(testing.allocator, 422532524, core.Hash{ .data = [_]u8{0xC2} ** 32 }); // == canon_tip hash
+
+    const stakes_tbl = [_]TestVoteAccountStake{
+        .{ .vote_pubkey = pk1.data, .stake = 500 },
+        .{ .vote_pubkey = pk2.data, .stake = 150 },
+    };
+    const epoch_stakes = [_]TestEpochStakesEntry{.{ .epoch = 0, .vote_account_stakes = &stakes_tbl }};
+
+    const out = try buildVoteAccountBatchFresh(testing.allocator, &fdb, &epoch_stakes, 0, 422532524, &[_]u64{}, &bh);
+    defer testing.allocator.free(out.votes);
+    try testing.expectEqual(@as(usize, 2), out.votes.len);
+    for (out.votes) |v| try testing.expectEqual(@as(u64, 422532524), v.slot_hash.slot);
+
+    var fc = wedge_test.HSFC.init(testing.allocator);
+    defer fc.deinit();
+    const t = try wedge_test.Tree.build(&fc);
+    const stakes = wedge_test.PSLK{ .entries = &.{
+        .{ .pubkey = pk1, .stake = 500 },
+        .{ .pubkey = pk2, .stake = 150 },
+    } };
+    _ = try fc.addVotes(out.votes, stakes);
+    const d = fc.checkSwitchThreshold(422521275, t.canon_tip.slot, 1000, stakes);
+    // THE FIX: 65% > 38% now genuinely observed (both entries pass the
+    // strictly-newer filter because they carry the voters' REAL current
+    // slot, not a frozen 422521274 snapshot) → arms.
+    try testing.expect(d.would_switch);
+    try testing.expectEqual(@as(u64, 500), d.locked_out_stake); // early-return at pk1 alone (50% > 38%)
+}
+
+test "KAT wedge-422521275 both-directions safety: fresh read does NOT arm under 38% (no over-eager switch)" {
+    const pk1 = core.Pubkey{ .data = [_]u8{0x41} ** 32 };
+    const pk2 = core.Pubkey{ .data = [_]u8{0x42} ** 32 };
+
+    var blob1: [vote_state_serde.VOTE_STATE_V3_SZ]u8 = undefined;
+    wedge_test.voteBlob(&blob1, 422532524);
+    var blob2: [vote_state_serde.VOTE_STATE_V3_SZ]u8 = undefined;
+    wedge_test.voteBlob(&blob2, 422532524);
+    var fdb = wedge_test.FreshDb{};
+    defer fdb.accounts.deinit(testing.allocator);
+    const vote_owner: core.Pubkey = .{ .data = VOTE_PROGRAM_ID };
+    try fdb.accounts.put(testing.allocator, pk1, .{ .lamports = 1, .owner = vote_owner, .executable = false, .rent_epoch = 0, .data = &blob1 });
+    try fdb.accounts.put(testing.allocator, pk2, .{ .lamports = 1, .owner = vote_owner, .executable = false, .rent_epoch = 0, .data = &blob2 });
+
+    var bh = TestBankHash{};
+    defer bh.deinit(testing.allocator);
+    try bh.table.put(testing.allocator, 422532524, core.Hash{ .data = [_]u8{0xC2} ** 32 });
+
+    // Same voters, but now only 20% + 15% = 35% of total stake — under the
+    // 38% bar. The fresh read still sees their true (newer) votes; the fix
+    // must still correctly REFUSE (equivocation risk otherwise).
+    const stakes_tbl = [_]TestVoteAccountStake{
+        .{ .vote_pubkey = pk1.data, .stake = 200 },
+        .{ .vote_pubkey = pk2.data, .stake = 150 },
+    };
+    const epoch_stakes = [_]TestEpochStakesEntry{.{ .epoch = 0, .vote_account_stakes = &stakes_tbl }};
+
+    const out = try buildVoteAccountBatchFresh(testing.allocator, &fdb, &epoch_stakes, 0, 422532524, &[_]u64{}, &bh);
+    defer testing.allocator.free(out.votes);
+    try testing.expectEqual(@as(usize, 2), out.votes.len);
+
+    var fc = wedge_test.HSFC.init(testing.allocator);
+    defer fc.deinit();
+    const t = try wedge_test.Tree.build(&fc);
+    const stakes = wedge_test.PSLK{ .entries = &.{
+        .{ .pubkey = pk1, .stake = 200 },
+        .{ .pubkey = pk2, .stake = 150 },
+    } };
+    _ = try fc.addVotes(out.votes, stakes);
+    const d = fc.checkSwitchThreshold(422521275, t.canon_tip.slot, 1000, stakes);
+    try testing.expect(!d.would_switch); // 35% !> 38% — correctly refuses, even with a fresh/live feed
+    try testing.expectEqual(@as(u64, 350), d.locked_out_stake);
 }
