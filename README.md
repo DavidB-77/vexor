@@ -185,3 +185,7 @@ own path on efficiency, performance, and self-containment.
 ## License
 
 Vexor is licensed under the [Apache License 2.0](./LICENSE).
+
+---
+
+Follow Vexor: [vexornode.xyz](https://vexornode.xyz) · [X @vexornode](https://x.com/vexornode)
