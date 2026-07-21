@@ -23,16 +23,20 @@ const snapshot_writer = @import("snapshot_writer.zig");
 /// See bf8bdc98 fix doc: vault/SNAPSHOT_DOWNLOAD_GUARD_FIX_2026_05_05.md
 pub const MIN_SNAPSHOT_DOWNLOAD_BYTES: u64 = 1 * 1024 * 1024;
 
-/// RULE #1 (key/endpoint isolation): hosts Vexor must NEVER fetch a snapshot
-/// from. The host at 38.92.24.174 is the co-located Agave "oracle-node" validator
-/// (separate identity, 9F-prefix keys). Pulling a snapshot — or even a peer
-/// list — from it would cross-pollinate consensus-affecting state between two
-/// independently-operated validators on the same machine. This has happened
-/// before; that is why the rule exists. See CLAUDE.md RULE #1. We deny the
-/// HOST (all ports), which is stricter than the documented :8899/:8800 pair.
-pub const ORACLE_DENY_HOSTS = [_][]const u8{
-    "38.92.24.174",
-};
+/// Key/endpoint isolation: hosts Vexor must NEVER fetch a snapshot — or even
+/// a peer list — from. Operators co-locating another validator on the same
+/// machine (or otherwise running adjacent consensus infrastructure) should
+/// deny its host(s) here: pulling boot state from an independently-operated
+/// validator cross-pollinates consensus-affecting state between the two.
+/// The whole HOST is denied (all ports), stricter than any single RPC port.
+///
+/// Policy is deployment-specific, so the built-in list ships EMPTY; set
+/// `VEX_SNAPSHOT_DENY_HOSTS` to a comma-separated list of bare hosts
+/// (e.g. "203.0.113.7,peer.example.org") in the launch environment.
+pub const BUILTIN_SNAPSHOT_DENY_HOSTS = [_][]const u8{};
+
+/// Env var holding the deployment's deny-list (comma-separated bare hosts).
+pub const SNAPSHOT_DENY_HOSTS_ENV = "VEX_SNAPSHOT_DENY_HOSTS";
 
 /// Extract the bare host from a snapshot endpoint/peer address. Accepts any of:
 ///   "https://api.testnet.solana.com"      -> "api.testnet.solana.com"
@@ -52,46 +56,73 @@ pub fn extractHostFromAddr(addr: []const u8) []const u8 {
     return s;
 }
 
-/// True if `addr`'s host is on the RULE #1 deny-list. Matches the full host
-/// token exactly (NOT a substring) so "138.92.24.174" does not match
-/// "38.92.24.174".
-pub fn isDeniedSnapshotHost(addr: []const u8) bool {
-    const host = extractHostFromAddr(addr);
-    for (ORACLE_DENY_HOSTS) |denied| {
-        if (std.mem.eql(u8, host, denied)) return true;
+/// True if `host` appears in a comma-separated deny-list. Matches the full
+/// host token exactly (NOT a substring) so "1203.0.113.7" does not match
+/// "203.0.113.7". Whitespace around entries is tolerated; empty entries skip.
+pub fn hostInDenyList(host: []const u8, list: []const u8) bool {
+    var it = std.mem.splitScalar(u8, list, ',');
+    while (it.next()) |raw| {
+        const denied = std.mem.trim(u8, raw, " \t");
+        if (denied.len > 0 and std.mem.eql(u8, host, denied)) return true;
     }
     return false;
 }
 
-test "RULE#1 snapshot deny-list: oracle host blocked, substring trap allowed" {
+/// True if `addr`'s host is denied — by the built-in list or by the
+/// `VEX_SNAPSHOT_DENY_HOSTS` env list. `env_list` is injectable for tests;
+/// production callers use `isDeniedSnapshotHost`.
+pub fn isDeniedSnapshotHostWithList(addr: []const u8, env_list: ?[]const u8) bool {
+    const host = extractHostFromAddr(addr);
+    for (BUILTIN_SNAPSHOT_DENY_HOSTS) |denied| {
+        if (std.mem.eql(u8, host, denied)) return true;
+    }
+    if (env_list) |list| {
+        if (hostInDenyList(host, list)) return true;
+    }
+    return false;
+}
+
+pub fn isDeniedSnapshotHost(addr: []const u8) bool {
+    return isDeniedSnapshotHostWithList(addr, std.posix.getenv(SNAPSHOT_DENY_HOSTS_ENV));
+}
+
+test "snapshot deny-list: env-listed host blocked on all ports, substring trap allowed" {
     // Host extraction across every form a seed / getClusterNodes "rpc" can take.
     try std.testing.expectEqualStrings("api.testnet.solana.com", extractHostFromAddr("https://api.testnet.solana.com"));
     try std.testing.expectEqualStrings("1.2.3.4", extractHostFromAddr("http://1.2.3.4:8899/snapshot.tar.zst"));
-    try std.testing.expectEqualStrings("38.92.24.174", extractHostFromAddr("38.92.24.174:8899")); // getClusterNodes "rpc" form
+    try std.testing.expectEqualStrings("203.0.113.7", extractHostFromAddr("203.0.113.7:8899")); // getClusterNodes "rpc" form
 
-    // DENIED: every scheme/port of the oracle-node host.
-    try std.testing.expect(isDeniedSnapshotHost("38.92.24.174"));
-    try std.testing.expect(isDeniedSnapshotHost("38.92.24.174:8899")); // RPC
-    try std.testing.expect(isDeniedSnapshotHost("38.92.24.174:8800")); // gossip
-    try std.testing.expect(isDeniedSnapshotHost("http://38.92.24.174:8899/snapshot-1-a.tar.zst"));
+    const deny = "203.0.113.7, peer.example.org"; // injected env list (whitespace tolerated)
 
-    // ALLOWED: the substring trap + legitimate peers (host-exact match, not substring).
-    try std.testing.expect(!isDeniedSnapshotHost("138.92.24.174:8899"));
-    try std.testing.expect(!isDeniedSnapshotHost("38.92.24.1740:8899"));
-    try std.testing.expect(!isDeniedSnapshotHost("https://api.testnet.solana.com"));
-    try std.testing.expect(!isDeniedSnapshotHost("http://64.130.37.162:8899"));
+    // DENIED: every scheme/port of a listed host.
+    try std.testing.expect(isDeniedSnapshotHostWithList("203.0.113.7", deny));
+    try std.testing.expect(isDeniedSnapshotHostWithList("203.0.113.7:8899", deny)); // RPC
+    try std.testing.expect(isDeniedSnapshotHostWithList("203.0.113.7:8800", deny)); // gossip
+    try std.testing.expect(isDeniedSnapshotHostWithList("http://203.0.113.7:8899/snapshot-1-a.tar.zst", deny));
+    try std.testing.expect(isDeniedSnapshotHostWithList("peer.example.org:8899", deny));
+
+    // ALLOWED: substring traps + legitimate peers (host-exact match, not substring).
+    try std.testing.expect(!isDeniedSnapshotHostWithList("1203.0.113.7:8899", deny));
+    try std.testing.expect(!isDeniedSnapshotHostWithList("203.0.113.70:8899", deny));
+    try std.testing.expect(!isDeniedSnapshotHostWithList("https://api.testnet.solana.com", deny));
+    try std.testing.expect(!isDeniedSnapshotHostWithList("http://64.130.37.162:8899", deny));
+
+    // Default policy: built-in list is EMPTY and no env list ⇒ nothing denied.
+    try std.testing.expect(!isDeniedSnapshotHostWithList("203.0.113.7:8899", null));
 }
 
-test "RULE#1 deny-list filters oracle out of a getClusterNodes response (wiring)" {
+test "deny-list filters a listed host out of a getClusterNodes response (wiring)" {
     // Exercises the EXACT extraction + skip the peer loops use
     // (discoverSnapshotPairFromCluster / findIncrementalAcrossPeers), over a
-    // realistic payload: a null-rpc node (not matched by the pattern), the oracle-node
-    // (must be skipped), a substring-trap host + two legit peers (must survive).
+    // realistic payload: a null-rpc node (not matched by the pattern), a denied
+    // co-located host (must be skipped), a substring-trap host + two legit
+    // peers (must survive).
+    const deny = "203.0.113.7";
     const response =
         \\{"jsonrpc":"2.0","result":[
         \\{"pubkey":"A","rpc":null,"gossip":"1.1.1.1:8001"},
-        \\{"pubkey":"GOV","rpc":"38.92.24.174:8899","gossip":"38.92.24.174:8800"},
-        \\{"pubkey":"TRAP","rpc":"138.92.24.174:8899"},
+        \\{"pubkey":"DENIED","rpc":"203.0.113.7:8899","gossip":"203.0.113.7:8800"},
+        \\{"pubkey":"TRAP","rpc":"1203.0.113.7:8899"},
         \\{"pubkey":"P1","rpc":"64.130.37.162:8899"},
         \\{"pubkey":"P2","rpc":"5.6.7.8:8899"}
         \\],"id":1}
@@ -99,23 +130,23 @@ test "RULE#1 deny-list filters oracle out of a getClusterNodes response (wiring)
     var kept = std.ArrayListUnmanaged([]const u8){};
     defer kept.deinit(std.testing.allocator);
     var pos: usize = 0;
-    var oracle_seen = false;
+    var denied_seen = false;
     while (std.mem.indexOf(u8, response[pos..], "\"rpc\":\"")) |idx| {
         const start = pos + idx + 7;
         const end = std.mem.indexOf(u8, response[start..], "\"") orelse break;
         const rpc_addr = response[start .. start + end];
         pos = start + end; // advance BEFORE any skip — no infinite loop / mis-advance
         if (rpc_addr.len == 0 or std.mem.eql(u8, rpc_addr, "null")) continue;
-        if (isDeniedSnapshotHost(rpc_addr)) {
-            oracle_seen = true;
+        if (isDeniedSnapshotHostWithList(rpc_addr, deny)) {
+            denied_seen = true;
             continue; // the peer-loop deny skip
         }
         try kept.append(std.testing.allocator, rpc_addr);
     }
-    try std.testing.expect(oracle_seen); // oracle WAS present in the blob…
-    for (kept.items) |a| try std.testing.expect(!std.mem.eql(u8, a, "38.92.24.174:8899")); // …and filtered out
+    try std.testing.expect(denied_seen); // the denied host WAS present in the blob…
+    for (kept.items) |a| try std.testing.expect(!std.mem.eql(u8, a, "203.0.113.7:8899")); // …and filtered out
     try std.testing.expectEqual(@as(usize, 3), kept.items.len); // TRAP + P1 + P2 survive
-    try std.testing.expectEqualStrings("138.92.24.174:8899", kept.items[0]); // substring-trap host kept
+    try std.testing.expectEqualStrings("1203.0.113.7:8899", kept.items[0]); // substring-trap host kept
 }
 
 /// Snapshot metadata
