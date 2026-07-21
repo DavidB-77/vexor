@@ -796,11 +796,14 @@ pub const ContactInfo = struct {
             // Honest client identity (2026-07-10, core/version.zig): we used to
             // advertise the DEFAULTS (2.2.0, commit=0, client=0) — and client 0
             // is SolanaLabs in Agave's registry (version/src/client_ids.rs), so
-            // explorers mislabeled Vexor as "Solana Labs 2.2.0". Now: 0.9.0,
-            // commit = git-hash prefix (set once at boot, main.zig), client = 86
-            // ('V', unregistered ⇒ renders Unknown(86) — honest). Wire size is
-            // UNCHANGED: 0/9/0 and 86 are all single-byte varints exactly like
-            // the old 2/2/0 and 0; commit stays a fixed u32.
+            // explorers mislabeled Vexor as "Solana Labs 2.2.0". Now: the real
+            // major/minor/patch from VEXOR_VERSION (a pre-release letter suffix,
+            // if any, is a display-only concept — the wire block only ever carries
+            // the three numeric fields), commit = git-hash prefix (set once at
+            // boot, main.zig), client = 86 ('V', unregistered ⇒ renders
+            // Unknown(86) — honest). Wire size is UNCHANGED: major/minor/patch and
+            // 86 are all single-byte varints exactly like the old 2/2/0 and 0;
+            // commit stays a fixed u32.
             .version_major = core.version.VEXOR_VERSION.major,
             .version_minor = core.version.VEXOR_VERSION.minor,
             .version_patch = core.version.VEXOR_VERSION.patch,

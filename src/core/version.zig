@@ -14,18 +14,26 @@
 //! 5=Firedancer 6=AgaveBam 7=Sig), so tooling renders Unknown(86) — honest,
 //! unlike falsely claiming SolanaLabs.
 //!
-//! VEXOR_VERSION 0.9.0 = deliberate pre-production semver (operator decision).
+//! VEXOR_VERSION = deliberate pre-production semver (operator decision), bumped
+//! per release. `.pre` is an optional letter-suffix for an in-between release on
+//! top of the same patch (e.g. "a" ⇒ "0.9.3-a", following the CHANGELOG's own
+//! `v0.9.1-a`-style tags); leave it "" for a plain `major.minor.patch` release.
 
 const std = @import("std");
 
-pub const VEXOR_VERSION = .{ .major = 0, .minor = 9, .patch = 0 };
+pub const VEXOR_VERSION = .{ .major = 0, .minor = 9, .patch = 3, .pre = "a" };
 
 /// @prov:version.client-id — 'V', unregistered ⇒ renders Unknown(86).
 pub const CLIENT_ID: u16 = 86;
 
-pub const SEMVER = std.fmt.comptimePrint("{d}.{d}.{d}", .{
-    VEXOR_VERSION.major, VEXOR_VERSION.minor, VEXOR_VERSION.patch,
-});
+pub const SEMVER = if (VEXOR_VERSION.pre.len > 0)
+    std.fmt.comptimePrint("{d}.{d}.{d}-{s}", .{
+        VEXOR_VERSION.major, VEXOR_VERSION.minor, VEXOR_VERSION.patch, VEXOR_VERSION.pre,
+    })
+else
+    std.fmt.comptimePrint("{d}.{d}.{d}", .{
+        VEXOR_VERSION.major, VEXOR_VERSION.minor, VEXOR_VERSION.patch,
+    });
 
 /// Wire `commit` u32 for the gossip ContactInfo version block. Set ONCE at boot
 /// (main.zig, single-threaded, before gossip init) from the build-stamped git
@@ -56,17 +64,18 @@ pub fn gitHash() []const u8 {
     return if (git_hash_len > 0) git_hash_buf[0..git_hash_len] else "unknown";
 }
 
-/// "vexor-0.9.0 (src:<git-short-hash>; client:Vexor)"
+/// "vexor-0.9.3-a (src:<git-short-hash>; client:Vexor)"
 pub fn buildVersionString(buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "vexor-{s} (src:{s}; client:Vexor)", .{ SEMVER, gitHash() }) catch "vexor-" ++ SEMVER;
 }
 
 test "semver string" {
-    try std.testing.expectEqualStrings("0.9.0", SEMVER);
+    try std.testing.expectEqualStrings("0.9.3-a", SEMVER);
     try std.testing.expectEqual(@as(u16, 86), CLIENT_ID);
     try std.testing.expectEqual(@as(u16, 0), @as(u16, VEXOR_VERSION.major));
     try std.testing.expectEqual(@as(u16, 9), @as(u16, VEXOR_VERSION.minor));
-    try std.testing.expectEqual(@as(u16, 0), @as(u16, VEXOR_VERSION.patch));
+    try std.testing.expectEqual(@as(u16, 3), @as(u16, VEXOR_VERSION.patch));
+    try std.testing.expectEqualStrings("a", VEXOR_VERSION.pre);
 }
 
 test "commit u32 from git hash" {
@@ -80,7 +89,7 @@ test "version string builder" {
     setGitHash("abc1234");
     var buf: [128]u8 = undefined;
     const s = buildVersionString(&buf);
-    try std.testing.expectEqualStrings("vexor-0.9.0 (src:abc1234; client:Vexor)", s);
+    try std.testing.expectEqualStrings("vexor-0.9.3-a (src:abc1234; client:Vexor)", s);
     try std.testing.expectEqual(@as(u32, 0xabc1234), commit_u32);
     // reset global state for other tests
     commit_u32 = 0;
@@ -90,5 +99,5 @@ test "version string builder" {
 test "version string with no git hash set" {
     var buf: [128]u8 = undefined;
     const s = buildVersionString(&buf);
-    try std.testing.expectEqualStrings("vexor-0.9.0 (src:unknown; client:Vexor)", s);
+    try std.testing.expectEqualStrings("vexor-0.9.3-a (src:unknown; client:Vexor)", s);
 }
