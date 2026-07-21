@@ -2568,7 +2568,7 @@ test "gossip pull response parse" {
     try std.testing.expect(service.table.contactCount() > 0);
 }
 
-test "client identity: serialized ContactInfo carries 0.9.0 + client 86 + commit, round-trips, no size regression" {
+test "client identity: serialized ContactInfo carries VEXOR_VERSION + client 86 + commit, round-trips, no size regression" {
     // 2026-07-10 honest-client-id fix (core/version.zig): the wire advertisement
     // must carry OUR version block, not the old defaults (2.2.0/commit=0/client=0
     // = "Solana Labs" on explorers). Asserts byte-level wire content AND that the
@@ -2599,11 +2599,11 @@ test "client identity: serialized ContactInfo carries 0.9.0 + client 86 + commit
     off += 1;
     off += 8; // instance_creation u64
     off += 2; // shred_version u16
-    try std.testing.expectEqual(@as(u8, 0), buf[off]); // major = 0 (single-byte varint)
+    try std.testing.expectEqual(@as(u8, core.version.VEXOR_VERSION.major), buf[off]); // major (single-byte varint)
     off += 1;
-    try std.testing.expectEqual(@as(u8, 9), buf[off]); // minor = 9
+    try std.testing.expectEqual(@as(u8, core.version.VEXOR_VERSION.minor), buf[off]); // minor
     off += 1;
-    try std.testing.expectEqual(@as(u8, 0), buf[off]); // patch = 0
+    try std.testing.expectEqual(@as(u8, core.version.VEXOR_VERSION.patch), buf[off]); // patch
     off += 1;
     const commit = std.mem.readInt(u32, buf[off..][0..4], .little);
     try std.testing.expectEqual(@as(u32, 0x3c63bbd), commit); // git-hash prefix

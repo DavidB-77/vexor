@@ -14,6 +14,12 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-a
+### Validator
+#### Changes
+* Networking: the TPU-ingest QUIC server now reuses the pending connection for a client Initial packet retransmitted before the handshake completes, instead of minting a second connection object. Previously a retransmitted Initial (normal client behavior under WAN jitter or a burst of simultaneous handshakes) could clobber the peer-address routing table entry, orphaning the connection the client actually completed its handshake against; the client reported a successful handshake while every subsequent packet, including the transaction stream, was silently dropped.
+* The version-report string (gossip client-id advertisement and boot banner) now reads `0.9.3-a`, matching this release.
+
 ## 0.9.3
 ### Validator
 #### Changes
