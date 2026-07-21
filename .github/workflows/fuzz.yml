@@ -1,0 +1,46 @@
+name: fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [shred-parse, entry-batch, gossip-protocol, tx-ingest, compute-budget]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libjemalloc-dev
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.15.2
+
+      # Compile-smoke each harness's own `std.testing.fuzz` block first —
+      # cheap, and catches a harness/target API drift before the bounded run.
+      - name: Harness smoke test
+        run: zig build test-fuzz-${{ matrix.target }} -Dprod -Dpure_zig --release=safe -Dcpu=x86_64_v2
+
+      # Bounded local mutation run (fuzz/runner.zig — see fuzz/README.md).
+      # Short PR-time budget, not a full campaign; upload any crash found.
+      - name: Build fuzz driver
+        run: zig build fuzz-${{ matrix.target }} -Dprod -Dpure_zig --release=safe -Dcpu=x86_64_v2
+
+      - name: Bounded fuzz run (60s)
+        run: ./zig-out/bin/fuzz-${{ matrix.target }} -max_total_time=60 -rss_limit_mb=2048 fuzz/seeds/${{ matrix.target == 'shred-parse' && 'shred_parse' || matrix.target == 'entry-batch' && 'entry_batch' || matrix.target == 'gossip-protocol' && 'gossip_protocol' || matrix.target == 'tx-ingest' && 'tx_ingest' || 'compute_budget' }}
+
+      - name: Upload crashes (if any)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: fuzz/crashes/
+          if-no-files-found: ignore

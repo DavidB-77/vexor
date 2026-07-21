@@ -1720,6 +1720,195 @@ pub fn build(b: *std.Build) void {
     test_shred_parse_step.dependOn(&run_shred_parse.step);
     test_migrated_step.dependOn(&run_shred_parse.step);
 
+    // ── FUZZ HARNESSES (fuzz/*) — CI smoke wiring, 2026-07-21 ──────────────────
+    // Wires the 5 existing libFuzzer-ABI harnesses (fuzz/fuzz_*.zig — see
+    // fuzz/README.md) into the build graph for the first time. Each driver
+    // links fuzz/runner.zig (the local fork-per-input mutation driver; Zig
+    // 0.15.2 can't emit the full -fsanitize=fuzzer codegen a real libFuzzer
+    // runtime needs — see fuzz/README.md "OSS-Fuzz readiness") against the
+    // target harness via the "target_harness" named import runner.zig expects,
+    // plus a "fuzz_meta" import (an addOptions-synthesized module) supplying
+    // the harness_name string runner.zig's crash/log messages use.
+    // `zig build fuzz-<target>` builds+installs the driver binary — run it
+    // directly per fuzz/README.md's "Building and running locally" (flags:
+    // -max_total_time=<s>, -rss_limit_mb=<mb>, plus a seed-corpus dir arg).
+    // `zig build fuzz` builds all 5. `zig build test-fuzz-<target>` runs the
+    // harness module's own std.testing.fuzz block as a plain smoke test.
+    // Each target module below is a fresh instance local to this block, same
+    // "recreate the module per consumer" pattern already used throughout this
+    // file (e.g. tx_ingest.zig is separately mounted as net_txingest/
+    // pp_txingest/bbcast_txingest/etc. elsewhere) — none of these are reachable
+    // from the production vexor graph.
+    const fuzz_step = b.step("fuzz", "Build all 5 local fuzz driver binaries (fuzz/README.md)");
+
+    // -- fuzz-shred-parse --------------------------------------------------
+    {
+        const shred_parse_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/shred_parse.zig"), .target = target, .optimize = optimize });
+        shred_parse_target.addImport("core", core);
+        shred_parse_target.addImport("vex_crypto", vex_crypto);
+
+        const harness_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_shred_parse.zig"), .target = target, .optimize = optimize });
+        harness_mod.addImport("shred_parse", shred_parse_target);
+
+        const meta_opts = b.addOptions();
+        meta_opts.addOption([]const u8, "harness_name", "shred-parse");
+
+        const driver_mod = b.createModule(.{ .root_source_file = b.path("fuzz/runner.zig"), .target = target, .optimize = optimize });
+        driver_mod.addImport("target_harness", harness_mod);
+        driver_mod.addImport("fuzz_meta", meta_opts.createModule());
+
+        const exe = b.addExecutable(.{ .name = "fuzz-shred-parse", .root_module = driver_mod });
+        const install = b.addInstallArtifact(exe, .{});
+        const step = b.step("fuzz-shred-parse", "Build the shred-parse local fuzz driver (fuzz/README.md)");
+        step.dependOn(&install.step);
+        fuzz_step.dependOn(&install.step);
+
+        const smoke_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_shred_parse.zig"), .target = target, .optimize = optimize });
+        smoke_mod.addImport("shred_parse", shred_parse_target);
+        const smoke = b.addTest(.{ .name = "test-fuzz-shred-parse", .root_module = smoke_mod });
+        const run_smoke = b.addRunArtifact(smoke);
+        const smoke_step = b.step("test-fuzz-shred-parse", "Smoke-test the shred-parse fuzz harness (std.testing.fuzz block)");
+        smoke_step.dependOn(&run_smoke.step);
+    }
+
+    // -- fuzz-entry-batch ----------------------------------------------------
+    {
+        const entry_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/entry.zig"), .target = target, .optimize = optimize });
+        const tx_ingest_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
+        tx_ingest_target.addImport("core", core);
+        tx_ingest_target.addImport("vex_crypto", vex_crypto);
+
+        const harness_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_entry_batch.zig"), .target = target, .optimize = optimize });
+        harness_mod.addImport("entry", entry_target);
+        harness_mod.addImport("tx_ingest", tx_ingest_target);
+
+        const meta_opts = b.addOptions();
+        meta_opts.addOption([]const u8, "harness_name", "entry-batch");
+
+        const driver_mod = b.createModule(.{ .root_source_file = b.path("fuzz/runner.zig"), .target = target, .optimize = optimize });
+        driver_mod.addImport("target_harness", harness_mod);
+        driver_mod.addImport("fuzz_meta", meta_opts.createModule());
+
+        const exe = b.addExecutable(.{ .name = "fuzz-entry-batch", .root_module = driver_mod });
+        const install = b.addInstallArtifact(exe, .{});
+        const step = b.step("fuzz-entry-batch", "Build the entry-batch local fuzz driver (fuzz/README.md)");
+        step.dependOn(&install.step);
+        fuzz_step.dependOn(&install.step);
+
+        const smoke_entry_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/entry.zig"), .target = target, .optimize = optimize });
+        const smoke_tx_ingest_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
+        smoke_tx_ingest_target.addImport("core", core);
+        smoke_tx_ingest_target.addImport("vex_crypto", vex_crypto);
+        const smoke_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_entry_batch.zig"), .target = target, .optimize = optimize });
+        smoke_mod.addImport("entry", smoke_entry_target);
+        smoke_mod.addImport("tx_ingest", smoke_tx_ingest_target);
+        const smoke = b.addTest(.{ .name = "test-fuzz-entry-batch", .root_module = smoke_mod });
+        const run_smoke = b.addRunArtifact(smoke);
+        const smoke_step = b.step("test-fuzz-entry-batch", "Smoke-test the entry-batch fuzz harness (std.testing.fuzz block)");
+        smoke_step.dependOn(&run_smoke.step);
+    }
+
+    // -- fuzz-gossip-protocol -------------------------------------------------
+    {
+        const crds_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/crds.zig"), .target = target, .optimize = optimize });
+        crds_target.addImport("vex_crypto", vex_crypto);
+
+        const harness_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_gossip_protocol.zig"), .target = target, .optimize = optimize });
+        harness_mod.addImport("crds", crds_target);
+
+        const meta_opts = b.addOptions();
+        meta_opts.addOption([]const u8, "harness_name", "gossip-protocol");
+
+        const driver_mod = b.createModule(.{ .root_source_file = b.path("fuzz/runner.zig"), .target = target, .optimize = optimize });
+        driver_mod.addImport("target_harness", harness_mod);
+        driver_mod.addImport("fuzz_meta", meta_opts.createModule());
+
+        const exe = b.addExecutable(.{ .name = "fuzz-gossip-protocol", .root_module = driver_mod });
+        const install = b.addInstallArtifact(exe, .{});
+        const step = b.step("fuzz-gossip-protocol", "Build the gossip-protocol local fuzz driver (fuzz/README.md)");
+        step.dependOn(&install.step);
+        fuzz_step.dependOn(&install.step);
+
+        const smoke_crds_target = b.createModule(.{ .root_source_file = b.path("src/vex_network/crds.zig"), .target = target, .optimize = optimize });
+        smoke_crds_target.addImport("vex_crypto", vex_crypto);
+        const smoke_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_gossip_protocol.zig"), .target = target, .optimize = optimize });
+        smoke_mod.addImport("crds", smoke_crds_target);
+        const smoke = b.addTest(.{ .name = "test-fuzz-gossip-protocol", .root_module = smoke_mod });
+        const run_smoke = b.addRunArtifact(smoke);
+        const smoke_step = b.step("test-fuzz-gossip-protocol", "Smoke-test the gossip-protocol fuzz harness (std.testing.fuzz block)");
+        smoke_step.dependOn(&run_smoke.step);
+    }
+
+    // -- fuzz-tx-ingest --------------------------------------------------------
+    {
+        const tx_ingest_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
+        tx_ingest_target.addImport("core", core);
+        tx_ingest_target.addImport("vex_crypto", vex_crypto);
+
+        const harness_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_tx_ingest.zig"), .target = target, .optimize = optimize });
+        harness_mod.addImport("tx_ingest", tx_ingest_target);
+
+        const meta_opts = b.addOptions();
+        meta_opts.addOption([]const u8, "harness_name", "tx-ingest");
+
+        const driver_mod = b.createModule(.{ .root_source_file = b.path("fuzz/runner.zig"), .target = target, .optimize = optimize });
+        driver_mod.addImport("target_harness", harness_mod);
+        driver_mod.addImport("fuzz_meta", meta_opts.createModule());
+
+        const exe = b.addExecutable(.{ .name = "fuzz-tx-ingest", .root_module = driver_mod });
+        const install = b.addInstallArtifact(exe, .{});
+        const step = b.step("fuzz-tx-ingest", "Build the tx-ingest local fuzz driver (fuzz/README.md)");
+        step.dependOn(&install.step);
+        fuzz_step.dependOn(&install.step);
+
+        const smoke_tx_ingest_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
+        smoke_tx_ingest_target.addImport("core", core);
+        smoke_tx_ingest_target.addImport("vex_crypto", vex_crypto);
+        const smoke_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_tx_ingest.zig"), .target = target, .optimize = optimize });
+        smoke_mod.addImport("tx_ingest", smoke_tx_ingest_target);
+        const smoke = b.addTest(.{ .name = "test-fuzz-tx-ingest", .root_module = smoke_mod });
+        const run_smoke = b.addRunArtifact(smoke);
+        const smoke_step = b.step("test-fuzz-tx-ingest", "Smoke-test the tx-ingest fuzz harness (std.testing.fuzz block)");
+        smoke_step.dependOn(&run_smoke.step);
+    }
+
+    // -- fuzz-compute-budget ----------------------------------------------------
+    {
+        const tx_ingest_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
+        tx_ingest_target.addImport("core", core);
+        tx_ingest_target.addImport("vex_crypto", vex_crypto);
+        const compute_budget_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/compute_budget.zig"), .target = target, .optimize = optimize });
+
+        const harness_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_compute_budget.zig"), .target = target, .optimize = optimize });
+        harness_mod.addImport("tx_ingest", tx_ingest_target);
+        harness_mod.addImport("compute_budget", compute_budget_target);
+
+        const meta_opts = b.addOptions();
+        meta_opts.addOption([]const u8, "harness_name", "compute-budget");
+
+        const driver_mod = b.createModule(.{ .root_source_file = b.path("fuzz/runner.zig"), .target = target, .optimize = optimize });
+        driver_mod.addImport("target_harness", harness_mod);
+        driver_mod.addImport("fuzz_meta", meta_opts.createModule());
+
+        const exe = b.addExecutable(.{ .name = "fuzz-compute-budget", .root_module = driver_mod });
+        const install = b.addInstallArtifact(exe, .{});
+        const step = b.step("fuzz-compute-budget", "Build the compute-budget local fuzz driver (fuzz/README.md)");
+        step.dependOn(&install.step);
+        fuzz_step.dependOn(&install.step);
+
+        const smoke_tx_ingest_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/tx_ingest.zig"), .target = target, .optimize = optimize });
+        smoke_tx_ingest_target.addImport("core", core);
+        smoke_tx_ingest_target.addImport("vex_crypto", vex_crypto);
+        const smoke_compute_budget_target = b.createModule(.{ .root_source_file = b.path("src/vex_svm/compute_budget.zig"), .target = target, .optimize = optimize });
+        const smoke_mod = b.createModule(.{ .root_source_file = b.path("fuzz/fuzz_compute_budget.zig"), .target = target, .optimize = optimize });
+        smoke_mod.addImport("tx_ingest", smoke_tx_ingest_target);
+        smoke_mod.addImport("compute_budget", smoke_compute_budget_target);
+        const smoke = b.addTest(.{ .name = "test-fuzz-compute-budget", .root_module = smoke_mod });
+        const run_smoke = b.addRunArtifact(smoke);
+        const smoke_step = b.step("test-fuzz-compute-budget", "Smoke-test the compute-budget fuzz harness (std.testing.fuzz block)");
+        smoke_step.dependOn(&run_smoke.step);
+    }
+
     // ── ELF-RESOLUTION-FAILURE GUARD KAT — fix/small-parity-batch-2026-07-17 ──
     // Run with: zig build test-elf-resolution-guard
     // elf_resolution_guard.zig is a zero-dependency (std-only) leaf holding the
