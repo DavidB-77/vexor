@@ -21,7 +21,7 @@
 
 const std = @import("std");
 
-pub const VEXOR_VERSION = .{ .major = 0, .minor = 9, .patch = 3, .pre = "a" };
+pub const VEXOR_VERSION = .{ .major = 0, .minor = 9, .patch = 3, .pre = "b" };
 
 /// @prov:version.client-id — 'V', unregistered ⇒ renders Unknown(86).
 pub const CLIENT_ID: u16 = 86;
