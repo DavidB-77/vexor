@@ -19,11 +19,16 @@
   <a href="https://github.com/DavidB-77/vexor/actions/workflows/build.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/build.yml/badge.svg?branch=main" alt="build"></a>
   <a href="https://github.com/DavidB-77/vexor/actions/workflows/test.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/test.yml/badge.svg?branch=main" alt="test"></a>
   <a href="https://github.com/DavidB-77/vexor/actions/workflows/lint.yml"><img src="https://github.com/DavidB-77/vexor/actions/workflows/lint.yml/badge.svg?branch=main" alt="lint"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/DavidB-77/vexor"><img src="https://api.scorecard.dev/projects/github.com/DavidB-77/vexor/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 <!-- Badge policy: every badge above states something true and verifiable today.
-     Post-flip additions worth enrolling for (not fakeable, must be earned):
-     OpenSSF Scorecard + Best Practices badge, codecov once coverage CI exists. -->
+     Scorecard is a real, unfakeable, ecosystem-standard signal (branch
+     protection, SAST, pinned deps, token perms, etc.) computed by
+     scorecard.dev, not asserted by this README.
+     Post-flip additions worth enrolling for next: OpenSSF Best Practices
+     badge (bestpractices.dev self-assessment), codecov once coverage CI
+     exists. -->
 
 An independent, Zig-native Solana validator — **byte-for-byte
 behavior-compatible with the Agave validator** by design. The majority of the
