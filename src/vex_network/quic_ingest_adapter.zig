@@ -48,8 +48,15 @@ pub const AdapterError = error{
 pub const QuicIngestAdapter = struct {
     banking: *BankingStage,
 
-    /// Count of txs the adapter rejected as malformed before enqueue (observability; not consensus).
-    rejected: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    // [INGEST-STATS] tx-parse layer-boundary counters: distinguishes "well-formed wire bytes"
+    // (parse_ok) from "malformed, rejected before reaching the mempool" (parse_fail) — the
+    // boundary between the QUIC/stream layer and
+    // the mempool-admit layer (banking_stage.Stats owns admit_ok/admit_reject on the other side of
+    // queueTransaction). Atomic: `ingest`/`onTransaction` today only ever run on the single QUIC
+    // pump thread, but keeping these atomic (like banking_stage.Stats) costs nothing and keeps the
+    // adapter safe if a second ingest caller (e.g. a future RPC sendTransaction path) is added.
+    parse_ok: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    parse_fail: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     pub fn init(banking: *BankingStage) QuicIngestAdapter {
         return .{ .banking = banking };
@@ -61,14 +68,17 @@ pub const QuicIngestAdapter = struct {
     /// the QUIC layer reuse/free the buffer immediately after this returns.
     pub fn onTransaction(ctx: ?*anyopaque, data: []const u8) void {
         const self: *QuicIngestAdapter = @ptrCast(@alignCast(ctx orelse return));
-        self.ingest(data) catch |err| {
-            // Dropped at ingest: malformed wire or queue full. A dropped tx is not a consensus
-            // event (the cluster will route it elsewhere); count it and move on.
-            switch (err) {
-                error.Malformed => _ = self.rejected.fetchAdd(1, .monotonic),
-                else => {}, // QueueFull etc. — banking_stage already bumped its dropped stat.
-            }
-        };
+        // [INGEST-SLOT] "txs_received": a complete, FIN-terminated stream payload reached the
+        // server-side ingest callback — bumped
+        // UNCONDITIONALLY here (before parse/queue outcome is known) so it counts arrivals, not
+        // successes. Lives on banking_stage.stats (not a new field on this struct) so the
+        // leader-produce call site can read it without needing an adapter pointer of its own.
+        _ = self.banking.stats.ingest_rx_total.fetchAdd(1, .monotonic);
+        // Dropped at ingest: malformed wire (parse_fail, counted in `ingest` below) or mempool
+        // reject (banking_stage.Stats.reject_*, counted inside queueTransaction). Neither is a
+        // consensus event (the cluster routes the tx elsewhere via its own mempool) — count and
+        // move on. No separate counter needed at this boundary; see [INGEST-STATS] in main.zig.
+        self.ingest(data) catch {};
     }
 
     /// Parse-validate the wire bytes, then enqueue the RAW bytes into the banking-stage mempool.
@@ -80,7 +90,11 @@ pub const QuicIngestAdapter = struct {
         // Validate well-formedness (signature count, header, signer-key bounds). We intentionally do
         // NOT sigverify here — sigverify is a separate, parallelizable stage; the mempool's job is to
         // hold candidate txs. Rejecting only structurally-malformed bytes mirrors banking-stage intake.
-        const parsed = tx_ingest.parse(data, &scratch_sigs, &scratch_keys) catch return error.Malformed;
+        const parsed = tx_ingest.parse(data, &scratch_sigs, &scratch_keys) catch {
+            _ = self.parse_fail.fetchAdd(1, .monotonic);
+            return error.Malformed;
+        };
+        _ = self.parse_ok.fetchAdd(1, .monotonic);
 
         // Rank by the tx's declared ComputeBudget price (micro-lamports/CU); 0 if it sets none. The
         // mempool then orders higher-fee txs first for the next leader block. Votes arrive on the

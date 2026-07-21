@@ -436,6 +436,9 @@ pub const Connection = struct {
                         self.tls.key_schedule.updateTranscript(msg);
                         self.tls.handshake_complete = true;
                         self.state = .connected;
+                        // [INGEST-STATS]: same-thread as the QUIC pump loop that reads this (see
+                        // EndpointStats doc comment) — no lock/atomic needed.
+                        self.endpoint.stats.handshakes_completed += 1;
                         std.log.debug("[QUIC] server handshake COMPLETE (client Finished verified)\n", .{});
                     } else {
                         // CLIENT path: process server Finished (transcribes it + derives app secrets
@@ -1127,6 +1130,28 @@ pub const Endpoint = struct {
         packets_received: u64 = 0,
         bytes_sent: u64 = 0,
         bytes_received: u64 = 0,
+
+        // [INGEST-STATS] layer-boundary counters: the ingest chain from QUIC handshake through
+        // stream FIN used to be observable only via std.log.debug, which ReleaseSafe compiles
+        // out entirely — a
+        // handshake could complete and every subsequent packet die silently with zero trace.
+        // Plain u64 (not atomic): the Endpoint is driven exclusively by the single QUIC pump
+        // thread (main.zig's srv.poll() loop), which is also the sole reader (main.zig's
+        // periodic [INGEST-STATS] line) — same-thread owner, no cross-thread sync needed.
+        /// Server-side TLS handshakes that reached handshake_complete=true (client Finished verified).
+        handshakes_completed: u64 = 0,
+        /// New (never-seen-before) stream IDs created by processStreamFrame — one per uni-stream a
+        /// peer opens, which for TPU ingest is one per submitted transaction.
+        streams_opened: u64 = 0,
+        /// Total STREAM-frame payload bytes appended to any stream's recv_buffer.
+        stream_bytes_total: u64 = 0,
+        /// processShortHeaderPacket dropped a 1-RTT packet because `connections_by_addr` resolved to
+        /// a connection whose handshake was not yet complete — the exact silent-drop site the trace
+        /// report located (quic.zig processShortHeaderPacket, formerly std.log.debug-only).
+        short_header_drop_no_handshake: u64 = 0,
+        /// processShortHeaderPacket resolved a connection but AEAD decrypt failed — the other
+        /// silent-drop site the trace report located (orphaned/mismatched connection object).
+        short_header_decrypt_fail: u64 = 0,
     };
 
     pub fn init(allocator: std.mem.Allocator, bind_addr: packet.SocketAddr, is_server: bool, config: EndpointConfig) !*Self {
@@ -2171,6 +2196,17 @@ pub const Endpoint = struct {
 
         if (!conn.tls.handshake_complete) {
             std.log.debug("[QUIC] drop short header before handshake\n", .{});
+            // [INGEST-STATS]: a 1-RTT packet (including the
+            // one FIN-terminated stream carrying a tx) arrives for a connections_by_addr entry
+            // whose handshake never completed (orphaned by a duplicate acceptConnection). Cumulative
+            // count surfaces in the periodic [INGEST-STATS] line; this WARNING is rate-limited
+            // (first occurrence + every 100th) so a sustained drop storm can't flood the log while
+            // still being visible at production (non-debug) log level.
+            self.stats.short_header_drop_no_handshake += 1;
+            const n = self.stats.short_header_drop_no_handshake;
+            if (n == 1 or n % 100 == 0) {
+                std.log.warn("[INGEST-DROP] short header before handshake complete (orphaned connection?) peer={any} count={d}\n", .{ pkt.src_addr, n });
+            }
             return;
         }
 
@@ -2212,6 +2248,15 @@ pub const Endpoint = struct {
         @memcpy(&tag_buf, tag);
         conn.tls.decryptPacket(is_srv, pn, header_buf[0 .. pn_offset + pn_len], ciphertext, tag_buf, plaintext_buf[0..ciphertext_len]) catch |err| {
             std.log.debug("[QUIC] short header decrypt failed pn={d} err={}\n", .{ pn, err });
+            // [INGEST-STATS] (2026-07-21): the second silent-drop site the trace report located —
+            // a connection resolved via connections_by_addr but its AEAD keys don't match what the
+            // client actually used (same orphaned-connection mechanism as the handshake-incomplete
+            // drop above). Rate-limited WARNING (first + every 100th) mirrors that site.
+            self.stats.short_header_decrypt_fail += 1;
+            const n = self.stats.short_header_decrypt_fail;
+            if (n == 1 or n % 100 == 0) {
+                std.log.warn("[INGEST-DROP] short header decrypt failed pn={d} err={} peer={any} count={d}\n", .{ pn, err, pkt.src_addr, n });
+            }
             return err;
         };
 
@@ -2484,7 +2529,6 @@ pub const Endpoint = struct {
     }
 
     fn processStreamFrame(self: *Self, conn: *Connection, frame_type: u8, data: []const u8) !usize {
-        _ = self;
         if (data.len == 0) return 0;
 
         // Parse stream frame
@@ -2518,11 +2562,15 @@ pub const Endpoint = struct {
         if (stream == null) {
             stream = try Stream.init(conn.allocator, conn, stream_id);
             try conn.streams.put(stream_id, stream.?);
+            // [INGEST-STATS]: one uni-stream per submitted tx on the TPU-ingest wire model — this
+            // is the "a peer actually opened a stream at us" layer boundary, upstream of FIN/parse.
+            self.stats.streams_opened += 1;
         }
 
         // Append data
         if (data_len > 0) {
             try stream.?.appendRecvData(data[offset..][0..data_len]);
+            self.stats.stream_bytes_total += data_len;
         }
 
         if (has_fin) {

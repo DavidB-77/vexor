@@ -2071,6 +2071,16 @@ pub const ReplayStage = struct {
         if (pack_tx_bearing) self.self_produced_tx_bearing.put(self.allocator, next_slot, {}) catch {};
         if (pack_tx_bearing and broadcast_enabled)
             std.log.warn("[LEADER-PRODUCE] slot={d} TX-BEARING BROADCAST ARMED — inline gate (pre-filter+cost); transfer-drain residual monitored via [PRODUCE-PARITY-FAIL] + M3 auto-safe-off tripwire", .{next_slot});
+        // [INGEST-SLOT] decisive per-slot triple: snapshot the cumulative ingest counters BEFORE
+        // this slot's single produceSlotBytes call so the post-call delta is exactly this slot's
+        // received/queued/packed window — no dependency on bank.zig's always-on [BANK-FROZEN] line
+        // (touching that consensus-parity line's format is out of scope/risky; this is a standalone
+        // WARNING emitted only when a mempool exists at all, i.e. VEX_TPU_INGEST is on).
+        const ingest_slot_before: ?[3]u64 = if (self.banking_stage) |bs| .{
+            bs.stats.ingest_rx_total.load(.monotonic),
+            bs.stats.txs_received.load(.monotonic) + bs.stats.votes_received.load(.monotonic),
+            bs.stats.txs_packed_into_slot.load(.monotonic),
+        } else null;
         const bytes = if (pack_tx_bearing) blk: {
             // Loopback-only tx-bearing path: pack drained txs through the SEQUENTIAL pre-filter
             // (sigverify + blockhash-age + fee-payer-can-pay using a RUNNING per-block balance, so the
@@ -2131,6 +2141,20 @@ pub const ReplayStage = struct {
             return;
         };
         defer self.allocator.free(bytes);
+
+        // [INGEST-SLOT]: emit the delta now that produceSlotBytes (if it ran) has updated the
+        // counters. Zero-pattern reading: received==0 ⇒ dies upstream in QUIC accept/stream layer;
+        // received>0,queued==0 ⇒ dies in
+        // tx_ingest.parse/admission; queued>0,packed==0 ⇒ dies in the produce-time drain/pack step;
+        // packed>0 yet block empty on-chain ⇒ points past admission to shred/broadcast assembly.
+        if (ingest_slot_before) |before| {
+            if (self.banking_stage) |bs| {
+                const rx = bs.stats.ingest_rx_total.load(.monotonic) -% before[0];
+                const queued = (bs.stats.txs_received.load(.monotonic) + bs.stats.votes_received.load(.monotonic)) -% before[1];
+                const packed_count = bs.stats.txs_packed_into_slot.load(.monotonic) -% before[2];
+                std.log.warn("[INGEST-SLOT] slot={d} txs_received={d} txs_queued={d} txs_packed_into_slot={d}\n", .{ next_slot, rx, queued, packed_count });
+            }
+        }
 
         // Mark self-produced BEFORE the loopback so the freeze handler skips self-voting it.
         self.self_produced.put(self.allocator, next_slot, {}) catch {};
