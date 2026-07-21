@@ -14,6 +14,12 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-b
+### Validator
+#### Changes
+* Networking: the TPU-ingest QUIC server, mempool, and leader block-production path now emit stat counters and rate-limited warning-level log lines covering the full chain from QUIC handshake through mempool admission to a produced slot (handshakes, streams, bytes, parse ok/fail, mempool admit ok/reject with a reason breakdown, and per-slot received/queued/packed deltas). Previously this chain was either uninstrumented or logged only at a level release builds compile out, so a stall anywhere along it produced no trace. Also adds a one-time boot notice that TPU-ingest mempool admission is not gated to leader slots. Observability only; no change to validator behavior.
+* The version-report string (gossip client-id advertisement and boot banner) now reads `0.9.3-b`, matching this release.
+
 ## 0.9.3-a
 ### Validator
 #### Changes
