@@ -13,11 +13,17 @@ per-file behavior provenance against upstream Agave, Firedancer, and Sig lives
 in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
+
+## 0.9.2
 ### Validator
 #### Changes
-* The validator binary is now named `vexor` (previously `vex-fd`).
-* Consensus: the non-advancing vote-retarget fallback now withholds instead of voting the local fork tip when fork choice has selected a different fork. Previously, during cluster fork events the fallback could repeatedly extend the local fork's tower lockouts against the canonical fork, in the worst case locking the validator out long enough to go delinquent. A known-answer test pins the fork topology from the live incident.
+* The validator binary is now named `vexor` (previously `vex-fd`), including its help and startup output.
+* Consensus: the non-advancing vote-retarget fallback now withholds instead of voting the local fork tip when fork choice has selected a different fork. Previously, during cluster fork events the fallback could repeatedly extend the local fork's tower lockouts against the canonical fork, in the worst case locking the validator out long enough to go delinquent. A known-answer test pins the fork topology from the live incident, and the fix is verified against a live cluster fork event.
 * Snapshot boot: the snapshot-source deny-list is now configured via the VEX_SNAPSHOT_DENY_HOSTS environment variable (comma-separated hosts, all ports denied) instead of a hardcoded list. The built-in list ships empty; operators co-locating other validators should set it to keep boot state isolated.
+
+### RPC
+#### Changes
+* The identity endpoint no longer falls back to a hardcoded address when no public IP is configured; it now returns the unspecified address (0.0.0.0), consistent with the rest of the configuration surface.
 
 ## 0.9.1-a
 ### Validator
