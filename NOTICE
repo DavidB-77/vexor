@@ -37,6 +37,7 @@ applied in detail to the crypto stack).
             src/vex_svm/executor.zig           ← fd_executor.c
             src/vex_svm/runtime.zig            ← fd_runtime.c
             src/vex_svm/native/system_v2.zig   ← fd_system_program.c
+            src/vex_svm/native/system.zig      ← fd_system_program.c (minimal: Transfer/CreateAccount)
             src/vex_svm/native/vote_v2.zig     ← fd_vote_program.c
             src/vex_svm/native/nonce.zig       ← fd_system_program_nonce.c
             src/vex_svm/native/stake_state.zig ← fd_stake_types.h/.c
