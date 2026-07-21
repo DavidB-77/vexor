@@ -43,23 +43,17 @@ milestone.
 
 ## Attribution
 
-Vexor is an **independent implementation**, not a fork. Most of its
-Agave-compatible behavior was achieved by using these Apache-2.0 projects as
-**reference implementations and differential test oracles** — reimplementing
-their behavior in Zig and verifying bit-for-bit against their output. Some
-subsystems are instead declared **ports**, and every one is enumerated in
-`NOTICE` and `PROVENANCE.md`:
+Vexor is an **independent implementation, not a fork**, reimplemented from
+scratch using these Apache-2.0 projects as **reference oracles** (not
+compiled-in code) — except where a subsystem is declared a **port** in
+`NOTICE`:
 
-- **[Agave](https://github.com/anza-xyz/agave)** (Anza) — primary behavioral reference; no Agave (Rust) code is compiled into Vexor.
-- **[Firedancer](https://github.com/firedancer-io/firedancer)** (Jump Crypto) — leaf-crypto reference (**no C linked** — crypto is pure-Zig), plus declared whole-file Zig ports of several SVM-core and networking modules (executor, runtime, system/vote/nonce programs, rewards, hashes, scheduler, and more — see `NOTICE`).
-- **[Sig](https://github.com/Syndica/sig)** (Syndica) — Zig-idiomatic structure reference during bring-up; the zk-ElGamal proof subsystem (`src/vex_bpf2/zksdk/`) is a Vexor re-implementation of Sig's, and the legacy sBPF interpreter has Sig lineage (see `NOTICE`).
+- **[Agave](https://github.com/anza-xyz/agave)** (Anza) — primary reference; no Agave code compiled in.
+- **[Firedancer](https://github.com/firedancer-io/firedancer)** (Jump) — leaf-crypto reference (no C linked); several SVM/networking modules are declared ports.
+- **[Sig](https://github.com/Syndica/sig)** (Syndica) — structure reference; zk-ElGamal and the legacy sBPF interpreter carry declared Sig lineage.
 
-Full credit and per-subsystem provenance:
-
-- **[`NOTICE`](./NOTICE)** — project-level attribution.
-- **[`PROVENANCE.md`](./PROVENANCE.md)** — the fine-grained ledger mapping each
-  Vexor file/function to the upstream source it reimplements (keyed by stable
-  `@prov:` IDs, not line numbers).
+Full provenance: [`NOTICE`](./NOTICE) · [`PROVENANCE.md`](./PROVENANCE.md) ·
+docs site [Attribution & License](https://docs.vexornode.xyz/project/attribution-and-license/).
 
 "Agave", "Firedancer", "Sig", and "Solana" are trademarks of their respective owners.
 
@@ -159,26 +153,16 @@ assumes a NIC with XDP zero-copy support (there is a standard-socket fallback).
 
 ## Acknowledgments
 
-Vexor exists because other teams built great validator clients in the open.
-We learned how a Solana validator really works — how consensus, replay,
-gossip, and block production behave on a live cluster — in large part by
-studying the open source of **[Agave](https://github.com/anza-xyz/agave)**
-(Anza), **[Firedancer](https://github.com/firedancer-io/firedancer)** (Jump),
-and **[Sig](https://github.com/Syndica/sig)** (Syndica), and by using their
-implementations as reference oracles to verify Vexor's behavior
-byte-for-byte. We're grateful for that openness; without it, building an
-independent client would have been immeasurably harder.
+Vexor exists because Agave (Anza), Firedancer (Jump), and Sig (Syndica) were
+built in the open — studying their source is how we learned how a live
+Solana validator really works, and their implementations served as
+reference oracles for byte-for-byte verification. Declared ports/adaptations
+are cited in [`NOTICE`](./NOTICE) and [`PROVENANCE.md`](./PROVENANCE.md);
+everything else is independent, from-scratch work.
 
-Where Vexor directly ports or adapts specific code or algorithms, that
-lineage is declared explicitly — with upstream commits and licenses — in
-[`NOTICE`](./NOTICE) and [`PROVENANCE.md`](./PROVENANCE.md). Everything else
-is an independent, from-scratch implementation written to match the
-network's canonical *behavior*, not the reference code.
-
-Vexor aims to stand alongside the ecosystem's other production clients, such
-as **[Jito-Solana](https://github.com/jito-foundation/jito-solana)** —
-another independent client serving the same network — with Vexor taking its
-own path on efficiency, performance, and self-containment.
+Vexor aims to stand alongside the ecosystem's other independent clients,
+such as **[Jito-Solana](https://github.com/jito-foundation/jito-solana)**,
+each taking its own path.
 
 ## License
 
