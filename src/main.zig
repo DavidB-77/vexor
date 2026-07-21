@@ -1,4 +1,4 @@
-//! Vex-FD Validator Entry Point
+//! Vexor Validator Entry Point
 //!
 //! Migrated from Vexor 0.14.1 → Zig 0.15.2 for vex-fd.
 //! Changes applied:
@@ -537,7 +537,7 @@ fn applyFeatureForceActivate(
 // ── Validator runtime ─────────────────────────────────────────────────────────
 
 fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    std.log.debug("\nStarting Vex-FD Validator...\n\n", .{});
+    std.log.debug("\nStarting Vexor Validator...\n\n", .{});
 
     // Feature-gate conformance canary (M1): fail-fast interlock. VEX_FEATURE_FORCE_
     // ACTIVATE is OFFLINE-REPLAY-ONLY and force-activating a gate CHANGES execution,
@@ -1271,9 +1271,9 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         // One-time WARN logging the FINAL tile→core map the BINARY controls, so the
         // live pinning is confirmable from the log. Static hot tiles are UNMOVED
         // (conservative/additive rework). The dynamic-relief pool (CCX0 1-3) is set
-        // by tools/vex-fd-pin.sh, which the binary cannot observe — noted as such.
+        // by the core-pinning helper, which the binary cannot observe — noted as such.
         std.log.warn(
-            "[TOPO] static: recv={d} quic-pump={d} verify={d}-{d} replay={d} produce={d} gossip={d} txsend={d} sysvar={d} repair={d} | floaters: rpc={d} quic_poller={d}(==txsend) afxdp_workers=cold1[dormant] fetch_workers=cold1[dormant] | dynamic-relief: CCX0 {d},{d},{d} (vex-fd-pin.sh) | reserved: {s}",
+            "[TOPO] static: recv={d} quic-pump={d} verify={d}-{d} replay={d} produce={d} gossip={d} txsend={d} sysvar={d} repair={d} | floaters: rpc={d} quic_poller={d}(==txsend) afxdp_workers=cold1[dormant] fetch_workers=cold1[dormant] | dynamic-relief: CCX0 {d},{d},{d} (core-pinning helper) | reserved: {s}",
             .{
                 vex_topo.LIVE.recv,
                 vex_topo.LIVE.quic,
@@ -2966,7 +2966,7 @@ fn runMainLoop(replay_stage: *replay_mod.ReplayStage) !void {
 fn printBanner() void {
     std.log.debug(
         \\
-        \\  VEX-FD Solana Validator
+        \\  Vexor Solana Validator
         \\  Native Zig SVM port — Zig 0.15.2
         \\  ===================================
         \\
@@ -2974,7 +2974,7 @@ fn printBanner() void {
 }
 
 fn printVersion() void {
-    std.log.debug("Vex-FD\n", .{});
+    std.log.debug("Vexor\n", .{});
     std.log.debug("Zig: {any}\n", .{builtin.zig_version});
 }
 

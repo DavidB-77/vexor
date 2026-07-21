@@ -13,7 +13,7 @@
 //! verified ingest path. So this is consensus-NEUTRAL (liveness/convergence
 //! only).
 //!
-//! ROOT CAUSE it addresses (proven from vex-fd-dev_testnet.log):
+//! ROOT CAUSE it addresses (proven from the incident log):
 //! the AF_XDP catch-up DELINQUENCY was SLOW REPAIR CONVERGENCE, not a phantom
 //! completion index. A slot's only hole was a single interior data shred
 //! ([REPAIR-STUCK] slot=415398209 missing={260}) that provably exists

@@ -49,15 +49,15 @@ pub const Tile = enum {
 /// ── Phase-1 tile→core topology rework (2026-06-22) ───────────────────────────
 /// COLD reserve = CCX0 (cores 0-3), which historically sat OUTSIDE the validator
 /// taskset (deploy.sh widened to include it in this same rework). Core 0 stays for
-/// the OS/main thread. Cores 1-3 are the dynamic-relief pool (vex-fd-pin.sh
-/// HOT_CORES, moved off the hot pipeline 16/20/24). The binary itself pins NO
+/// the OS/main thread. Cores 1-3 are the dynamic-relief pool (the core-pinning
+/// helper's HOT_CORES, moved off the hot pipeline 16/20/24). The binary itself pins NO
 /// thread onto CCX0 today — the cold block is RESERVED for future Phase-2
 /// parallel-exec worker tiles (when wired: shrink relief to {1}, dedicate {2,3}+
 /// to the exec pool). These constants document that reservation; they are NOT a
 /// Tile (no thread self-pins to them yet) — just named landmarks for Phase-2 and
 /// for the dormant-revival pins below.
 pub const COLD_CCX0_OS: u32 = 0; // OS / main thread (never pinned by us)
-pub const COLD_CCX0_RELIEF: [3]u32 = .{ 1, 2, 3 }; // dynamic pinner relief pool (vex-fd-pin.sh)
+pub const COLD_CCX0_RELIEF: [3]u32 = .{ 1, 2, 3 }; // dynamic pinner relief pool (the core-pinning helper)
 pub const COLD_CCX0_RESERVED_PHASE2 = "CCX0 cores 1-3 (relief now); Phase-2 exec workers later";
 
 /// Number of verify workers. SOURCE OF TRUTH for the verify range here; coupled
