@@ -1008,8 +1008,8 @@ pub fn getBlockProduction(ctx: *const RpcContext, _: ?[]const u8, response: *Res
 
     // Epoch range: first slot of current epoch to current slot. Use the warmup-aware leader-schedule
     // generator (testnet first_normal_epoch=14, first_normal_slot=524256) when the cache is wired; the
-    // naive current_epoch*432000 is only a fallback (and is WRONG across testnet warmup boundaries — see
-    // the CLUSTER ORACLE note in CLAUDE.md: getEpochInfo/getBlockProduction must not use slot/432000).
+    // naive current_epoch*432000 is only a fallback (and is WRONG across testnet warmup boundaries —
+    // getEpochInfo/getBlockProduction must not use slot/432000).
     const slots_per_epoch: u64 = 432000;
     const epoch_start = blk: {
         if (ctx.leader_cache) |lc| {

@@ -695,8 +695,9 @@ pub const SnapshotManager = struct {
         // download-URL override — it bypasses addRpcEndpoint and the peer loops
         // entirely (findBestSnapshotPair returns it before iterating rpc_endpoints),
         // so the deny-list MUST be enforced here too or a
-        // VEXOR_SNAPSHOT_URL=http://38.92.24.174:.../snapshot.tar.zst would pull
-        // straight from the oracle-node. Hard-fail (consistent with --rpc-url): refuse
+        // VEXOR_SNAPSHOT_URL=http://203.0.113.7:.../snapshot.tar.zst pointed at a
+        // denied co-located host would pull straight from it. Hard-fail
+        // (consistent with --rpc-url): refuse
         // rather than silently ignore an explicit operator URL.
         if (isDeniedSnapshotHost(url)) {
             std.log.err(

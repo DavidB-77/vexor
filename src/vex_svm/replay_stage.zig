@@ -2364,7 +2364,7 @@ pub const ReplayStage = struct {
     ///
     /// RULE #1: the live RPC endpoint is `self.genesis_rpc_fallback orelse
     /// "https://api.testnet.solana.com"` — the PUBLIC testnet RPC ONLY, NEVER
-    /// oracle-node (38.92.24.174). Identical to fetchSlotHashesRemote.
+    /// the co-located oracle node. Identical to fetchSlotHashesRemote.
     pub fn fetchProducedSlots(self: *Self, lo: u64, hi: u64) ?[]u64 {
         if (hi < lo) return null;
 

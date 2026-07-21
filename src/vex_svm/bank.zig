@@ -1119,7 +1119,7 @@ pub const Bank = struct {
 
         // Recorder-extension 2026-05-17 Tier-2: emit per-account lthash
         // contribution BEFORE the wrapping mix. Pure diagnostic — does not
-        // change LtHash math (CLAUDE.md guarantee at lines 2864-2902).
+        // change LtHash math (a locked invariant in this codebase).
         // For the 4.1% of vote-mismatches that are REAL bank_hash divergence,
         // diff'ing per-account contributions vs oracle-node pinpoints the exact
         // pubkey whose hash drifted.
@@ -1549,7 +1549,7 @@ pub const Bank = struct {
                 // accounts_db (clock_epoch_anchor, computeStakeWeightedClockEstimate).
                 // Holding the raw slice across that window caused SIGSEGV in
                 // accountLtHash → blake3.update at line 873. Same class as
-                // CLAUDE.md Pitfall #5 (mmap is read-only; dupe before use).
+                // a known pitfall here (mmap is read-only; dupe before use).
                 if (existing.data.len > 0) {
                     old_lt_data = self.allocator.dupe(u8, existing.data) catch null;
                 }
@@ -2310,7 +2310,7 @@ pub const Bank = struct {
         // the last byte differed between sysvars (06/04/03/07/0b/08/09/0a).
         // r35-fix copied the broken constant verbatim.
         //
-        // CLAUDE.md Common Pitfall #3 (verbatim): "Program ID bytes: NEVER
+        // A known pitfall in this codebase: "Program ID bytes: NEVER
         // hand-type. Always base58 decode and verify." This bug is the
         // canonical example — cost ~1 hr of investigation cycles.
         //
@@ -2648,7 +2648,7 @@ pub const Bank = struct {
     pub fn readStakeHistory(self: *Self, allocator: std.mem.Allocator) ![]StakeHistoryEntry {
         // r36-fix-d: canonical SysvarStakeHistory1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u`. CLAUDE.md Pitfall #3
+        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u`. A known pitfall here
         // (third documented violation tonight after r35-fix LRS_PUBKEY +
         // sysvar_cache.zig 8-placeholder constants). @prov:bank.sysvar-id-cross-check
         const SH_PUBKEY = Pubkey{ .data = .{
@@ -3903,7 +3903,7 @@ pub const Bank = struct {
         // SysvarStakeHistory1111111111111111111111111
         // r36-fix-d: canonical SysvarStakeHistory1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u`. CLAUDE.md Pitfall #3
+        // `SysvcSvHxSfdYpkDhuUaqWAwN52LM4aC1xQ6D8o6Y5u`. A known pitfall here
         // (third documented violation tonight after r35-fix LRS_PUBKEY +
         // sysvar_cache.zig 8-placeholder constants). @prov:bank.sysvar-id-cross-check
         const SH_PUBKEY = Pubkey{ .data = .{
@@ -4006,7 +4006,7 @@ pub const Bank = struct {
         // SysvarEpochRewards1111111111111111111111111
         // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. CLAUDE.md Pitfall #3
+        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. A known pitfall here
         // — same hand-typed-bytes-wrong pattern as r35-fix and the StakeHistory
         // constant fixed in this commit. @prov:bank.sysvar-id-cross-check
         const ER_PUBKEY = Pubkey{ .data = .{
@@ -4298,7 +4298,7 @@ pub const Bank = struct {
     fn updateEpochRewardsDistributed(self: *Self) !void {
         // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. CLAUDE.md Pitfall #3
+        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. A known pitfall here
         // — same hand-typed-bytes-wrong pattern as r35-fix and the StakeHistory
         // constant fixed in this commit. @prov:bank.sysvar-id-cross-check
         const ER_PUBKEY = Pubkey{ .data = .{
@@ -4371,7 +4371,7 @@ pub const Bank = struct {
     fn deactivateEpochRewardsSysvar(self: *Self) !void {
         // r36-fix-d: canonical SysvarEpochRewards1111...
         // Hand-typed bytes pre-r36-fix-d encoded to junk pubkey
-        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. CLAUDE.md Pitfall #3
+        // `SysvczJGFxkE8D4Wy8FRreAM16ZmfBcf8oPAK71QVb5`. A known pitfall here
         // — same hand-typed-bytes-wrong pattern as r35-fix and the StakeHistory
         // constant fixed in this commit. @prov:bank.sysvar-id-cross-check
         const ER_PUBKEY = Pubkey{ .data = .{
@@ -5000,7 +5000,7 @@ pub const Bank = struct {
                         const pk_hex = std.fmt.bytesToHex(w.pubkey.data, .lower);
                         const ow_hex = std.fmt.bytesToHex(w.owner.data, .lower);
                         // Skip SHA over w.data — by freeze time the slice may point to
-                        // freed/mmap'd memory (CLAUDE.md Pitfall #5). Emit data_len only;
+                        // freed/mmap'd memory (a known pitfall here). Emit data_len only;
                         // still identifies lamport diffs, missing/extra pubkeys, and
                         // data_len divergence. Data-byte diffs come from oracle-node's
                         // authoritative bank-file via per-account inspection if needed.
