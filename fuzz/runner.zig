@@ -210,4 +210,15 @@ pub fn main() !void {
         "[{s}] done: execs={d} elapsed={d}s execs/s={d} crashes={d} saved={d}\n",
         .{ meta.harness_name, execs, elapsed_s, execs_per_s, crashes, saved },
     );
+
+    // A crash found and saved to fuzz/crashes/ must fail the process (and
+    // therefore CI, per .github/workflows/fuzz.yml) — otherwise a bounded run
+    // that catches a real memory-safety bug still exits 0 and the failure-only
+    // crash-upload step never fires. fuzz/crashes/ already ships two committed
+    // repros from a past real find (see fuzz/README.md "Findings"), so "the
+    // directory is non-empty" can't be the CI signal; the exit code has to be.
+    if (crashes > 0) {
+        std.debug.print("[{s}] FUZZ FOUND {d} CRASH(ES) — see fuzz/crashes/\n", .{ meta.harness_name, crashes });
+        return error.FuzzCrashFound;
+    }
 }
