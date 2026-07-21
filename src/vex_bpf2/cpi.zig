@@ -359,7 +359,7 @@ const BPF_LOADER_V2: Pubkey32 = .{
 
 /// Phase-1 Core-BPF Stake (2026-06-16): the `migrate_stake_program_to_core_bpf`
 /// feature pubkey (SIMD-0196, base58 `6M4oQ6eXneVhtLoiAr4yRYQY43eVLjrKbiDZDJc892yk`),
-/// decoded via the canonical comptime base58 decoder (CLAUDE.md pitfall #3 — NEVER
+/// decoded via the canonical comptime base58 decoder (known pitfall: NEVER
 /// hand-type pubkey bytes). Used in the CPI dispatch gate at handleSolInvokeSigned
 /// so a stake CPI falls to the recursive .so path when VEX_STAKE_BPF AND the
 /// feature is active. Mirrors `features.zig` MIGRATE_STAKE_PROGRAM_TO_CORE_BPF;
@@ -762,7 +762,7 @@ pub fn handleSolInvokeSigned(
     // narrow to `M6_CpiHandlerNotReady` and the trace line carries the detail.
     //
     // We keep using `builtins_mod.isBuiltin` (comptime base58 decode) instead
-    // of cpi.zig's local hand-typed table — CLAUDE.md pitfall #3 ("NEVER
+    // of cpi.zig's local hand-typed table — a known pitfall ("NEVER
     // hand-type pubkey bytes") was violated by the local table; the comptime
     // path is the single source of truth.
     // ── Phase-1 Core-BPF Stake CPI seam (feature-gated, env DEFAULT-OFF) ──

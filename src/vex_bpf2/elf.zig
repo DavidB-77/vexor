@@ -58,7 +58,7 @@
 //! pass `Config.enabled_sbpf_versions` derived from the live FeatureSet.
 //!
 //! ── fix_ledger invariants honored ───────────────────────────────────────────
-//! These come from .claude/projects/-home-davidb/memory/fix_ledger.md
+//! These come from this project's internal fix-ledger of locked invariants.
 //! Note on tag naming: the spec for this task references `vex-152n` /
 //! `vex-152o` as locked invariants. As of the worktree's fix_ledger snapshot,
 //! those exact tags are NOT present as named entries — but their *semantics*

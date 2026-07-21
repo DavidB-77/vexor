@@ -402,7 +402,7 @@ pub const Config = struct {
                 // validators on this host. Refuse loudly rather than ingest it.
                 if (std.mem.startsWith(u8, args[i], "9f") or std.mem.startsWith(u8, args[i], "9F")) {
                     std.log.err("[CONFIG] --known-validator {s} has the 9F oracle-node prefix — REFUSED (key-isolation policy)", .{args[i]});
-                    return error.KnownValidatorIsGovnode;
+                    return error.KnownValidatorIsDeniedHost;
                 }
                 var pk: [32]u8 = undefined;
                 base58.decodeToBuf(args[i], &pk) catch {

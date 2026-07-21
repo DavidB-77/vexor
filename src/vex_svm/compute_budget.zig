@@ -45,7 +45,7 @@ const SYSTEM_PROG_ID: [32]u8 = [_]u8{0} ** 32;
 /// r71-fix-7-followup: bytes verified via `base58.b58decode(b58str).hex()`,
 /// replaces wrong bytes copy-pasted from executor.zig:51-115 (which had a
 /// template-copy bug — 4 of 9 builtins shared the same wrong bytes 8-27,
-/// only differing in byte 27). CLAUDE.md HARD RULE: never hand-type pubkey
+/// only differing in byte 27). Hard rule in this codebase: never hand-type pubkey
 /// bytes; always derive from base58.
 const BPF_LOADER_1_PROG_ID: [32]u8 = .{
     0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0x6b,

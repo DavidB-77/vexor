@@ -453,7 +453,7 @@ pub inline fn isPr5pEnabled() bool {
 /// the write-tap/lthash backstop. Upgraded to full-data per advisor so a
 /// data-only stale read is catchable in the recorder diff, not just lamports).
 /// Returns 0 if data is empty/null. Called inline before any lock release so
-/// mmap-backed slices stay valid (CLAUDE.md Pitfall #5).
+/// mmap-backed slices stay valid (a known pitfall here: mmap-backed data must be copied out before use).
 fn sha8Of(data: ?[]const u8) u64 {
     const d = data orelse return 0;
     if (d.len == 0) return 0;
