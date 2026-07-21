@@ -3661,6 +3661,33 @@ pub fn build(b: *std.Build) void {
     net_vex_store.addImport("vex_svm", net_vex_svm);
     net_vex_store.addImport("vex_network", net_vex_network);
 
+    // ── test-quic-tpu-bind (dual-NIC TPU-ingest server bind_addr fix) ──
+    // solana_quic.zig has no dedicated build.zig target of its own — it rides along inside the
+    // much larger vex_network module graph, so its dozens of in-file `test` blocks were only
+    // force-compiled (type-checked, never executed) by test-net-force-compile. Mint a real,
+    // running target so the server bind_addr KATs are CI-visible, reusing the same module
+    // instances as the production graph so types match.
+    const net_quic_ingest_adapter = b.createModule(.{ .root_source_file = b.path("src/vex_network/quic_ingest_adapter.zig"), .target = target, .optimize = optimize });
+    net_quic_ingest_adapter.addImport("banking_stage", net_banking);
+    net_quic_ingest_adapter.addImport("tx_ingest", net_txingest);
+    net_quic_ingest_adapter.addImport("compute_budget", net_cb);
+
+    const test_solana_quic = b.addTest(.{
+        .name = "test-quic-tpu-bind",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/vex_network/solana_quic.zig"), .target = target, .optimize = optimize }),
+    });
+    test_solana_quic.root_module.addImport("core", core);
+    test_solana_quic.root_module.addImport("vex_crypto", vex_crypto);
+    test_solana_quic.root_module.addImport("vex_consensus", vex_consensus);
+    test_solana_quic.root_module.addImport("build_options", net_build_options);
+    test_solana_quic.root_module.addImport("banking_stage", net_banking);
+    test_solana_quic.root_module.addImport("quic_ingest_adapter", net_quic_ingest_adapter);
+    test_solana_quic.linkLibC();
+    const run_solana_quic = b.addRunArtifact(test_solana_quic);
+    const test_solana_quic_step = b.step("test-quic-tpu-bind", "SolanaTpuQuic KATs incl. dual-NIC server bind_addr fix (external TPU-ingest handshake reply source-IP)");
+    test_solana_quic_step.dependOn(&run_solana_quic.step);
+    test_migrated_step.dependOn(&run_solana_quic.step);
+
     // ── test-rpc-history (REAL origin-tree target, build.zig:1774-1789) ──
     const test_rpc_history = b.addTest(.{
         .name = "test-rpc-history",
