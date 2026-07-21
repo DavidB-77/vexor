@@ -88,58 +88,37 @@ test-<name>` steps (see `build.zig`) for faster iteration on one area.
 
 ## Live-proven capabilities
 
-Numbers below are cluster-attested, not benchmarks:
+Cluster-attested, not benchmarks — full detail, methodology, and citations:
+[What We've Accomplished](https://docs.vexornode.xyz/status/accomplished/).
 
-- Voting: while operating, Vexor lands votes at **~98.7–99% of the
-  theoretical 16-credits/slot Timely-Vote-Credit ceiling** — measured
-  side-by-side against the epoch's top validators (16.00/slot) on the public
-  RPC oracle. Full-epoch credit totals are lower whenever the testnet box is
-  deliberately taken down for development windows; the shortfall is downtime,
-  not missed or late votes.
-- Block production: **~97%+ of leader slots produced and cluster-accepted
-  over a full epoch** (best cluster-attested epoch: 152/156 via
-  `getBlockProduction`), and **100% of leader slots while the node is up**
-  (every skip on record falls in a deliberate maintenance window or a gated
-  experiment). Blocks are currently empty; transaction-bearing block
-  production is **under live testing** on testnet — restricted to a narrow
-  transaction whitelist, with an automatic in-process fallback to empty-block
-  production if a produce-parity check fails. Do not treat it as shipped or
-  production-ready.
-- Vote execution: Vexor's from-scratch vote program executes live vote
-  instructions in **~1.9–2.0 µs**, **~4.4× faster** than the reference
-  transplant it replaced (2,017 ns vs 8,909 ns over the same 990k-instruction
-  replay) — and verified byte-identical against that reference over **20M+
-  live instructions in a single session with zero mismatches**.
-- Byte-fidelity methodology: every consensus-affecting change passes an
-  **offline golden replay** (1992 canonical slots spanning an epoch
-  boundary, bank hashes byte-identical to the live cluster's) before deploy.
-- Networking: AF_XDP zero-copy RX on Mellanox ConnectX-6 Dx, io_uring
-  snapshot writes, tile/core-pinned architecture.
+- **Voting**: ~98.7–99% of the 16-credits/slot Timely-Vote-Credit ceiling
+  while operating, on par with the epoch's top validators.
+- **Block production**: ~97%+ of leader slots/full epoch, 100% while up.
+  Blocks are currently empty; transaction-bearing production is under live
+  testing, not shipped.
+- **Vote execution**: ~1.9–2.0 µs/instruction, ~4.4× faster than the
+  predecessor it replaced, byte-identical over 20M+ live instructions with
+  zero mismatches.
+- **Byte-fidelity gate**: every consensus-affecting change passes an offline
+  golden replay (1,992 canonical slots) bank-hash-identical to the cluster
+  before deploy.
+- **Networking**: AF_XDP zero-copy RX, io_uring snapshot writes, tile/core-
+  pinned architecture.
 
 ## Conformance
 
-Vexor is regularly measured against the ecosystem's own conformance tooling
-([`firedancer-io/solana-conformance`](https://github.com/firedancer-io/solana-conformance)
-with the [`firedancer-io/test-vectors`](https://github.com/firedancer-io/test-vectors)
-instruction-fixture corpus), executed live against a **version-matched** Agave
-reference — not against baked-in expected outputs. Latest full-corpus run
-(47,240 fixtures):
+Measured live against the ecosystem's own
+[`firedancer-io/solana-conformance`](https://github.com/firedancer-io/solana-conformance)
+harness and a **version-matched** Agave reference — not baked-in expected
+outputs. Full methodology, per-family breakdown, and disclosed known gaps:
+[Conformance](https://docs.vexornode.xyz/reliability/conformance/).
 
-- **85.82% raw** (40,542/47,240) and **92.74% under the harness's
-  consensus-compatibility mode** (`-c`, which normalizes error-code encoding).
-- Several families pass **100% raw**: `system` (7,400/7,400), `compute-budget`
-  (2,627/2,627), `precompile` (19,292/19,292), `zk_sdk` (3,124/3,124).
-- The raw gap is dominated by **disclosed known gaps**: the BPF-loader-owned
-  ELF-loading fixture families (~2,900 fixtures) are not yet implemented to
-  byte-match, and most of the remaining `vote`/`vm-programs` raw failures are
-  error-code/CU-encoding differences that the harness's consensus mode
-  recovers.
-- One genuine discrepancy surfaced by this run — a small set of `zk_sdk`
-  fixtures where Vexor reported sysvar account data on certain failure paths
-  that Agave does not — was root-caused to a missing effects-encoding rule,
-  fixed at the shared execution seam, and re-validated: 3,124/3,124 with every
-  other family byte-identical. Numbers here are reported honestly, including
-  the unflattering ones while they lasted.
+- **Instruction corpus** (47,240 fixtures): **85.82% raw**, **92.74%** under
+  the harness's consensus-compatibility mode. `system`, `compute-budget`,
+  `precompile`, and `zk_sdk` pass 100% raw; the gap is dominated by disclosed
+  known gaps (BPF-loader ELF-loading not yet byte-matched) plus error-code/CU
+  encoding differences the consensus mode recovers.
+- **Syscall/crypto corpus** (7,571 fixtures): **99.62% non-known-gap**.
 
 ## Hardware
 
