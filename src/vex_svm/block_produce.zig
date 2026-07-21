@@ -995,6 +995,13 @@ pub fn produceSlotBytes(
         const sig_views = txSigSlices(parsed.signatures, &scratch_sig_views);
         const mixin = try entry.hashTransactions(allocator, &.{sig_views});
         try microblocks.append(allocator, .{ .mixin = mixin });
+        // [INGEST-SLOT] "txs_packed_into_slot": this drained entry survived every gate above
+        // (in-block dedup, static admit/sigverify,
+        // cost-model, PASS-3 execute-and-record) and is now committed to this slot's block — the
+        // far end of the received→queued→packed chain. Same-thread as the leader-produce call
+        // site (replay_stage.zig's inline path is the sole caller when banking_stage is live), but
+        // kept atomic to match the rest of BankingStage.Stats (multi-producer already, cheap).
+        _ = banking.stats.txs_packed_into_slot.fetchAdd(1, .monotonic);
 
         // Own a copy of this record's tx blob list (the blob bytes themselves are owned by `batch`
         // and stay valid until we serialize; serialize copies them into the output buffer).

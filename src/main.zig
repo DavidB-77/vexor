@@ -1337,8 +1337,61 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
             // Spawn a pinned detached pump thread: poll() drains QUIC streams → adapter → mempool.
             // Mirrors the gossip thread spawn (main.zig:875) + the KAT's loopbackServerPump.
+            // 2026-07-21 (ingest-observability): also owns the periodic [INGEST-STATS] line — this
+            // is the ONLY thread that calls srv.poll() (which drives quic.zig Endpoint counters),
+            // so reading+printing here needs no locks/sync beyond the atomics banking_stage/
+            // quic_ingest_adapter already carry for their own multi-producer safety. No cross-
+            // thread sync added to any TVU/hot path.
             const quic_pump_thread = std.Thread.spawn(.{}, struct {
-                fn run(srv: *vex_network.solana_quic.SolanaTpuQuic) void {
+                // ~30s heartbeat: 200us poll period * INGEST_STATS_HEARTBEAT_TICKS = 30s. Named so
+                // the cadence contract is legible at the call site, not a bare magic number.
+                const INGEST_STATS_HEARTBEAT_TICKS: u64 = 150_000;
+                // Check for a counter change every ~1s rather than every 200us poll — cheap plain-
+                // int/atomic reads either way, but no reason to pay the summation cost 5000x/s.
+                const INGEST_STATS_CHECK_TICKS: u64 = 5_000;
+
+                fn logIngestStats(
+                    srv: *vex_network.solana_quic.SolanaTpuQuic,
+                    ing: *vex_network.quic_ingest_adapter.QuicIngestAdapter,
+                    bank: *vex_svm.banking_stage.BankingStage,
+                ) void {
+                    const ep = srv.client.endpoint.stats;
+                    const stream_fin_ok = srv.stats.transactions_received.load(.monotonic);
+                    const parse_ok = ing.parse_ok.load(.monotonic);
+                    const parse_fail = ing.parse_fail.load(.monotonic);
+                    const admit_ok = bank.stats.txs_received.load(.monotonic) + bank.stats.votes_received.load(.monotonic);
+                    const reject_queue_full = bank.stats.reject_queue_full.load(.monotonic);
+                    const reject_alloc_fail = bank.stats.reject_alloc_fail.load(.monotonic);
+                    const admit_reject = reject_queue_full + reject_alloc_fail;
+                    // ingest_rx_total / txs_packed_into_slot are the SAME cumulative counters the
+                    // per-leader-slot [INGEST-SLOT] line (replay_stage.zig) diffs across one
+                    // produceSlotBytes call — surfaced here too as running totals so a non-leader
+                    // (or pre-first-leader-slot) node still shows live movement in this heartbeat.
+                    const ingest_rx_total = bank.stats.ingest_rx_total.load(.monotonic);
+                    const txs_packed_into_slot = bank.stats.txs_packed_into_slot.load(.monotonic);
+                    std.log.warn("[INGEST-STATS] handshakes_completed={d} streams_opened={d} stream_bytes_total={d} stream_fin_ok={d} tx_parse_ok={d} tx_parse_fail={d} mempool_admit_ok={d} mempool_admit_reject={d} (queue_full={d} alloc_fail={d}) drop_no_handshake={d} drop_decrypt_fail={d} ingest_rx_total={d} txs_packed_into_slot={d}\n", .{
+                        ep.handshakes_completed,
+                        ep.streams_opened,
+                        ep.stream_bytes_total,
+                        stream_fin_ok,
+                        parse_ok,
+                        parse_fail,
+                        admit_ok,
+                        admit_reject,
+                        reject_queue_full,
+                        reject_alloc_fail,
+                        ep.short_header_drop_no_handshake,
+                        ep.short_header_decrypt_fail,
+                        ingest_rx_total,
+                        txs_packed_into_slot,
+                    });
+                }
+
+                fn run(
+                    srv: *vex_network.solana_quic.SolanaTpuQuic,
+                    ing: *vex_network.quic_ingest_adapter.QuicIngestAdapter,
+                    bank: *vex_svm.banking_stage.BankingStage,
+                ) void {
                     // Phase 9: default = vex_topo table (.quic == core 6, byte-identical);
                     // VEX_LEGACY_PINS / -Dlegacy_pins reverts to the inline pinToCore(6).
                     if (build_options.legacy_pins or std.posix.getenv("VEX_LEGACY_PINS") != null) {
@@ -1346,12 +1399,35 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                     } else {
                         _ = vex_topo.pinTile(vex_topo.LIVE, .quic, 0);
                     }
+                    var tick: u64 = 0;
+                    var last_report_tick: u64 = 0;
+                    var last_snapshot: u64 = 0;
                     while (srv.running.load(.acquire)) {
                         srv.poll() catch {};
+                        if (tick % INGEST_STATS_CHECK_TICKS == 0) {
+                            const ep = srv.client.endpoint.stats;
+                            const snapshot = ep.handshakes_completed +% ep.streams_opened +% ep.stream_bytes_total +%
+                                ep.short_header_drop_no_handshake +% ep.short_header_decrypt_fail +%
+                                srv.stats.transactions_received.load(.monotonic) +%
+                                ing.parse_ok.load(.monotonic) +% ing.parse_fail.load(.monotonic) +%
+                                bank.stats.txs_received.load(.monotonic) +% bank.stats.votes_received.load(.monotonic) +%
+                                bank.stats.reject_queue_full.load(.monotonic) +% bank.stats.reject_alloc_fail.load(.monotonic) +%
+                                bank.stats.ingest_rx_total.load(.monotonic) +% bank.stats.txs_packed_into_slot.load(.monotonic);
+                            const elapsed = tick -% last_report_tick;
+                            // Periodic (heartbeat every ~30s, proves liveness even at zero traffic)
+                            // AND on-change (fires the instant a counter moves instead of waiting up
+                            // to 30s for the first evidence of an ingest event).
+                            if (snapshot != last_snapshot or elapsed >= INGEST_STATS_HEARTBEAT_TICKS) {
+                                logIngestStats(srv, ing, bank);
+                                last_snapshot = snapshot;
+                                last_report_tick = tick;
+                            }
+                        }
                         std.Thread.sleep(200 * std.time.ns_per_us);
+                        tick +%= 1;
                     }
                 }
-            }.run, .{quic_server}) catch |err| {
+            }.run, .{ quic_server, adapter, banking }) catch |err| {
                 std.log.warn("[TPU-INGEST] failed to spawn QUIC pump thread: {any}", .{err});
                 return err;
             };
@@ -1369,6 +1445,16 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 tpu_quic_port,
                 if (broadcast_armed) "ARMED (VEX_LEADER_BROADCAST+VEX_TXBEARING_BROADCAST set)" else "NOT armed",
             });
+            // [INGEST-GATING] one-shot banner: the pump thread above calls srv.poll() unconditionally
+            // the instant this block runs, and QuicIngestAdapter.ingest() parses+queues any
+            // well-formed tx regardless of slot/leader state (no leader-proximity gate exists
+            // anywhere in this chain, confirmed by reading it, not guessing). So mempool admission
+            // IS structurally active off-window — the prior uncertainty was purely an OBSERVABILITY
+            // gap (no counters existed to read a before/after delta off-window, and a non-leader node
+            // produces no blocks to surface an admit through). The [INGEST-STATS] line above now
+            // closes that gap directly. Emitted once at boot so this stops being re-derived from
+            // scratch every incident.
+            std.log.warn("[INGEST-GATING] TPU-ingest mempool admission is NOT gated to leader slots (ACTIVE off-window) — parses+queues any well-formed tx regardless of leader status; see periodic [INGEST-STATS] for live counters", .{});
 
             // 2026-06-16 BLOCK-PRODUCTION TILE ISOLATION (Firedancer replay→pack→poh→replay).
             // Move block production OFF the replay tile (core 16) onto a dedicated PRODUCE tile

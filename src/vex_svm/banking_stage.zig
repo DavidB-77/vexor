@@ -79,6 +79,27 @@ pub const BankingStage = struct {
         txs_dropped: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
         votes_received: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
         batches_drained: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+        // [INGEST-STATS] mempool-admit reject breakdown. txs_received+votes_received together are
+        // "mempool_admit_ok"; txs_dropped was previously the ONLY reject signal and only covered
+        // the queue-full path — the alloc
+        // path (`allocator.alloc`/`PriorityQueue.add`, both OOM-only) silently propagated its error
+        // to the caller uncounted. These two fields make every queueTransaction failure mode
+        // observable; txs_dropped is kept unchanged (still bumped on queue-full) for any existing
+        // reader, reject_queue_full is its exact duplicate under the new name used by [INGEST-STATS].
+        reject_queue_full: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+        reject_alloc_fail: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+        // [INGEST-SLOT] decisive per-slot triple: cumulative counters the leader-produce call
+        // site (replay_stage.zig) diffs across ONE produceSlotBytes call to report this slot's exact
+        // received/queued/packed window. `ingest_rx_total` is bumped at the QUIC-ingest callback
+        // boundary (QuicIngestAdapter.onTransaction, BEFORE parse) — the report's "txs_received"
+        // (a complete FIN-terminated stream payload reached the server). `txs_received`+
+        // `votes_received` above already ARE the report's "txs_queued" (successful
+        // queueTransaction). `txs_packed_into_slot` is bumped inside produceSlotBytes only when a
+        // drained entry survives every gate and is actually packed into the block being built.
+        ingest_rx_total: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+        txs_packed_into_slot: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
     };
 
     pub fn init(allocator: std.mem.Allocator, config: BankingConfig) BankingStage {
@@ -119,11 +140,18 @@ pub const BankingStage = struct {
         const total = self.tx_queue.count() + self.vote_queue.count();
         if (total >= self.config.max_queue_size) {
             _ = self.stats.txs_dropped.fetchAdd(1, .monotonic);
+            _ = self.stats.reject_queue_full.fetchAdd(1, .monotonic);
             return error.QueueFull;
         }
 
         // Deep copy
-        const copy = try self.allocator.alloc(u8, tx_data.len);
+        const copy = self.allocator.alloc(u8, tx_data.len) catch |err| {
+            // [INGEST-STATS]: allocator.alloc only fails OOM — previously this propagated to the
+            // caller with NO counter bumped anywhere (a genuinely-silent reject class). Count it
+            // as its own reason so mempool_admit_reject's breakdown accounts for every path.
+            _ = self.stats.reject_alloc_fail.fetchAdd(1, .monotonic);
+            return err;
+        };
         @memcpy(copy, tx_data);
 
         const queued = QueuedTransaction{
@@ -134,10 +162,18 @@ pub const BankingStage = struct {
         };
 
         if (is_vote) {
-            try self.vote_queue.add(queued);
+            self.vote_queue.add(queued) catch |err| {
+                self.allocator.free(copy);
+                _ = self.stats.reject_alloc_fail.fetchAdd(1, .monotonic);
+                return err;
+            };
             _ = self.stats.votes_received.fetchAdd(1, .monotonic);
         } else {
-            try self.tx_queue.add(queued);
+            self.tx_queue.add(queued) catch |err| {
+                self.allocator.free(copy);
+                _ = self.stats.reject_alloc_fail.fetchAdd(1, .monotonic);
+                return err;
+            };
             _ = self.stats.txs_received.fetchAdd(1, .monotonic);
         }
         _ = self.stats.txs_queued.store(@intCast(total + 1), .monotonic);
