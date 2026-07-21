@@ -1240,6 +1240,33 @@ pub const Endpoint = struct {
     /// in its Initial long header — BOTH endpoints derive Initial secrets from this exact value
     /// (the client uses its own chosen DCID in sendInitialPacket), so the server must too.
     fn acceptConnection(self: *Self, peer_addr: packet.SocketAddr, remote_cid: ConnectionId, client_dcid: ConnectionId) !*Connection {
+        // Retransmit-safety: `self.connections` is keyed by hashConnectionId(&conn.local_cid) — the
+        // SERVER's own freshly-generated CID — never by the client's chosen DCID. So a client Initial
+        // retransmitted before it has seen any server reply (real quinn/rustls PTO behavior under WAN
+        // jitter or a burst of simultaneous handshakes) still carries its ORIGINAL, never-yet-matched
+        // DCID: the caller's `self.connections.get(cid_hash)` lookup misses again and `acceptConnection`
+        // runs a second time for the same peer. Unconditionally minting a fresh Connection here would
+        // overwrite `connections_by_addr[peer_addr]` — the ONLY index `processShortHeaderPacket`
+        // consults for every post-handshake 1-RTT packet, including the FIN-terminated uni-stream
+        // carrying a transaction — orphaning the connection object the client actually completed its
+        // handshake against. If the peer address already has a connection that hasn't finished
+        // handshaking, reuse it instead of minting a second one.
+        const addr_hash = hashSocketAddr(&peer_addr);
+        if (self.connections_by_addr.get(addr_hash)) |existing| {
+            if (!existing.tls.handshake_complete) {
+                // Re-derive Initial secrets in case this retransmission's DCID differs from the one we
+                // keyed off of previously (normally identical, but harmless/idempotent either way), and
+                // refresh remote_cid/initial_dcid to match what this Initial actually carried.
+                existing.initial_dcid = client_dcid;
+                existing.remote_cid = remote_cid;
+                existing.tls.deriveInitialSecrets(client_dcid.slice());
+                return existing;
+            }
+            // Handshake already complete at this address: this is a genuinely new connection attempt
+            // from the same peer (e.g. legitimate reconnect after the prior connection closed), not a
+            // retransmission race. Fall through and mint a new one, matching pre-fix behavior for that case.
+        }
+
         if (self.connections.count() >= self.config.max_connections) {
             return error.TooManyConnections;
         }
@@ -1262,7 +1289,8 @@ pub const Endpoint = struct {
         const cid_hash = hashConnectionId(&conn.local_cid);
         try self.connections.put(cid_hash, conn);
 
-        const addr_hash = hashSocketAddr(&peer_addr);
+        // addr_hash already computed above (reuse check); this legitimately replaces any
+        // handshake-complete entry that was there (a real reconnect from the same peer).
         try self.connections_by_addr.put(addr_hash, conn);
 
         self.stats.connections_total += 1;
@@ -4162,6 +4190,69 @@ test "endpoint management" {
     _ = conn;
 
     try std.testing.expectEqual(@as(usize, 1), endpoint.connections.count());
+}
+
+// ── acceptConnection retransmit-safety KATs ───────────────────────────────────
+// `self.connections` is keyed by the SERVER's own freshly-generated local CID, never by the
+// client's chosen DCID, so a client Initial retransmitted before it has seen any server reply
+// (real quinn/rustls PTO behavior) always misses that lookup and re-enters acceptConnection.
+// Before the fix this unconditionally minted a second Connection object and clobbered
+// `connections_by_addr[peer_addr]` — the only index the 1-RTT short-header path consults —
+// orphaning the connection the client actually completed its handshake against and silently
+// dropping every subsequent stream (including the tx payload).
+test "acceptConnection: retransmitted Initial before handshake reuses connection, address map still routes to it" {
+    const addr = packet.SocketAddr.ipv4(.{ 127, 0, 0, 1 }, 8443);
+    var endpoint = try Endpoint.init(std.testing.allocator, addr, true, .{});
+    defer endpoint.deinit();
+
+    const peer = packet.SocketAddr.ipv4(.{ 203, 0, 113, 5 }, 55000);
+    const scid = ConnectionId{ .data = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8 } ++ ([_]u8{0} ** 12), .len = 8 };
+    const dcid1 = ConnectionId{ .data = [_]u8{ 10, 10, 10, 10, 10, 10, 10, 10 } ++ ([_]u8{0} ** 12), .len = 8 };
+
+    const conn1 = try endpoint.acceptConnection(peer, scid, dcid1);
+    try std.testing.expectEqual(@as(usize, 1), endpoint.connections.count());
+    try std.testing.expectEqual(@as(usize, 1), endpoint.connections_by_addr.count());
+
+    const addr_hash = hashSocketAddr(&peer);
+    try std.testing.expectEqual(@as(?*Connection, conn1), endpoint.connections_by_addr.get(addr_hash));
+
+    // Client retransmits its Initial before completing the handshake, with a different DCID than
+    // its first attempt (some stacks vary it per retransmit; the accept-side bug is identical even
+    // when the DCID is unchanged, since `self.connections` never held the client's DCID as a key at
+    // all). Must reuse connection A, not mint a second object or clobber the address map.
+    const dcid2 = ConnectionId{ .data = [_]u8{ 20, 20, 20, 20, 20, 20, 20, 20 } ++ ([_]u8{0} ** 12), .len = 8 };
+    const conn2 = try endpoint.acceptConnection(peer, scid, dcid2);
+
+    try std.testing.expectEqual(conn1, conn2); // same object reused
+    try std.testing.expectEqual(@as(usize, 1), endpoint.connections.count()); // no second object minted
+    try std.testing.expectEqual(@as(?*Connection, conn1), endpoint.connections_by_addr.get(addr_hash)); // still routes to conn1
+    try std.testing.expect(dcid2.eql(&conn1.initial_dcid)); // re-keyed onto the retransmit's DCID
+    try std.testing.expect(!conn1.tls.handshake_complete);
+}
+
+// Companion KAT: a legitimate reconnect from the same peer address AFTER the prior connection's
+// handshake completed must still mint a fresh Connection and re-point the address map — the fix
+// must not turn every subsequent Initial from a known address into a permanent reuse.
+test "acceptConnection: new Initial from same peer AFTER handshake completion still creates a fresh connection" {
+    const addr = packet.SocketAddr.ipv4(.{ 127, 0, 0, 1 }, 8443);
+    var endpoint = try Endpoint.init(std.testing.allocator, addr, true, .{});
+    defer endpoint.deinit();
+
+    const peer = packet.SocketAddr.ipv4(.{ 203, 0, 113, 9 }, 55001);
+    const scid1 = ConnectionId{ .data = [_]u8{ 1, 1, 1, 1, 1, 1, 1, 1 } ++ ([_]u8{0} ** 12), .len = 8 };
+    const dcid1 = ConnectionId{ .data = [_]u8{ 2, 2, 2, 2, 2, 2, 2, 2 } ++ ([_]u8{0} ** 12), .len = 8 };
+
+    const conn1 = try endpoint.acceptConnection(peer, scid1, dcid1);
+    conn1.tls.handshake_complete = true; // simulate connection A's handshake having completed
+
+    const scid2 = ConnectionId{ .data = [_]u8{ 3, 3, 3, 3, 3, 3, 3, 3 } ++ ([_]u8{0} ** 12), .len = 8 };
+    const dcid2 = ConnectionId{ .data = [_]u8{ 4, 4, 4, 4, 4, 4, 4, 4 } ++ ([_]u8{0} ** 12), .len = 8 };
+    const conn2 = try endpoint.acceptConnection(peer, scid2, dcid2);
+
+    try std.testing.expect(conn1 != conn2); // genuinely new connection, not reused
+    try std.testing.expectEqual(@as(usize, 2), endpoint.connections.count()); // both objects retained (A still completing teardown independently)
+    const addr_hash = hashSocketAddr(&peer);
+    try std.testing.expectEqual(@as(?*Connection, conn2), endpoint.connections_by_addr.get(addr_hash)); // address map now routes to the new connection
 }
 
 // ── MAX_STREAMS_UNI credit / frame-parser KATs (2026-06-21) ──────────────────
