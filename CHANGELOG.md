@@ -14,6 +14,11 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3
+### Validator
+#### Changes
+* Networking: on dual-NIC hosts, the TPU-ingest QUIC server now binds to the advertised TPU network interface instead of the wildcard address. Previously the handshake reply's source IP was chosen by the kernel's destination-route lookup instead of the advertised interface, so external clients rejected the off-source reply and every handshake timed out; QUIC transaction ingest on dual-NIC hosts now completes. Also corrects the TPU-ingest boot banner, which previously reported no broadcast even when broadcast was enabled.
+
 ## 0.9.2
 ### Validator
 #### Changes
