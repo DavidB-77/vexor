@@ -387,6 +387,16 @@ pub const UdpSocket = struct {
         return std.mem.bigToNative(u16, addr.port);
     }
 
+    /// Get the actual OS-level bound address (IP + port) via getsockname. 2026-07-21
+    /// dual-NIC TPU-ingest bind_addr KAT: lets tests assert the kernel really bound the
+    /// requested IP (not just that the config field carried the right value).
+    pub fn boundAddr(self: *const Self) ?packet.SocketAddr {
+        var addr: posix.sockaddr.in = undefined;
+        var addr_len: posix.socklen_t = @sizeOf(posix.sockaddr.in);
+        posix.getsockname(self.fd, @ptrCast(&addr), &addr_len) catch return null;
+        return sockaddrToPacketAddr(&addr);
+    }
+
     // Helper conversions
     fn sockaddrToPacketAddr(sa: *const posix.sockaddr.in) packet.SocketAddr {
         var result = packet.SocketAddr{

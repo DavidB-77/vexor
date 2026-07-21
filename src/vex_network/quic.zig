@@ -2672,6 +2672,26 @@ fn resolveBindAddr(ip_str: []const u8, port: u16) packet.SocketAddr {
     return packet.SocketAddr.ipv4(@as([4]u8, @bitCast(parsed.in.sa.addr)), port);
 }
 
+// resolveBindAddr is the shared resolver both QuicClient.init and QuicServer.init feed into
+// Endpoint.bind() — cover its two branches directly.
+test "resolveBindAddr: empty bind_addr resolves to wildcard 0.0.0.0" {
+    const addr = resolveBindAddr("", 8010);
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 0 }, addr.addr[0..4].*);
+    try std.testing.expectEqual(@as(u16, 8010), addr.port());
+}
+
+test "resolveBindAddr: explicit IPv4 string resolves to that address, preserving port" {
+    const addr = resolveBindAddr("203.0.113.42", 8010);
+    try std.testing.expectEqual([4]u8{ 203, 0, 113, 42 }, addr.addr[0..4].*);
+    try std.testing.expectEqual(@as(u16, 8010), addr.port());
+}
+
+test "resolveBindAddr: unparseable bind_addr falls back to wildcard, not a crash" {
+    const addr = resolveBindAddr("not-an-ip", 8010);
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 0 }, addr.addr[0..4].*);
+    try std.testing.expectEqual(@as(u16, 8010), addr.port());
+}
+
 /// QUIC client for TPU connections
 pub const QuicClient = struct {
     allocator: std.mem.Allocator,
@@ -2726,9 +2746,12 @@ pub const QuicServer = struct {
 
     pub fn init(allocator: std.mem.Allocator, port: u16, config: Endpoint.EndpointConfig) !*Self {
         const server = try allocator.create(Self);
-        // A listening server has no source-IP QoS problem (inbound accepts on any interface), so
-        // no production caller sets config.bind_addr here today — but honor it via the same
-        // resolver as QuicClient for consistency/audit-ability if one ever needs a single-NIC bind.
+        // 2026-07-21 CORRECTION: a listening server does NOT have a free pass on source-IP —
+        // its handshake REPLY still egresses via a kernel route lookup when unbound, which on a
+        // dual-NIC host can pick a different IP than the one the client dialed, and a peer
+        // validating the reply's source against the address it dialed then drops it. Honor
+        // config.bind_addr via the same resolver as QuicClient so dual-NIC server callers
+        // (main.zig's TPU-ingest server) can pin the reply source to the advertised IP.
         const bind_addr = resolveBindAddr(config.bind_addr, port);
         server.* = .{
             .allocator = allocator,

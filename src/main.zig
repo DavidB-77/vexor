@@ -1315,6 +1315,14 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
             const quic_server = try vex_network.solana_quic.SolanaTpuQuic.init(allocator, .{
                 .is_server = true,
                 .bind_port = tpu_quic_port,
+                // dual-NIC source-IP fix (2026-07-21, mirrors the gossip/repair/vote-QUIC-client
+                // fix of 2026-07-06 — main.zig:2274): without this the server socket binds
+                // 0.0.0.0, so the kernel picks the reply's source IP by destination route lookup
+                // instead of the interface the request arrived on. On this dual-NIC host that
+                // egresses the default-route NIC's address, not the gossip-advertised TPU IP, and
+                // external QUIC clients reject the reply as off-peer → handshake timeout. Empty
+                // (unset --quic-bind-addr) preserves the prior 0.0.0.0 behavior for single-NIC hosts.
+                .bind_addr = config.quic_bind_addr,
             });
             try quic_server.listen(tpu_quic_port);
 
@@ -1348,7 +1356,19 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 return err;
             };
             _ = quic_pump_thread; // detach — runs until process exit
-            std.log.warn("[TPU-INGEST] QUIC TPU ingest WIRED (port={d} → mempool → loopback block production, NO broadcast)", .{tpu_quic_port});
+            // Banner reflects the ACTUAL runtime gate (replay_stage.zig:2029/2058, same env reads),
+            // not a hand-written architectural default — the prior unconditional "NO broadcast" text
+            // went stale once bakeProdEnvDefaults() started baking VEX_LEADER_BROADCAST=1 by default
+            // and an operator's VEX_TXBEARING_BROADCAST=1 is existence-parsed (2026-07-21 finding).
+            // Text only: does not change arming logic, and doesn't reflect the M3 tripwire, which is
+            // per-slot/runtime and can't be known at boot.
+            const broadcast_env_armed = envFlagArmed("VEX_LEADER_BROADCAST");
+            const txbearing_env_present = std.posix.getenv("VEX_TXBEARING_BROADCAST") != null;
+            const broadcast_armed = broadcast_env_armed and txbearing_env_present;
+            std.log.warn("[TPU-INGEST] QUIC TPU ingest WIRED (port={d} → mempool → loopback block production, broadcast={s})", .{
+                tpu_quic_port,
+                if (broadcast_armed) "ARMED (VEX_LEADER_BROADCAST+VEX_TXBEARING_BROADCAST set)" else "NOT armed",
+            });
 
             // 2026-06-16 BLOCK-PRODUCTION TILE ISOLATION (Firedancer replay→pack→poh→replay).
             // Move block production OFF the replay tile (core 16) onto a dedicated PRODUCE tile

@@ -60,9 +60,16 @@ pub const SolanaQuicConfig = struct {
     /// Bind the underlying QUIC endpoint socket to this specific IPv4 (dual-NIC
     /// hosts). Empty = 0.0.0.0 (kernel picks egress source by route). 2026-07-06:
     /// on this host that's the WRONG NIC for the vote client — see
-    /// core/config.zig quic_bind_addr for the full mechanism. Only meaningful for
-    /// the client (is_server=false); a server listening on 0.0.0.0 has no
-    /// source-IP problem, so server callers should leave this empty.
+    /// core/config.zig quic_bind_addr for the full mechanism. 2026-07-21 CORRECTION:
+    /// the earlier assumption that this only mattered for the client (is_server=
+    /// false) was wrong — a server accepting on 0.0.0.0 sends its QUIC handshake
+    /// REPLY from whatever source IP the kernel's destination-route lookup picks,
+    /// which on this dual-NIC host is the default-route NIC, not the gossip-
+    /// advertised TPU IP an external client dialed. A connected/4-tuple-validating
+    /// peer then drops the off-source reply and the handshake never completes.
+    /// is_server=true callers should set this the same way the client does
+    /// (config.quic_bind_addr) on dual-NIC hosts; single-NIC hosts can leave it
+    /// empty for the prior 0.0.0.0 behavior either way.
     bind_addr: []const u8 = "",
     /// Act as a server (accept incoming connections)
     is_server: bool = true,
@@ -1088,6 +1095,51 @@ test "SolanaTpuQuic init" {
     defer tpu.deinit();
 
     try std.testing.expect(!tpu.running.load(.acquire));
+}
+
+// Dual-NIC TPU-ingest server bind_addr fix. SolanaTpuQuic.init threads config.bind_addr into the
+// underlying QUIC endpoint's socket bind() call regardless of is_server — verify both halves of
+// the contract: an explicit bind_addr on a server-mode endpoint actually binds that IP (not
+// 0.0.0.0), and leaving it unset preserves the prior wildcard-bind default (single-NIC hosts
+// must be byte-identical to before this fix). Each test also calls listen() (mirroring
+// main.zig's init()-then-listen() production call sequence exactly) and re-asserts the bind
+// held — listen() (solana_quic.zig ~423) discards its `port` arg and only flips `running`, but
+// asserting post-listen() closes the gap a pure post-init() check would leave against a future
+// listen() that re-binds/re-creates the socket and silently clobbers this fix.
+test "SolanaTpuQuic server: explicit bind_addr binds that IP, not wildcard (holds through listen())" {
+    const allocator = std.testing.allocator;
+
+    const tpu = try SolanaTpuQuic.init(allocator, .{
+        .is_server = true,
+        .bind_port = 0, // ephemeral — avoid colliding with a live validator's real TPU port
+        .bind_addr = "127.0.0.1", // always bindable in test environments, unlike the real dual-NIC IP
+        .allow_insecure = true,
+    });
+    defer tpu.deinit();
+
+    try tpu.listen(0); // mirrors main.zig: init(.bind_addr=...) then listen(tpu_quic_port)
+    try std.testing.expect(tpu.running.load(.acquire));
+
+    const bound = tpu.client.endpoint.sock.?.boundAddr() orelse return error.GetSockNameFailed;
+    try std.testing.expectEqual([4]u8{ 127, 0, 0, 1 }, bound.addr[0..4].*);
+}
+
+test "SolanaTpuQuic server: unset bind_addr defaults to wildcard 0.0.0.0 (single-NIC hosts unaffected, holds through listen())" {
+    const allocator = std.testing.allocator;
+
+    const tpu = try SolanaTpuQuic.init(allocator, .{
+        .is_server = true,
+        .bind_port = 0,
+        .allow_insecure = true,
+        // bind_addr left at its default ("") — mirrors every pre-fix call site.
+    });
+    defer tpu.deinit();
+
+    try tpu.listen(0);
+    try std.testing.expect(tpu.running.load(.acquire));
+
+    const bound = tpu.client.endpoint.sock.?.boundAddr() orelse return error.GetSockNameFailed;
+    try std.testing.expectEqual([4]u8{ 0, 0, 0, 0 }, bound.addr[0..4].*);
 }
 
 test "shouldPrewarmCaughtUp gate: prewarm only when frontier is within slack of tip" {
