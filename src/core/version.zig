@@ -64,18 +64,18 @@ pub fn gitHash() []const u8 {
     return if (git_hash_len > 0) git_hash_buf[0..git_hash_len] else "unknown";
 }
 
-/// "vexor-0.9.3-a (src:<git-short-hash>; client:Vexor)"
+/// "vexor-0.9.3-b (src:<git-short-hash>; client:Vexor)"
 pub fn buildVersionString(buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, "vexor-{s} (src:{s}; client:Vexor)", .{ SEMVER, gitHash() }) catch "vexor-" ++ SEMVER;
 }
 
 test "semver string" {
-    try std.testing.expectEqualStrings("0.9.3-a", SEMVER);
+    try std.testing.expectEqualStrings("0.9.3-b", SEMVER);
     try std.testing.expectEqual(@as(u16, 86), CLIENT_ID);
     try std.testing.expectEqual(@as(u16, 0), @as(u16, VEXOR_VERSION.major));
     try std.testing.expectEqual(@as(u16, 9), @as(u16, VEXOR_VERSION.minor));
     try std.testing.expectEqual(@as(u16, 3), @as(u16, VEXOR_VERSION.patch));
-    try std.testing.expectEqualStrings("a", VEXOR_VERSION.pre);
+    try std.testing.expectEqualStrings("b", VEXOR_VERSION.pre);
 }
 
 test "commit u32 from git hash" {
@@ -89,7 +89,7 @@ test "version string builder" {
     setGitHash("abc1234");
     var buf: [128]u8 = undefined;
     const s = buildVersionString(&buf);
-    try std.testing.expectEqualStrings("vexor-0.9.3-a (src:abc1234; client:Vexor)", s);
+    try std.testing.expectEqualStrings("vexor-0.9.3-b (src:abc1234; client:Vexor)", s);
     try std.testing.expectEqual(@as(u32, 0xabc1234), commit_u32);
     // reset global state for other tests
     commit_u32 = 0;
@@ -99,5 +99,5 @@ test "version string builder" {
 test "version string with no git hash set" {
     var buf: [128]u8 = undefined;
     const s = buildVersionString(&buf);
-    try std.testing.expectEqualStrings("vexor-0.9.3-a (src:unknown; client:Vexor)", s);
+    try std.testing.expectEqualStrings("vexor-0.9.3-b (src:unknown; client:Vexor)", s);
 }
