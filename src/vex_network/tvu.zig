@@ -673,7 +673,7 @@ pub const TvuService = struct {
 
         /// Bind repair socket to a specific IP (for dual-NIC setups)
         /// When set, repair traffic goes through the NIC with this IP.
-        /// Example: "38.58.183.155" to use Broadcom NIC for repairs.
+        /// Example: "203.0.113.7" to use Broadcom NIC for repairs.
         repair_bind_addr: []const u8 = "",
 
         /// Network interface for AF_XDP repair socket (empty = same as interface)
@@ -3487,7 +3487,7 @@ pub const TvuService = struct {
 
         // ── PRIMARY ROOT FIX (2026-06-14): SMALL-MISSING-SET PER-SHRED FANOUT ──
         // ROOT CAUSE of the AF_XDP catch-up DELINQUENCY (proven from the live
-        // incident log vex-fd-dev_testnet.log): NOT a phantom
+        // incident log): NOT a phantom
         // completion index. The completion bound is correct and authenticated —
         // the wedge shape is knows_last=TRUE with a SINGLE missing INTERIOR data
         // shred (e.g. [REPAIR-STUCK] slot=415398209 missing={260}), and that
@@ -5588,7 +5588,7 @@ pub const TvuService = struct {
                                 // slot is STILL wedged past STUCK_FAILSTOP_NS, the HWI
                                 // re-derive did not break it → clean controlled exit. The
                                 // operator's fresh-snapshot restart (MANUAL — no auto-restart
-                                // wrapper / systemd unit in vex-fd-launch.sh) then recovers.
+                                // wrapper / systemd unit in the launch script) then recovers.
                                 // NEVER skip/abandon the slot. Gated by VEX_REPAIR_STUCK_FAILSTOP
                                 // (default ON; set to "0" to disable). Env read once + cached.
                                 // `or inject_hit`: in a GATE build the injector bypasses the 5-min
@@ -5615,7 +5615,7 @@ pub const TvuService = struct {
                                         // before exit. Exit 70 (EX_SOFTWARE) = a distinct,
                                         // non-zero "controlled software fail-stop" marker in
                                         // the logs/wrapper output. No auto-restart wrapper
-                                        // consumes it (vex-fd-launch.sh `exec`s with no loop /
+                                        // consumes it (the launch script `exec`s with no loop /
                                         // systemd unit) — recovery is the operator's existing
                                         // fresh-snapshot restart.
                                         std.posix.exit(70);

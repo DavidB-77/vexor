@@ -2999,7 +2999,7 @@ test "TASK#3 heaviestSlotOnSameVotedFork: candidate->best_slot, invalid->deepest
 // LIVE EVENT 422600922 (2026-07-17) — "own-fork tip" fallback fed an
 // unvalidated cross-fork SIBLING into the switch-proof block.
 //
-// Sequence (vex-fd-dev_testnet.log lines 43970-44044): last_vote=422600919
+// Sequence (the incident log, lines 43970-44044): last_vote=422600919
 // was ALREADY CANONICAL (fork-choice's own heaviest pick, `best`, was still
 // 919 — nothing new had been voted heavier yet). A sibling 422600922 (SAME
 // PARENT 422600918, NOT a descendant of 919) froze moments later via a

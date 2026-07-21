@@ -5,7 +5,7 @@
 # Vexor
 
 <p align="center">
-  <a href="https://github.com/DavidB-77/vexor/releases"><img src="https://img.shields.io/badge/release-v0.9.1-38BDF8" alt="release v0.9.1"></a>
+  <a href="https://github.com/DavidB-77/vexor/releases"><img src="https://img.shields.io/github/v/tag/DavidB-77/vexor?label=release&color=38BDF8" alt="latest release tag"></a>
   <a href="https://ziglang.org/"><img src="https://img.shields.io/badge/zig-0.15.2-F7A41D" alt="zig 0.15.2"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="license Apache-2.0"></a>
   <a href="https://docs.vexornode.xyz/reliability/conformance/"><img src="https://img.shields.io/badge/conformance-85.82%25%20raw%20%C2%B7%2092.74%25%20consensus-brightgreen" alt="conformance: official harness, version-matched"></a>
@@ -22,8 +22,6 @@
 </p>
 
 <!-- Badge policy: every badge above states something true and verifiable today.
-     The release badge is static until the repo is public (shields.io cannot read
-     private repos) — swap to img.shields.io/github/v/tag/DavidB-77/vexor at flip.
      Post-flip additions worth enrolling for (not fakeable, must be earned):
      OpenSSF Scorecard + Best Practices badge, codecov once coverage CI exists. -->
 

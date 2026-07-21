@@ -385,7 +385,7 @@ pub fn mergeWorkerWrites(bank: *Bank, ctxs: []const *WorkerCtx) !void {
 /// comment's stated intent ("isolate network I/O from replay") was not actually
 /// met. Pin to ops-lane core 28 so the worker AND the curl child it forks
 /// (which inherits this thread's affinity) run entirely off the replay cores.
-/// vex-fd-pin.sh leaves this thread alone (its lifetime-avg CPU is below the
+/// The core-pinning helper leaves this thread alone (its lifetime-avg CPU is below the
 /// 25% repin threshold), so the ops-lane pin sticks.
 pub fn voteSenderWorker(
     queue: *VoteSendQueue,

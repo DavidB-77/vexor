@@ -193,7 +193,7 @@ pub fn getClusterNodes(ctx: *const RpcContext, _: ?[]const u8, response: *Respon
     const ip_str: []const u8 = if (ctx.public_ip) |ip|
         try std.fmt.bufPrint(&ip_buf, "{d}.{d}.{d}.{d}", .{ ip[0], ip[1], ip[2], ip[3] })
     else
-        "38.58.183.154";
+        "0.0.0.0";
     const gossip_port: u16 = if (ctx.gossip_port != 0) ctx.gossip_port else 8001;
     const tpu_port: u16 = if (ctx.tpu_port != 0) ctx.tpu_port else 8004;
     const rpc_port: u16 = if (ctx.rpc_port != 0) ctx.rpc_port else 8899;

@@ -1,4 +1,4 @@
-//! Phase 2 fork-choice vote-feed wiring (vex-fd-fork-choice-port, 2026-05-26).
+//! Phase 2 fork-choice vote-feed wiring (2026-05-26).
 //!
 //! Bridges the gap between Phase 1's engine (`HeaviestSubtreeForkChoice`)
 //! and live cluster vote-state. Provides three things, all under one
@@ -779,7 +779,7 @@ test "buildSeedBatch end-to-end with stub AccountsDb" {
 //
 // Reconstructs the ACTUAL captured incident numbers from
 // forensics/incident-lockout-422521275-20260717-0757/ and
-// vex-fd-dev_testnet.log:
+// the incident log:
 //   * rooted        = 422521202  (tower root; frozen for the whole wedge — we
 //                       never voted again, so accounts_db.rooted_slot / the
 //                       tower root never advances)

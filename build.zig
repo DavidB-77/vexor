@@ -1,7 +1,7 @@
 // REQUIRES Zig 0.15.2 — zig
 //
 // Vexor clean-rebuild tree build script — a MINIMAL, REVIEWED SUBSET of
-// origin-tree's build.zig (source of truth: vex-fd-origin-tree/build.zig @
+// origin-tree's build.zig (source of truth: the origin tree's build.zig @
 // the origin-tree commit recorded in REBUILD-LEDGER.md). Per master plan §8.3.3
 // every deviation from origin-tree's wiring is a reviewed diff; this file grows
 // module-by-module as the migration proceeds and is expected to converge on

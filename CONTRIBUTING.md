@@ -40,8 +40,7 @@ trustworthy as the project grows.
 
 ## Coding conventions
 
-- `zig fmt` is mandatory — run `zig fmt .` before committing (or let
-  `zig build fmt` do it, if wired up in your checkout).
+- `zig fmt` is mandatory — run `zig fmt .` before committing.
 - Avoid `.?` (optional unwrap) without a comment justifying why the value is
   guaranteed non-null at that point; prefer explicit error unions
   (`try`/`catch`) over asserting your way past a `null`/error case.

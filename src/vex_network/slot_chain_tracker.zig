@@ -60,7 +60,7 @@ const core = @import("core");
 /// extend a competing fork). Those need Tower BFT + fork-isolated accounts_db
 /// (separate work — see project_iter6_carrier_CONFIRMED memo).
 // 2026-06-09: a stopgap had flipped this to false, but the dead-slot regression
-// was actually a STALE-TREE artifact (the May-29 vex-fd-dev tree was deployed by
+// was actually a STALE-TREE artifact (the May-29 internal dev tree was deployed by
 // mistake). The canonical origin-tree tree (this one) has the June seam fixes, and the
 // original c32329e8 binary ran the catch-up→tip seam with ENFORCE ON and never
 // dead-slotted. Restored to ENFORCE (proven config). If false-positive dead-slots

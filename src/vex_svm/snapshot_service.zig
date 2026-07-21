@@ -26,7 +26,7 @@ pub const SnapshotConfig = struct {
     /// Maximum number of incremental snapshots to keep
     max_incremental_snapshots: u32 = 4,
     /// Base directory for snapshots
-    snapshot_dir: []const u8 = "/mnt/snapshots/vex-fd-testnet",
+    snapshot_dir: []const u8 = "/mnt/snapshots/vexor-testnet",
 };
 
 /// Snapshot metadata captured at freeze time
