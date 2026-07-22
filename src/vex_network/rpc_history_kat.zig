@@ -94,7 +94,7 @@ test "RPC tier gate: MINIMAL serves the canonical 12, rejects Full/BankData/Acco
         try testing.expect(!found); // rejected in minimal mode
     }
 
-    // FULL-API context = the `vex-fd rpc` node: the SAME gated methods now route.
+    // FULL-API context = the `vexor rpc` node: the SAME gated methods now route.
     ctx.full_rpc_api = true;
     for (gated) |m| {
         rb.reset();

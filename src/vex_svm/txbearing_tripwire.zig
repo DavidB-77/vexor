@@ -6,9 +6,8 @@
 //! `checkReviveWouldFire` (replay_stage.zig is an unmigrated god-file whose own
 //! inline `test` blocks never run under any build target).
 //!
-//! Design: vexor-research/design-docs/TXBEARING-BLOCK-PRODUCTION-PLAN-2026-07-16.md
-//! §4 M3. Wiring (the caller side) lives in replay_stage.zig; see
-//! TXBEARING-M3-PROGRESS.log for the reachability/inertness proof.
+//! Design: tx-bearing block production plan, §4 M3. Wiring (the caller side)
+//! lives in replay_stage.zig.
 //!
 //! ── WHAT THIS GUARDS ─────────────────────────────────────────────────────────
 //! The 07-10 incident (memory: incident-txbearing-broadcast-leader-skip-

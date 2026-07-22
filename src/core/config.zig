@@ -6,7 +6,7 @@
 //! - Environment variable overrides
 //! - Sensible defaults
 //!
-//! Migrated from Vexor 0.14.1 → vex-fd Zig 0.15.2.
+//! Migrated to Zig 0.15.2.
 //! Changes: ArrayList → ArrayListUnmanaged with per-call allocator.
 
 const std = @import("std");
@@ -49,7 +49,7 @@ pub const Config = struct {
     /// Canonical Agave RPC tiering (rpc/src/rpc_service.rs:708-713): when false (DEFAULT, matching a
     /// stock voting validator), ONLY the 12 Minimal-trait methods are served; every Full / BankData /
     /// AccountsData / AccountsScan method returns method-not-found (-32601), exactly as Agave does by
-    /// not registering those modules. Set true by `--full-rpc-api` (or the `vex-fd rpc` subcommand) to
+    /// not registering those modules. Set true by `--full-rpc-api` (or the `vexor rpc` subcommand) to
     /// serve the complete API. Keeping the voting node minimal is what keeps heavy RPC (getProgramAccounts
     /// scans, getBlock/tx-history serving) from competing with consensus for CPU/memory/bandwidth.
     full_rpc_api: bool = false,

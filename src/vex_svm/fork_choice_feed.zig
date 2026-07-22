@@ -777,9 +777,8 @@ test "buildSeedBatch end-to-end with stub AccountsDb" {
 // ═══════════════════════════════════════════════════════════════════════════════
 // KAT — live wedge slot 422521275 (2026-07-17, fix/switchproof-gossip-arming)
 //
-// Reconstructs the ACTUAL captured incident numbers from
-// forensics/incident-lockout-422521275-20260717-0757/ and
-// the incident log:
+// Reconstructs the ACTUAL captured live-testnet incident numbers from the
+// incident log:
 //   * rooted        = 422521202  (tower root; frozen for the whole wedge — we
 //                       never voted again, so accounts_db.rooted_slot / the
 //                       tower root never advances)

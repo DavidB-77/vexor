@@ -678,7 +678,7 @@ fn applyLamportEffects(
     for (pending.items) |eff| state.addDelta(allocator, eff.key, eff.delta) catch return;
 }
 
-/// INTERIM PRODUCE-PARITY WHITELIST (2026-07-18, forensics/txbearing-produce-parity-rootcause.md §3
+/// INTERIM PRODUCE-PARITY WHITELIST (2026-07-18, produce/replay parity root-cause analysis,
 /// interim item 1 — "conservatively REFUSE any tx shape the gate can't model correctly"). Root cause
 /// #1's residual (§2 D1b): `applyLamportEffects` models ONLY System `Transfer`/`CreateAccount`; a tx
 /// that drains a later tx's fee-payer via ANY other lamport-mover — an unmodeled System discriminator
@@ -753,7 +753,7 @@ pub fn admitTxSeq(
     // INTERIM PRODUCE-PARITY WHITELIST: refuse any tx the gate cannot model exactly (unmodeled System
     // discriminator / non-System program / ALT-loaded index / v0). The produced block then only ever
     // contains fully-modeled txs whose sequential effects the gate tracks precisely — it can pack fewer
-    // txs, never a dead block. See txFullyModelable's doc + forensics/txbearing-produce-parity-rootcause.md.
+    // txs, never a dead block. See txFullyModelable's doc for the full model.
     if (!txFullyModelable(parsed, tx_wire)) return false;
     const fee = txFee(parsed, tx_wire);
     const fp_key = parsed.signer_keys[0];

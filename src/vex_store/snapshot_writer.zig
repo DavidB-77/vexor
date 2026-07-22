@@ -170,7 +170,7 @@ pub fn bgsaveRawErr(comptime fmt: []const u8, args: anytype) void {
 /// dumpCurrentStackTrace = allocates + takes debug state — unsafe over a forked
 /// image), then setsid (terminal/pgrp signal isolation), then PDEATHSIG + the
 /// fork↔prctl orphan-race re-check, then comm rename (deploy.sh
-/// `pkill '^vex-fd'` must never match the child), then self-demotion: isolated
+/// `pkill '^vexor'` must never match the child), then self-demotion: isolated
 /// core (operator requirement, 2026-07-02) + SCHED_IDLE, nice 19, ioprio IDLE,
 /// oom_score_adj 1000 (MAXIMUM OOM preference — the child dies first, always;
 /// re-audit F1, stricter than the Redis-BGSAVE 800).
@@ -196,7 +196,7 @@ pub fn bgsaveChildSetup(child_core: i64, parent_pid_before_fork: std.posix.pid_t
     //    BEFORE this prctl registered (PDEATHSIG would never fire).
     _ = std.posix.prctl(.SET_PDEATHSIG, .{@as(usize, std.posix.SIG.KILL)}) catch {};
     if (std.os.linux.getppid() != parent_pid_before_fork) std.os.linux.exit_group(4);
-    // 3. comm = "vex-bgsave" (15-char comm limit): ps-visible, pkill '^vex-fd'-immune.
+    // 3. comm = "vex-bgsave" (15-char comm limit): ps-visible, pkill '^vexor'-immune.
     const comm: [*:0]const u8 = "vex-bgsave";
     _ = std.posix.prctl(.SET_NAME, .{@intFromPtr(comm)}) catch {};
     // 4. Isolated core (raw sched_setaffinity — same pattern as main.zig

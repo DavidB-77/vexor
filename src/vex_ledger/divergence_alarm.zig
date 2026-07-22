@@ -1,6 +1,5 @@
 //! P5 MOAT #2 — bank_hash Divergence ALARM: the pure 4-input LOCALIZER engine.
 //!
-//! DESIGN: vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
 //! MILESTONE: M1 — the OFFLINE localization core (this file). The LIVE always-on
 //! alarm thread + freeze-tap enqueue is M2 (design sketch in §M2 below); M1 wires
 //! NOTHING into the live replay hot path. This module is std-only, allocation-free,

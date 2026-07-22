@@ -9,9 +9,9 @@
 //! root_guards.zig) and replay_stage.zig's `sweepPendingTickGateSlots` /
 //! `fetchSlotHashesRemote` become thin callers with no test blocks of their own.
 //!
-//! Design: vexor-research/design-docs/SWITCHPROOF-PART2-IMPLEMENTATION-PLAN-2026-07-16.md
-//! §1.1 (feed), §2 M1 (scope: read-only detection, zero mutation of dead_slots /
-//! self.banks / the assembler / fork_choice).
+//! Design: switch-proof self-recovery Part 2, §1.1 (feed) / §2 M1 (scope:
+//! read-only detection, zero mutation of dead_slots / self.banks / the
+//! assembler / fork_choice).
 
 const std = @import("std");
 const core = @import("core");

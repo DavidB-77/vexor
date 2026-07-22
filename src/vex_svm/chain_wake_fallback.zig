@@ -1,6 +1,6 @@
 //! chain_wake_fallback.zig — pure CHAIN-WAKE fallback decision for the
 //! CHAIN-DEFER continuation self-heal (fix/chain-defer-tip-guard, liveness wedge
-//! @422050470, 2026-07-15). RCA: forensics/incident-wedge-422050470/RCA-DATA.md.
+//! @422050470, 2026-07-15; live testnet root-cause analysis).
 //!
 //! ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
 //! When the CHAIN-DEFER GC backstop evicts a deferred slot whose parent has NOT

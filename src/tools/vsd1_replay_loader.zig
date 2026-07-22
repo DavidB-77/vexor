@@ -840,15 +840,13 @@ test "parseVsd1 round-trips a hand-built dump" {
     try testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 3 }, parsed.records[0].wire);
 }
 
-// ── KAT: real incident-422359406 capture (forensics/incident-422359406-tickgate-stall) ──
+// ── KAT: real incident-422359406 capture (live testnet FEC datacomplete-truncation regression) ──
 //
-// Regression fixture too big to commit (197076B); referenced by forensics path +
+// Regression fixture too big to commit (197076B); referenced by local path +
 // md5 and SKIPPED (not failed) if absent from this machine. When present, its
 // md5 is verified first (a mismatched fixture would silently validate the wrong
-// bytes) — see incident memory
-// incident-422359406-fec-datacomplete-truncation-2026-07-16.md for provenance:
-// "OUR corrupted copy... (197076B md5 993bb497f00598ea345080f6dd2c0847) — fixed
-// assembler must NOT produce/accept this."
+// bytes): "OUR corrupted copy... (197076B md5 993bb497f00598ea345080f6dd2c0847)
+// — fixed assembler must NOT produce/accept this."
 const FAIL_BIN_PATH = "tests/fixtures/vex_slot_422359406_fail.bin";
 const FAIL_BIN_MD5 = "993bb497f00598ea345080f6dd2c0847";
 

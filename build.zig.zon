@@ -1,6 +1,6 @@
 .{
     .name = .vexor,
-    .version = "0.9.0",
+    .version = "0.9.3-c",
     .fingerprint = 0xbac4bbd3c649301d,
     .minimum_zig_version = "0.15.2",
     // vendor/blst is vendored as raw C source (not fetched via the Zig

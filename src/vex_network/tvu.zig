@@ -5007,7 +5007,7 @@ pub const TvuService = struct {
                 std.log.debug(
                     \\
                     \\╔══════════════════════════════════════════════════════╗
-                    \\║  VEX-FD DIAGNOSTICS (uptime: {d}s)
+                    \\║  VEXOR DIAGNOSTICS (uptime: {d}s)
                     \\║  Shreds:     {d} received, {d} invalid
                     \\║  Slots:      {d} completed, {d} in-progress, {d} pending replay
                     \\║  Network:    max_slot={d}, highest_completed={d}

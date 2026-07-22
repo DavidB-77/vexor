@@ -23,7 +23,7 @@
 //
 // Thread-safety: `current_slot` is threadlocal — every thread that calls into
 // `_getRooted` / `getAccountInSlot` / `promoteToUnflushedCache` during replay
-// must set its own value at entry to the per-slot work unit. In current vex-fd
+// must set its own value at entry to the per-slot work unit. Currently
 // the ONLY thread that does this is `replayWorker` (replay_stage.zig:3247) via
 // `onSlotCompleted` at line 1494. `parallelWorkerFn` exists but is dead code
 // (svm_pool removed; see replay_stage.zig:253,259). If a future change

@@ -3,8 +3,8 @@
 //! Per the operator byte-fidelity directive (2026-06-24): every metadata record
 //! VexLedger exposes must byte-match Agave rc.1 — VALUES are **wincode 0.5.3**
 //! (== bincode wire: LE fixed ints, BincodeLen length prefixes), CF KEYS are
-//! BIG-ENDIAN. Spec: vexor-coord/RC1-META-WIRE-SPEC.md (every claim
-//! rc.1 file:line). This module is pure + std-only so it is KAT-able in isolation
+//! BIG-ENDIAN. Every claim below is cited to an exact rc.1 file:line.
+//! This module is pure + std-only so it is KAT-able in isolation
 //! against the validation oracles (Index value = 8232 B, empty-next_slots meta =
 //! 4197 B, merkle_root_meta = 6 B None / 38 B Some).
 //!

@@ -145,7 +145,7 @@ fn inSet(set: []const []const u8, name: []const u8) bool {
 // ~1-epoch-lead trigger feed. Any I/O error is swallowed (diagnostic, never fatal).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const CANARY_DEFAULT_DIR = "./forensics/feature-canary";
+const CANARY_DEFAULT_DIR = "./canary-data/feature-canary";
 const CANARY_EVENTS_FILE = "events.jsonl";
 
 fn canaryEmitEnabled() bool {

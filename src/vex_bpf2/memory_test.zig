@@ -538,7 +538,7 @@ test "CARRIER 420364332 POST-fix: tx-global idx (indices[0]=2) grows the MINT" {
 // MAX_ACCOUNT_DATA_GROWTH_PER_TRANSACTION (20 MiB). A create(10240)+realloc tx
 // consumed the whole 10240 budget at creation, then every subsequent realloc was
 // refused → the account stuck at 10240 and the tx silently produced a divergent
-// bank state. See forensics/rewards-rca/HISTORY-TX-RCA-2026-07-14.md.
+// bank state.
 
 test "constants: MAX_ACCOUNT_DATA_GROWTH_PER_TRANSACTION == 20 MiB (not 10240)" {
     // Pins the fix: the per-tx budget must be 20 MiB, distinct from the

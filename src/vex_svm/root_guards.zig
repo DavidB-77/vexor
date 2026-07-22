@@ -1,5 +1,4 @@
 //! Part 4b — ROOT-GUARDS pure predicate (switch-proof / self-recovery root-fix).
-//! Design: vexor-research/design-docs/SWITCHPROOF-SELFRECOVERY-ROOTFIX-DESIGN-2026-07-15 §4b.
 //!
 //! Two REFUSE-ONLY guards evaluated in replay_stage.doRootAdvance before a local
 //! root advance. They prevent the single worst outcome of the 421935259 incident

@@ -540,7 +540,7 @@ pub fn build(b: *std.Build) void {
     // the sibling import resolves through the root_source_file's directory.
 
     const run_test_fc = b.addRunArtifact(test_fc);
-    const test_fc_step = b.step("test-fork-choice", "Run fork_choice.zig unit tests (Agave Phase 1 port; incl. task #32 slot-memoized switchProofVoteCounts)");
+    const test_fc_step = b.step("test-fork-choice", "Run fork_choice.zig unit tests (Agave Phase 1 port; incl. slot-memoized switchProofVoteCounts)");
     test_fc_step.dependOn(&run_test_fc.step);
     test_migrated_step.dependOn(&run_test_fc.step);
 
@@ -560,7 +560,7 @@ pub fn build(b: *std.Build) void {
     test_tower.linkLibC();
 
     const run_test_tower = b.addRunArtifact(test_tower);
-    const test_tower_step = b.step("test-tower", "Run tower.zig unit tests (carrier #7 fork-aware lockout KATs)");
+    const test_tower_step = b.step("test-tower", "Run tower.zig unit tests (fork-aware lockout KATs)");
     test_tower_step.dependOn(&run_test_tower.step);
     test_migrated_step.dependOn(&run_test_tower.step);
 
@@ -2249,7 +2249,7 @@ pub fn build(b: *std.Build) void {
     test_accounts.root_module.addImport("build_options", build_options);
     test_accounts.root_module.addImport("vex_svm", test_accounts_vex_svm_stub);
     const run_test_accounts = b.addRunArtifact(test_accounts);
-    const test_accounts_step = b.step("test-accounts", "Run accounts.zig SPLIT unit tests (fork isolation + read paths, carrier #2/#7/#11 reproducers)");
+    const test_accounts_step = b.step("test-accounts", "Run accounts.zig SPLIT unit tests (fork isolation + read paths regression reproducers)");
     test_accounts_step.dependOn(&run_test_accounts.step);
     test_migrated_step.dependOn(&run_test_accounts.step);
 
@@ -2420,7 +2420,7 @@ pub fn build(b: *std.Build) void {
     run_test_manifest_lthash.has_side_effects = true; // reads env + a real on-disk manifest
     const test_manifest_lthash_step = b.step(
         "test-manifest-lthash-verify",
-        "Offline-verify a full snapshot manifest's accounts_lt_hash == archive filename suffix (task #39 gate)",
+        "Offline-verify a full snapshot manifest's accounts_lt_hash == archive filename suffix",
     );
     test_manifest_lthash_step.dependOn(&run_test_manifest_lthash.step);
     test_migrated_step.dependOn(&run_test_manifest_lthash.step);
@@ -2492,7 +2492,7 @@ pub fn build(b: *std.Build) void {
     const run_test_snaplen = b.addRunArtifact(test_snaplen);
     const test_snaplen_step = b.step(
         "test-snapshot-len-provenance",
-        "Run snapshot manifest-length provenance KAT (carrier @414371294 regression guard)",
+        "Run snapshot manifest-length provenance KAT (regression guard)",
     );
     test_snaplen_step.dependOn(&run_test_snaplen.step);
     test_migrated_step.dependOn(&run_test_snaplen.step);
@@ -2721,7 +2721,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_native_alt = b.addRunArtifact(test_native_alt);
-    const test_native_alt_step = b.step("test-native-alt", "Run native ALT handler KATs (carrier 420180889: PROGRAM_ID guard + dup-index extend)");
+    const test_native_alt_step = b.step("test-native-alt", "Run native ALT handler KATs (PROGRAM_ID guard + dup-index extend)");
     test_native_alt_step.dependOn(&run_native_alt.step);
     test_migrated_step.dependOn(&run_native_alt.step);
 
@@ -2784,7 +2784,7 @@ pub fn build(b: *std.Build) void {
     });
     test_nonce_kat.root_module.addImport("vex_crypto", vex_crypto);
     const run_test_nonce_kat = b.addRunArtifact(test_nonce_kat);
-    const test_nonce_kat_step = b.step("test-nonce-414201776", "Run durable-nonce KAT (AdvanceNonceAccount carrier @414201776 regression guard)");
+    const test_nonce_kat_step = b.step("test-nonce-414201776", "Run durable-nonce KAT (AdvanceNonceAccount regression guard)");
     test_nonce_kat_step.dependOn(&run_test_nonce_kat.step);
     test_migrated_step.dependOn(&run_test_nonce_kat.step);
 
@@ -2801,7 +2801,7 @@ pub fn build(b: *std.Build) void {
     });
     test_cws_kat.root_module.addImport("vex_crypto", vex_crypto);
     const run_test_cws_kat = b.addRunArtifact(test_cws_kat);
-    const test_cws_kat_step = b.step("test-create-with-seed-414674115", "Run create_with_seed KAT (carrier #12 @414674115 regression guard)");
+    const test_cws_kat_step = b.step("test-create-with-seed-414674115", "Run create_with_seed KAT (regression guard)");
     test_cws_kat_step.dependOn(&run_test_cws_kat.step);
     test_migrated_step.dependOn(&run_test_cws_kat.step);
 
@@ -2858,7 +2858,7 @@ pub fn build(b: *std.Build) void {
     test_vac.root_module.addImport("vex_store", test_vss_vex_store);
     test_vac.root_module.addImport("bls_pop", bls_pop);
     const run_test_vac = b.addRunArtifact(test_vac);
-    const test_vac_step = b.step("test-vote-authorize-checked", "Run vote AuthorizeChecked canon KAT (carrier @413005757 regression guard)");
+    const test_vac_step = b.step("test-vote-authorize-checked", "Run vote AuthorizeChecked canon KAT (regression guard)");
     test_vac_step.dependOn(&run_test_vac.step);
     test_migrated_step.dependOn(&run_test_vac.step);
 
@@ -3461,7 +3461,7 @@ pub fn build(b: *std.Build) void {
     const run_curve25519 = b.addRunArtifact(test_curve25519);
     const test_curve25519_step = b.step(
         "test-curve25519",
-        "Run the task #8 curve25519 group_op/msm soft-vs-abort + identity KATs",
+        "Run the curve25519 group_op/msm soft-vs-abort + identity KATs",
     );
     test_curve25519_step.dependOn(&run_curve25519.step);
     test_migrated_step.dependOn(&run_curve25519.step);
@@ -4077,7 +4077,7 @@ pub fn build(b: *std.Build) void {
     test_ftr73.root_module.addImport("core", core);
     test_ftr73.linkLibC();
     const run_ftr73 = b.addRunArtifact(test_ftr73);
-    const test_ftr73_step = b.step("test-failed-tx-rollback-414386920", "Regression KAT CARRIER #6: failed-tx whole-tx rollback (DEFERRED — origin-tree-pre-existing RED, standalone only)");
+    const test_ftr73_step = b.step("test-failed-tx-rollback-414386920", "Regression KAT: failed-tx whole-tx rollback (DEFERRED — origin-tree-pre-existing RED, standalone only)");
     test_ftr73_step.dependOn(&run_ftr73.step);
 
     // test-mark-dead-cascade (origin-tree:2714) — also imports vex_consensus; links
@@ -4261,7 +4261,7 @@ pub fn build(b: *std.Build) void {
     test_epoch73.root_module.addImport("vex_svm", net_vex_svm);
     test_epoch73.linkLibC();
     const run_epoch73 = b.addRunArtifact(test_epoch73);
-    const test_epoch73_step = b.step("test-epoch-schedule", "Regression KAT: warmup EpochSchedule math (524288-vs-524256 carrier)");
+    const test_epoch73_step = b.step("test-epoch-schedule", "Regression KAT: warmup EpochSchedule math (524288-vs-524256 divergence)");
     test_epoch73_step.dependOn(&run_epoch73.step);
     test_migrated_step.dependOn(&run_epoch73.step);
 
@@ -4281,7 +4281,7 @@ pub fn build(b: *std.Build) void {
     test_ccd73.root_module.addImport("core", core);
     test_ccd73.linkLibC();
     const run_ccd73 = b.addRunArtifact(test_ccd73);
-    const test_ccd73_step = b.step("test-cpi-carrier-dispatch", "CPI-created-account commit carrier KAT (DEFERRED — origin-tree-pre-existing RED, standalone only)");
+    const test_ccd73_step = b.step("test-cpi-carrier-dispatch", "CPI-created-account commit-dispatch KAT (DEFERRED — origin-tree-pre-existing RED, standalone only)");
     test_ccd73_step.dependOn(&run_ccd73.step);
 
     // ── vexor-program-test (M1, 2026-07-12) — LiteSVM-class sBPF harness ──────
@@ -4352,7 +4352,6 @@ pub fn build(b: *std.Build) void {
     // The offline bank_hash-divergence localizer: a std-only CLI over the pure
     // 4-input classifier engine (src/vex_ledger/divergence_alarm.zig). No vex_svm /
     // validator import — a tiny, fast, dependency-free binary the wrapper composes.
-    // DESIGN: vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
     const divalarm_mod = b.createModule(.{ .root_source_file = b.path("src/vex_ledger/divergence_alarm.zig"), .target = target, .optimize = optimize });
 
     const divloc_exe = b.addExecutable(.{

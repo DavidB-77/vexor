@@ -14,6 +14,15 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-c
+### Validator
+#### Fixed
+* Consensus/replay: fixed a livelock between the fast-wake and far-ahead deferral gates that could recur when the last-frozen slot moves non-monotonically (out-of-order catchup churn). The far-ahead gate is now keyed on a monotonic high-water mark of the highest slot ever frozen instead of the volatile last-frozen slot, so it can no longer contradict a parent-frozen fact the fast-wake gate already certified; the deferral path taken from the far-ahead gate no longer re-triggers fast-wake, structurally closing the recursion. Live-proven on testnet with a known-answer regression test pinned to the incident's exact slot numbers.
+
+#### Changes
+* Housekeeping: removed internal-repository path references and legacy pre-rename naming (`vex-fd`, `fix105`) from source comments, a runtime diagnostics log banner, and `zig build -l`/`--help` test-step descriptions. No behavior change.
+* The version-report string (gossip client-id advertisement and boot banner) now reads `0.9.3-c`, matching this release.
+
 ## 0.9.3-b
 ### Validator
 #### Changes

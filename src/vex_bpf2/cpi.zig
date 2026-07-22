@@ -78,7 +78,7 @@ pub const MAX_CPI_ACCOUNT_INFOS: usize = 64;
 pub const MAX_CPI_ACCOUNT_INFOS_SIMD_0339: usize = 255;
 
 // ──────────────────────────────────────────────────────────────────────────────
-// P0 CU-parity fix (2026-07-12, forensics/cu-fix/): Agave's cpi_common charges
+// P0 CU-parity fix (2026-07-12): Agave's cpi_common charges
 // TWO CU costs this file never charged, both unconditional (no feature gate):
 // @prov:cpi.invoke-units — INVOKE_UNITS flat per-CPI-call fee, charged FIRST,
 // before any translation, PLUS the per-CPI instruction-translation byte cost

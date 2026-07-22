@@ -87,8 +87,8 @@ test "PRE-FIX shape: fixed [4096]Slot buffer truncates before reaching last_vote
     const stage = try ReplayStage.init(allocator, Pubkey{ .data = [_]u8{0} ** 32 });
     stopAndJoinWorkers(stage);
 
-    // Exact captured incident numbers (forensics/incident-lockout-422521275-20260717-0757/,
-    // d2c2f59's commit message): root=422521202 (tower root, frozen for the
+    // Exact captured live-testnet incident numbers (see commit d2c2f59's
+    // message): root=422521202 (tower root, frozen for the
     // whole wedge), last_voted_slot=422521275 (73 slots above root — inside
     // the unrooted region by construction), candidate.parent_slot=422525388
     // (one below the log's "unrooted depth 4187 at slot 422525389" freeze
