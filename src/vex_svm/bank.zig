@@ -3458,10 +3458,9 @@ pub const Bank = struct {
         // warmup_cooldown_rate) uses 25%/epoch for epochs BEFORE the
         // `reduce_stake_warmup_cooldown` activation epoch (testnet: slot
         // 247628260 → epoch 586) and 9% from it onward, evaluated PER LOOP
-        // EPOCH inside the curve. Offline lab over all 558,757 delegations
-        // (epoch973-forensics/carrier16_lab.py): flat 0.09 → total_points off
-        // by +7.9e17 with filters / −9.84e10 without; rate schedule → EXACTLY
-        // canonical (diff 0).
+        // EPOCH inside the curve. Offline lab over all 558,757 delegations:
+        // flat 0.09 → total_points off by +7.9e17 with filters / −9.84e10
+        // without; rate schedule → EXACTLY canonical (diff 0).
         const new_rate_activation_epoch = self.getNewRateActivationEpoch();
         std.log.warn("[EPOCH-NRAE] new_rate_activation_epoch={d} (reduce_stake_warmup_cooldown)", .{new_rate_activation_epoch});
 

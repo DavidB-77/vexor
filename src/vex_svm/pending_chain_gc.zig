@@ -91,7 +91,7 @@ pub fn shouldDropDefault(slot: u64, rooted_slot: u64, cur_count: usize, age_ms: 
 
 // ════════════════════════════════════════════════════════════════════════════
 // TIP-AWARE backstop (fix/chain-defer-tip-guard, liveness wedge @422050470,
-// 2026-07-15). RCA: forensics/incident-wedge-422050470/RCA-DATA.md.
+// 2026-07-15; live testnet root-cause analysis).
 //
 // The scalar `shouldDrop` backstop above drops EVERY over-cap entry older than
 // the TTL — with no regard to WHERE the entry sits relative to the replay tip.

@@ -1,6 +1,6 @@
 //! Switch-proof Part 2, M2 — Shape-A dead-slot REVIVE decision core (pure).
-//! Design: vexor-research/design-docs/SWITCHPROOF-PART2-IMPLEMENTATION-PLAN-2026-07-16.md
-//! §1.2 (dump anatomy), §2 M2 (scope), §5 (Shape-B deferred); Agave analog
+//! Design: switch-proof self-recovery Part 2, §1.2 (dump anatomy), §2 M2
+//! (scope), §5 (Shape-B deferred); Agave analog
 //! `core/src/repair/cluster_slot_state_verifier.rs`
 //! `check_duplicate_confirmed_hash_against_bank_status` (ResultingStateChange:
 //! Dead→RepairDuplicateConfirmedVersion, Frozen==→DuplicateConfirmedSlotMatchesCluster,

@@ -303,7 +303,7 @@ pub fn execute(ctx: *InvokeContext, ix_data: []const u8) Error!void {
         // PR-5m (2026-05-18): SIMD-0312 wire into BPF CPI dispatch.
         // (The header comment SIMD-0083/"dormant" is stale; SIMD-0312
         //  activated on testnet at slot 406,604,256, ep 954, per
-        //  vex-fd-dev/src/vex_svm/native/system_v2.zig:712.)
+        //  src/vex_svm/native/system_v2.zig:712.)
         // The native handler at system_v2.zig:415 has been correct since
         // SIMD-0312 landed; this CPI dispatch path returning
         // VariantPending was the gap. Empirically suspected as the

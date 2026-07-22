@@ -15,7 +15,8 @@
 //! since a still-live sysvar_refresh_thread races this test's direct field
 //! writes / real calls into the same single-writer-assumed cache fields).
 //!
-//! Design: vexor-research/design-docs/SWITCHPROOF-PART2-IMPLEMENTATION-PLAN-2026-07-16.md §2 M1.
+//! Design: switch-proof self-recovery, Part 2 M1 (dead-slot revive-would-fire
+//! detection tap — see src/vex_svm/revive_detect.zig for the pure predicate).
 //!
 //! Build/run: zig build test-revive-would-fire
 
@@ -150,10 +151,9 @@ test "live-path: VEX_SLOT_HASH_INJECT_FILE drives fetchSlotHashesRemote -> insta
     {
         const f = try tmp.dir.createFile("inject.txt", .{});
         defer f.close();
-        // 421935259's real canonical base58 hash, from
-        // forensics/incident-421935259/canon-block-421935259.json's "blockhash"
-        // field (== the slot's bank_hash), cross-checked against RCA-FINAL.md Q1
-        // hex 222355518d051e1f...f09bbe.
+        // Slot 421935259's real canonical base58 blockhash (== the slot's
+        // bank_hash), captured from the live testnet incident this KAT
+        // regression-guards; hex 222355518d051e1f...f09bbe.
         var line_buf: [128]u8 = undefined;
         const line = try std.fmt.bufPrint(&line_buf, "slot={d} hash=3JG7REXRN7QAYJhj7j9nFPeVq3okjBFMHhSnXBzpuFxZ\n", .{DEAD_SLOT});
         try f.writeAll(line);

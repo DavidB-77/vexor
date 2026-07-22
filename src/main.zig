@@ -1,19 +1,19 @@
 //! Vexor Validator Entry Point
 //!
-//! Migrated from Vexor 0.14.1 → Zig 0.15.2 for vex-fd.
+//! Migrated to Zig 0.15.2.
 //! Changes applied:
 //!   - Removed Vexor-specific module imports (runtime, diagnostics, optimizer, installer)
-//!     that don't exist in vex-fd yet (marked TODO)
+//!     that don't exist yet (marked TODO)
 //!   - ThreadSafeAllocator wrapping GPA retained (prevents concurrent alloc races)
 //!   - Signal handler logic retained verbatim
-//!   - build_options wired through vex-fd build.zig
+//!   - build_options wired through build.zig
 //!
 //! Module dependencies:
-//!   - core:         vex-fd/src/core/root.zig (Pubkey, Hash, Keypair, Config)
-//!   - vex_svm:      vex-fd/src/vex_svm/root.zig (Bank, executor)
-//!   - vex_network:  vex-fd/src/vex_network/tvu.zig (TVU, TpuClient)
-//!   - vex_store:    vex-fd/src/vex_store/root.zig (AccountsDb, LedgerDb)
-//!   - vex_consensus: vex-fd/src/vex_consensus/root.zig (Tower, ConsensusEngine)
+//!   - core:         src/core/root.zig (Pubkey, Hash, Keypair, Config)
+//!   - vex_svm:      src/vex_svm/root.zig (Bank, executor)
+//!   - vex_network:  src/vex_network/tvu.zig (TVU, TpuClient)
+//!   - vex_store:    src/vex_store/root.zig (AccountsDb, LedgerDb)
+//!   - vex_consensus: src/vex_consensus/root.zig (Tower, ConsensusEngine)
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -109,7 +109,7 @@ const jemalloc_conf: [*:0]const u8 = if (build_options.jeprof)
 else
     "background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0";
 
-// vex-fd modules
+// vexor modules
 const vex_svm = @import("vex_svm");
 const vex_crypto = @import("vex_crypto");
 const vex_store = @import("vex_store");
@@ -344,8 +344,8 @@ pub fn main() !void {
     const command = args[1];
 
     // --help / -h / help must print usage and exit — NEVER fall through to launching the
-    // validator. Applies whether help is the command itself (`vex-fd help`, `vex-fd --help`)
-    // or a flag passed to a subcommand (`vex-fd run --help`, `vex-fd validator -h`).
+    // validator. Applies whether help is the command itself (`vexor help`, `vexor --help`)
+    // or a flag passed to a subcommand (`vexor run --help`, `vexor validator -h`).
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or
         std.mem.eql(u8, command, "-h") or hasHelpFlag(args[2..]))
     {
@@ -2075,7 +2075,7 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
         rpc_server.shred_version = config.expected_shred_version orelse 0;
         rpc_server.genesis_hash = config.expected_genesis_hash;
         rpc_server.cluster_name = @tagName(config.cluster);
-        rpc_server.full_rpc_api = config.full_rpc_api; // canonical tier: false ⇒ Minimal-12 only (voting node), true ⇒ full API (`vex-fd rpc` / --full-rpc-api)
+        rpc_server.full_rpc_api = config.full_rpc_api; // canonical tier: false ⇒ Minimal-12 only (voting node), true ⇒ full API (`vexor rpc` / --full-rpc-api)
         std.log.warn("[RPC] mode={s}{s}\n", .{
             if (config.full_rpc_api) "FULL-API" else "MINIMAL (12 methods)",
             if (config.full_rpc_api) "" else " — Full/BankData/AccountsScan return -32601; run `vexor rpc` or pass --full-rpc-api for the complete API",
@@ -3146,6 +3146,6 @@ fn printUsage() void {
         \\
     ;
     // Write directly to stdout — NOT std.log.debug, which is suppressed at normal log
-    // levels (the reason `vex-fd help` / `--help` previously appeared to print nothing).
+    // levels (the reason `vexor help` / `--help` previously appeared to print nothing).
     std.debug.print("{s}", .{usage});
 }

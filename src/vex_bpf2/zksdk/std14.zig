@@ -5,7 +5,7 @@
 //!
 //! CLEAN (module 4 migration, manifest 1.11): trimmed dead Reader/Writer/
 //! CountingWriter/LinearFifo/LimitedReader code. Repo-wide grep across
-//! src/vex_bpf2/zksdk (fix105, pre-copy) confirmed BoundedArray/
+//! src/vex_bpf2/zksdk confirmed BoundedArray/
 //! BoundedArrayAligned are the ONLY std14 members referenced anywhere in the
 //! module (range_proof/ipp.zig, range_proof/bulletproofs.zig,
 //! sigma_proofs/grouped_ciphertext/{2,3}_handles.zig) — zero logic change to

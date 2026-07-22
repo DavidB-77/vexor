@@ -1,7 +1,7 @@
 //! P5 MOAT #2 — bank_hash Divergence ALARM: MILESTONE M2, the LIVE always-on alarm.
 //!
-//! DESIGN:  vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
-//! M2 SPEC: vexor-research/design-docs/DIVERGENCE-ALARM-M2-SPEC-RECOVERED-2026-07-13.md
+//! DESIGN: bank_hash divergence-alarm M1/M2 milestone design (SPSC-queued,
+//! low-priority alarm thread; see the module doc below for the full contract).
 //!
 //! WHAT THIS IS: the runtime wrapper around M1's pure `classify()` engine
 //! (src/vex_ledger/divergence_alarm.zig — the STABLE SEAM, imported unchanged). M2 adds

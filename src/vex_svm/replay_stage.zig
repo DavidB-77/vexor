@@ -7,7 +7,7 @@
 //! - Voting on completed slots
 //! - Producing blocks when we're the leader
 //!
-//! Migrated from Vexor 0.14.1 → vex-fd Zig 0.15.2.
+//! Migrated to Zig 0.15.2.
 //! Changes applied:
 //!   - std.ArrayList → std.ArrayListUnmanaged with per-call allocator
 //!   - dropped_banks: ArrayList → ArrayListUnmanaged
@@ -590,7 +590,7 @@ pub const BootstrapResult = struct {
     total_lamports: u64,
 };
 
-/// Minimal replay stage for vex-fd.
+/// Minimal replay stage for Vexor.
 ///
 /// This is the ported Vexor replay pipeline. It maintains the slot→Bank map,
 /// the SPSC replay queue, and the parallel SVM execution engine.
@@ -713,6 +713,20 @@ pub const ReplayStage = struct {
 
     /// Root bank (finalized state) — atomic for lock-free swap.
     root_bank: std.atomic.Value(?*Bank),
+
+    /// Monotonic non-decreasing high-water mark of the highest slot EVER
+    /// frozen, updated ONLY forward (in `checkPendingChain`, the single
+    /// canonical freeze-record point, alongside `frozen_history`). Unlike
+    /// `root_bank.slot` (the LAST-frozen bank, which is non-monotonic —
+    /// out-of-order catchup churn can make it dip backward), this value can
+    /// never move backward, so `pushSlotForReplay[WithBoundaries]`'s
+    /// FAR_AHEAD_THRESHOLD gate — keyed on this field via
+    /// `pending_wake.isFarAheadOfReplay` — can never contradict a
+    /// parent-frozen fact `parentReadyForFastWake` already certified. 0 until
+    /// the first freeze (mirrors `root_bank`'s null-until-first-freeze
+    /// semantics; the FAR_AHEAD gate is skipped entirely while `root_bank` is
+    /// null, so the 0 sentinel is never consulted before then).
+    highest_frozen_slot: std.atomic.Value(u64),
 
     /// AccountsDb reference for loading accounts during tx execution.
     /// Set after bootstrap via setAccountsDb().
@@ -1300,6 +1314,7 @@ pub const ReplayStage = struct {
             .orphaned = std.AutoHashMap(Slot, *Bank).init(allocator),
             .orphaned_lock = .{},
             .root_bank = std.atomic.Value(?*Bank).init(null),
+            .highest_frozen_slot = std.atomic.Value(u64).init(0),
             .accounts_db = null,
             .identity_secret = null,
             .vote_account = null,
@@ -3016,7 +3031,13 @@ pub const ReplayStage = struct {
         }
 
         if (self.root_bank.load(.acquire)) |rb| {
-            if (slot > rb.slot + FAR_AHEAD_THRESHOLD) {
+            // Gate on the monotonic `highest_frozen_slot` high-water mark via
+            // `pending_wake.isFarAheadOfReplay`, NOT the volatile last-frozen
+            // `rb.slot` — see the field doc on `highest_frozen_slot` and the
+            // predicate doc in pending_wake.zig for the full mechanism.
+            // `rb.slot` is retained here only for the diagnostic log line.
+            const highest_frozen = self.highest_frozen_slot.load(.acquire);
+            if (pending_wake.isFarAheadOfReplay(slot, highest_frozen, FAR_AHEAD_THRESHOLD)) {
                 // d27aa (2026-05-11): instead of dropping, defer to
                 // pending_chain so the slot's assembled data is preserved
                 // and the d27z chain-defer drain wakes it when chain
@@ -3032,7 +3053,17 @@ pub const ReplayStage = struct {
                 // drop — the data just lives until the parent becomes
                 // available. pending_chain mirrors that with a 5-min TTL
                 // bound on memory.
-                self.deferUnconnectedSlot(slot, data) catch |err| {
+                //
+                // Route through the PASSIVE defer variant (no fast-wake
+                // re-check), not the fast-wake-enabled one. This is the
+                // push→defer edge of the fast-wake/far-ahead mutual
+                // recursion described on `pending_wake.isFarAheadOfReplay`;
+                // skipping the fast-wake re-check here structurally severs
+                // that edge — even if some future gate pair disagrees again,
+                // the slot lands in bounded pending_chain (existing hard-cap
+                // / TTL GC) and waits for checkPendingChain's freeze-triggered
+                // sweep, never re-entering this call stack.
+                self.deferUnconnectedSlotWithBoundariesPassive(slot, data, &.{}) catch |err| {
                     std.log.warn("[FAR-AHEAD-DEFER-FAIL] slot={d} err={any} — falling back to drop", .{ slot, err });
                 };
                 if (data.len > 0) self.allocator.free(data);
@@ -3041,8 +3072,8 @@ pub const ReplayStage = struct {
                 };
                 DropDbg.count += 1;
                 if (DropDbg.count <= 10 or DropDbg.count % 100 == 0) {
-                    std.log.warn("[FAR-AHEAD-DEFER] slot={d} (frozen_tip={d}, gap={d}, threshold={d}) — deferred to pending_chain. count={d}", .{
-                        slot, rb.slot, slot - rb.slot, FAR_AHEAD_THRESHOLD, DropDbg.count,
+                    std.log.warn("[FAR-AHEAD-DEFER] slot={d} (frozen_tip={d}, highest_frozen={d}, gap={d}, threshold={d}) — deferred to pending_chain (passive). count={d}", .{
+                        slot, rb.slot, highest_frozen, slot - highest_frozen, FAR_AHEAD_THRESHOLD, DropDbg.count,
                     });
                 }
                 return true;
@@ -3084,11 +3115,29 @@ pub const ReplayStage = struct {
                 return true;
             }
         }
-        if (self.root_bank.load(.acquire)) |rb| {
-            if (slot > rb.slot + FAR_AHEAD_THRESHOLD) {
+        if (self.root_bank.load(.acquire)) |_| {
+            // See the identical gate in `pushSlotForReplay` above — keyed on
+            // the monotonic `highest_frozen_slot` high-water mark, not the
+            // volatile last-frozen `rb.slot`, so this gate can never
+            // contradict a parent-frozen fact `parentReadyForFastWake`
+            // already certified in the deferral path's fast-wake arm.
+            const highest_frozen = self.highest_frozen_slot.load(.acquire);
+            if (pending_wake.isFarAheadOfReplay(slot, highest_frozen, FAR_AHEAD_THRESHOLD)) {
                 // d28bb: preserve boundaries through deferral so they're
                 // available when CHAIN-WAKE re-pushes.
-                self.deferUnconnectedSlotWithBoundaries(slot, data, boundaries) catch |err| {
+                //
+                // This is the re-entrant call that used to close the
+                // fast-wake/far-ahead synchronous recursion (the deferral
+                // path's fast-wake arm calls straight back into
+                // pushSlotForReplayWithBoundaries, which called straight
+                // back here). MUST call the PASSIVE variant (skips the
+                // fast-wake re-check) so this edge can never re-enter the
+                // deferral path's fast-wake arm — structurally severing the
+                // cycle regardless of whether the gate-mirror fix above ever
+                // disagrees again. Worst case becomes a bounded
+                // pending_chain entry woken by checkPendingChain's freeze
+                // sweep, never unbounded call-stack growth.
+                self.deferUnconnectedSlotWithBoundariesPassive(slot, data, boundaries) catch |err| {
                     std.log.warn("[FAR-AHEAD-DEFER-FAIL] slot={d} err={any} — falling back to drop", .{ slot, err });
                 };
                 if (data.len > 0) self.allocator.free(data);
@@ -3587,7 +3636,41 @@ pub const ReplayStage = struct {
     /// d28bb (2026-05-12): same as deferUnconnectedSlot but also preserves
     /// the per-component byte boundaries. Caller transfers ownership of
     /// `boundaries` to pending_chain (we take a copy so caller can free).
+    /// This is the fast-wake-enabled entry point — use for all NORMAL callers
+    /// (a slot completing TVU/catchup assembly for the first time). Do NOT
+    /// call this from `pushSlotForReplay[WithBoundaries]`'s FAR_AHEAD branch —
+    /// see `deferUnconnectedSlotWithBoundariesPassive` below.
     fn deferUnconnectedSlotWithBoundaries(self: *Self, slot: Slot, assembled_data: []const u8, boundaries: []const usize) !void {
+        return self.deferUnconnectedSlotWithBoundariesImpl(slot, assembled_data, boundaries, true);
+    }
+
+    /// PASSIVE variant — skips the fast-wake re-check (`allow_fast_wake=false`).
+    /// The ONLY callers of this function are the FAR_AHEAD_THRESHOLD branches
+    /// in `pushSlotForReplay` and `pushSlotForReplayWithBoundaries`.
+    ///
+    /// That call site is the push→defer edge of a two-node mutual-recursion
+    /// cycle: `deferUnconnectedSlotWithBoundaries`'s fast-wake arm calls
+    /// `pushSlotForReplay[WithBoundaries]`, whose FAR_AHEAD branch used to call
+    /// straight back into `deferUnconnectedSlotWithBoundaries` — re-deriving
+    /// the SAME frozen-parent fact and re-firing fast-wake — an unbounded
+    /// synchronous recursion with no backoff, no retry counter, no terminal
+    /// give-up condition. Breaking either edge breaks the cycle; this severs
+    /// the push→defer edge by construction: the FAR_AHEAD branch can NEVER
+    /// re-trigger a fast-wake push, so it can never re-enter this call stack,
+    /// regardless of whether some future gate pair disagrees again. Worst
+    /// case is a bounded pending_chain entry (existing hard-cap / TTL GC)
+    /// woken by `checkPendingChain`'s freeze-triggered sweep — bounded queue
+    /// backpressure, never unbounded call-stack growth.
+    ///
+    /// Complements the gate-mirror fix (`pending_wake.isFarAheadOfReplay`
+    /// keyed on the monotonic `highest_frozen_slot`): that fix means this
+    /// branch is no longer expected to fire for a parent-frozen slot at all;
+    /// this is the defense-in-depth backstop for if it ever does.
+    fn deferUnconnectedSlotWithBoundariesPassive(self: *Self, slot: Slot, assembled_data: []const u8, boundaries: []const usize) !void {
+        return self.deferUnconnectedSlotWithBoundariesImpl(slot, assembled_data, boundaries, false);
+    }
+
+    fn deferUnconnectedSlotWithBoundariesImpl(self: *Self, slot: Slot, assembled_data: []const u8, boundaries: []const usize, allow_fast_wake: bool) !void {
         // 2026-05-25 LIVELOCK FIX (forensically diagnosed from 410911969 wedge):
         // ENTRY-LEVEL DROP-BELOW-ROOT GUARD — without this, the PR-5ak FAST-WAKE
         // path keeps re-pushing slots whose root has already advanced past them.
@@ -3848,39 +3931,48 @@ pub const ReplayStage = struct {
         // the defer and push directly to slot_queue so replay can proceed.
         // Without this, the entry would sit in pending_chain until another
         // (unrelated) freeze triggers checkPendingChain's sweep.
-        const parent_already_frozen = blk: {
-            const parent_frozen = pf: {
-                self.banks_lock.lockShared();
-                defer self.banks_lock.unlockShared();
-                if (self.banks.get(target_parent)) |bank| break :pf bank.is_frozen;
-                break :pf false;
+        //
+        // Gated on `allow_fast_wake` — false ONLY for the PASSIVE variant,
+        // whose sole caller is the FAR_AHEAD_THRESHOLD re-entry. See
+        // `deferUnconnectedSlotWithBoundariesPassive`'s doc for why this gate
+        // must stay off there: it is the structural break in the
+        // fast-wake/far-ahead mutual-recursion cycle. Normal callers
+        // (allow_fast_wake=true) are unaffected.
+        if (allow_fast_wake) {
+            const parent_already_frozen = blk: {
+                const parent_frozen = pf: {
+                    self.banks_lock.lockShared();
+                    defer self.banks_lock.unlockShared();
+                    if (self.banks.get(target_parent)) |bank| break :pf bank.is_frozen;
+                    break :pf false;
+                };
+                // FIX #112 (2026-05-30): the root-fallback ("parent at/below root is a
+                // ready boundary parent") must key on the monotonic CONSENSUS root
+                // (db.rooted_slot), NOT root_bank.slot (last-frozen, non-monotonic).
+                // Keying on root_bank let a transient out-of-order minority freeze make
+                // a canonical child look "ready" → fast-wake-push → getOrCreateBank
+                // reject (root_bank>=slot) → defer → re-push: a 104M-line livelock.
+                // Throughput preserved: the common in-order case wakes via parent_frozen.
+                // FIX #18a-B (2026-06-12, carrier #18 @414926973): pass the freeze-tip
+                // and child slot so the predicate mirrors resolveParent's d28mm guard —
+                // fast-wake must never claim ready for a build resolve will refuse
+                // (that disagreement was the 3.4h defer→push→defer livelock, RSS 115GB).
+                const rooted: Slot = if (self.accounts_db) |db| db.rooted_slot else 0;
+                const freeze_tip: Slot = if (self.root_bank.load(.acquire)) |rb| rb.slot else 0;
+                break :blk pending_wake.parentReadyForFastWake(parent_frozen, target_parent, rooted, freeze_tip, slot);
             };
-            // FIX #112 (2026-05-30): the root-fallback ("parent at/below root is a
-            // ready boundary parent") must key on the monotonic CONSENSUS root
-            // (db.rooted_slot), NOT root_bank.slot (last-frozen, non-monotonic).
-            // Keying on root_bank let a transient out-of-order minority freeze make
-            // a canonical child look "ready" → fast-wake-push → getOrCreateBank
-            // reject (root_bank>=slot) → defer → re-push: a 104M-line livelock.
-            // Throughput preserved: the common in-order case wakes via parent_frozen.
-            // FIX #18a-B (2026-06-12, carrier #18 @414926973): pass the freeze-tip
-            // and child slot so the predicate mirrors resolveParent's d28mm guard —
-            // fast-wake must never claim ready for a build resolve will refuse
-            // (that disagreement was the 3.4h defer→push→defer livelock, RSS 115GB).
-            const rooted: Slot = if (self.accounts_db) |db| db.rooted_slot else 0;
-            const freeze_tip: Slot = if (self.root_bank.load(.acquire)) |rb| rb.slot else 0;
-            break :blk pending_wake.parentReadyForFastWake(parent_frozen, target_parent, rooted, freeze_tip, slot);
-        };
-        if (parent_already_frozen) {
-            std.log.warn("[CHAIN-DEFER-FAST-WAKE] slot={d} target_parent={d} already frozen — push to slot_queue directly (PR-5ak)", .{ slot, target_parent });
-            const ok = if (boundaries_copy.len > 0)
-                self.pushSlotForReplayWithBoundaries(slot, data_copy, boundaries_copy)
-            else
-                self.pushSlotForReplay(slot, data_copy);
-            if (!ok) {
-                if (data_copy.len > 0) self.allocator.free(data_copy);
-                if (boundaries_copy.len > 0) self.allocator.free(boundaries_copy);
+            if (parent_already_frozen) {
+                std.log.warn("[CHAIN-DEFER-FAST-WAKE] slot={d} target_parent={d} already frozen — push to slot_queue directly (PR-5ak)", .{ slot, target_parent });
+                const ok = if (boundaries_copy.len > 0)
+                    self.pushSlotForReplayWithBoundaries(slot, data_copy, boundaries_copy)
+                else
+                    self.pushSlotForReplay(slot, data_copy);
+                if (!ok) {
+                    if (data_copy.len > 0) self.allocator.free(data_copy);
+                    if (boundaries_copy.len > 0) self.allocator.free(boundaries_copy);
+                }
+                return;
             }
-            return;
         }
 
         // PR-5av Phase 3/4 (combined per advisor pivot 2026-05-22): mint
@@ -3935,6 +4027,23 @@ pub const ReplayStage = struct {
             self.pending_chain_lock.lock();
             defer self.pending_chain_lock.unlock();
             self.frozen_history.put(frozen_slot, {}) catch {};
+        }
+        // Advance the monotonic FAR_AHEAD high-water mark. checkPendingChain
+        // is the single canonical freeze-record point (both freeze call
+        // sites funnel through here, per the comment above) — this is called
+        // both on a genuine new freeze (frozen_slot = the slot that just
+        // froze) and on the periodic re-poll (frozen_slot = the current
+        // root_bank.slot, which is never ahead of the true high-water mark)
+        // — the `>` guard makes the re-poll call a harmless no-op and
+        // guarantees this field only ever moves forward, never backward,
+        // regardless of out-of-order freeze delivery. Plain load+store (not
+        // CAS) is safe: this call site (and the periodic-poll call site) run
+        // only on the sole replay-worker thread.
+        {
+            const prev_high = self.highest_frozen_slot.load(.acquire);
+            if (frozen_slot > prev_high) {
+                self.highest_frozen_slot.store(frozen_slot, .release);
+            }
         }
         var to_wake_slots = std.ArrayList(u64){};
         var to_wake_data = std.ArrayList([]u8){};
@@ -4076,8 +4185,7 @@ pub const ReplayStage = struct {
     /// fix/chain-defer-tip-guard (wedge @422050470): re-attach any CHAIN-DEFER
     /// continuation that the GC backstop evicted before its parent froze. Called
     /// at the tail of checkPendingChain (holds NO locks on entry). See
-    /// chain_wake_fallback.zig for the pure decision; RCA in
-    /// forensics/incident-wedge-422050470/RCA-DATA.md.
+    /// chain_wake_fallback.zig for the pure decision.
     fn chainWakeFallback(self: *Self, frozen_slot: Slot) void {
         // Snapshot the evicted set under the lock (empty ⇒ nothing to do — the
         // common, healthy case, one uncontended lock/count()/unlock).
@@ -6422,8 +6530,8 @@ pub const ReplayStage = struct {
         // impossible without a fresh snapshot. Both guards ONLY ever REFUSE the
         // advance (return null, keep prev root) — strictly safe, cannot corrupt
         // state; a fire degrades any future recurrence from "unrecoverable" to a
-        // "recoverable stall" that VOTE-REJECT-ALARM catches in ~30s. Design:
-        // vexor-research/design-docs/SWITCHPROOF-SELFRECOVERY-ROOTFIX-DESIGN-2026-07-15 §4b.
+        // "recoverable stall" that VOTE-REJECT-ALARM catches in ~30s. See
+        // root_guards.zig for the pure G0/G1/G2 decision logic.
         //   G1 — never root a fork whose ancestry includes an INVALID slot
         //        (fork_info.latest_invalid_ancestor != null).
         //   G2 — never root a slot the CLUSTER has diverged from: refuse when the
@@ -8853,8 +8961,7 @@ pub const ReplayStage = struct {
 
             // Dispatch the eligible (all-native) txs across the worker pool.
             if (eligible.items.len == 1 and !WaveShadowVerify.on()) {
-                // [WAVE-INLINE] Fix #1 (wave-formation P1, 2026-07-19 profiling —
-                // forensics/wave-formation-profile-2026-07-19.md §ANALYSIS):
+                // [WAVE-INLINE] Fix #1 (wave-formation P1, 2026-07-19 profiling):
                 // 96.1% of waves have exactly one eligible tx. Routing a single tx through
                 // wp.dispatchWave() pays a measured ~90µs/wave mutex/broadcast/wake-2-workers-
                 // to-service-1-item barrier for zero parallelism benefit. Execute it INLINE on

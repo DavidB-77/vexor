@@ -1,6 +1,6 @@
 //! BlockExecutor — the test-rootable "execute-once-and-record" seam for tx-bearing block production.
 //!
-//! WHY THIS EXISTS (forensics/txbearing-produce-parity-rootcause.md §3 "Primary recommendation"):
+//! WHY THIS EXISTS (produce/replay parity root-cause, "Primary recommendation"):
 //!   The durable fix for the [PRODUCE-PARITY-FAIL] dead-block class is to converge the produce path
 //!   onto Agave's execute-once-and-record model: instead of a hand-rolled pre-filter that PREDICTS
 //!   whether a tx will load (block_produce.admitTxSeq's delta simulation + the txFullyModelable
@@ -28,7 +28,7 @@
 //!     tests/kat_txbearing_exec.zig) to avoid dragging the full Bank module graph into a test root.
 //!   * Live wiring (a real accounts_db-backed executor supplied to produceSlotBytes from
 //!     replay_stage.zig) is NOT in this module and is NOT compile-verifiable while the node votes — it
-//!     is the documented live-enable prerequisite (see forensics/txbearing-fix-report.md PASS 3).
+//!     is the documented live-enable prerequisite.
 //!
 //! Fee / was_processed semantics MATCH Agave (advisor-directed, committer.rs):
 //!   - fee-payer can't pay the fee (or isn't loadable)  → NotLoaded → NOT processed → DROP (no fee, no pack).
@@ -162,7 +162,7 @@ pub const BlockExecutor = struct {
     /// the produce path arms it). Sigverify is ALWAYS enforced regardless (no config).
     known_blockhashes: []const [32]u8 = &.{},
 
-    // ── Load-on-demand backing (the LIVE path — forensics/txbearing-fix-report.md §WIRE-POINT) ────────
+    // ── Load-on-demand backing (the LIVE wiring path) ─────────────────────────────────────────────────
     // When `load_fn` is set, an account a candidate tx TOUCHES that is ABSENT from the working overlay
     // `map` is fetched read-only via `load_fn(load_ctx, pubkey)` and inserted into the overlay before it
     // is read or mutated — so the executor never needs the whole parent bank pre-seeded (`seedAccount`

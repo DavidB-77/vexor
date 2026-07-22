@@ -12,7 +12,7 @@
 //! struct (arena allocator; auto-spawned worker + sysvar-refresh threads stopped
 //! AND JOINED before any manual state manipulation — see `stopAndJoinWorkers`).
 //!
-//! Incident shape being gated (forensics/incident-divergence-423083743-2026-07-19.md):
+//! Incident shape being gated (live testnet divergence, boot 2026-07-19):
 //! fresh snapshot at 423083741; the FIRST replayed slot 423083742 was produced
 //! but cluster-SKIPPED (0 attestations, never in cluster SlotHashes) → the old
 //! G2 fail-open branch allowed rooting it → irreversible dead-fork root; G2 then

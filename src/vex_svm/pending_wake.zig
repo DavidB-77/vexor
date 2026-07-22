@@ -112,6 +112,33 @@ pub fn parentReadyForFastWake(
         (rooted_slot > 0 and target_parent <= rooted_slot and root_bank_slot < slot);
 }
 
+/// FAR_AHEAD_THRESHOLD gate for `pushSlotForReplay[WithBoundaries]`, mirrored
+/// against `parentReadyForFastWake`'s parent-frozen arm the same way that
+/// function mirrors `resolveParent`'s guard.
+///
+/// The disease this closes: the FAR_AHEAD check used to key off the LAST-FROZEN
+/// bank (`root_bank.slot`), which is non-monotonic — out-of-order catchup churn
+/// can make it dip backward. When it dipped more than `threshold` slots behind a
+/// child whose parent `parentReadyForFastWake` had ALREADY certified genuinely
+/// frozen (its unconditional `parent_frozen == true` arm), FAR_AHEAD disagreed
+/// and bounced the fast-woken push straight back into the deferral path, which
+/// re-derived the SAME frozen-parent fact and re-fired fast-wake — an unbounded
+/// push↔defer recursion (observed live on testnet: slot=423543960,
+/// target_parent=423543859 frozen, last-frozen dipped to 423543751 from a
+/// high-water mark of 423543887, gap=209 > threshold=200).
+///
+/// FIX: never key FAR_AHEAD off the volatile freeze-tip. Key it off a
+/// monotonically non-decreasing high-water mark of the highest slot ever
+/// frozen (only ever advanced forward, at the single canonical freeze-record
+/// point) so an out-of-order backward freeze can never re-widen a gap the
+/// forward-progress high-water mark had already closed. This is the same
+/// discipline `parentReadyForFastWake`'s root-fallback arm above already
+/// applies: a non-monotonic quantity must never be allowed to contradict a
+/// fact another gate already certified.
+pub fn isFarAheadOfReplay(slot: u64, highest_frozen_slot: u64, threshold: u64) bool {
+    return slot > highest_frozen_slot + threshold;
+}
+
 /// The three outcomes of `getOrCreateBank`'s parent-ancestor selection.
 pub const ParentResolve = enum {
     /// A frozen ancestor exists exactly at `target_parent` (or `target_parent`
@@ -482,4 +509,91 @@ test "shouldWakePending CARRIER 413389395: freeze-tip would livelock, consensus 
     // …and via (c) once 393 is in the frozen set, independent of event ordering:
     try frozen.put(tp, {});
     try std.testing.expect(shouldWakePending(tp, some_unrelated_freeze, consensus_root, &frozen));
+}
+
+// ─── isFarAheadOfReplay: fast-wake/far-ahead push↔defer recursion (DISCRIMINATING) ──
+//
+// slot 423543960's parent (423543859) genuinely froze — parentReadyForFastWake's
+// parent_frozen arm correctly says READY. The OLD FAR_AHEAD gate, keyed on the
+// volatile last-frozen slot (which had just dipped 423543887→423543751, a
+// 136-slot backward jump from out-of-order catchup churn), then disagreed and
+// bounced the fast-woken push back into a synchronous re-defer — closing an
+// unbounded recursive cycle. The FIX keys FAR_AHEAD on a monotonic high-water
+// mark that cannot dip below 423543887 regardless of out-of-order freeze
+// ordering, so the two gates can no longer disagree on this slot.
+
+test "isFarAheadOfReplay 423543960: OLD (last-frozen slot) recurses, NEW (monotonic high-water) does not" {
+    const slot: u64 = 423543960;
+    const target_parent: u64 = 423543859; // frozen — parentReadyForFastWake says READY
+    const last_frozen_slot_dipped: u64 = 423543751; // last-frozen, AFTER the 136-slot backward jump
+    const highest_frozen_slot: u64 = 423543887; // monotonic high-water mark (never dips)
+    const threshold: u64 = 200;
+
+    // Sanity: parentReadyForFastWake genuinely certifies this parent ready
+    // (parent_frozen=true arm — unconditional; the parent really is frozen).
+    try std.testing.expect(parentReadyForFastWake(true, target_parent, 0, last_frozen_slot_dipped, slot));
+
+    // OLD behavior (the raw arithmetic the pre-fix code performed inline —
+    // `slot > last_frozen_slot + threshold`): 423543960 > 423543751 + 200
+    // (423543951) → TRUE → FAR_AHEAD fires → bounces the fast-woken push back
+    // to defer → recursion. This line proves the exact live gap (209 > 200,
+    // margin of 9) that tripped the wedge.
+    try std.testing.expect(slot > last_frozen_slot_dipped + threshold);
+
+    // NEW: gate on the monotonic high-water mark instead. 423543960 -
+    // 423543887 = 73, well under the 200 threshold → FAR_AHEAD does NOT fire
+    // → the fast-woken, parent-certified-frozen push proceeds to slot_queue,
+    // never re-enters the deferral path. No recursion.
+    try std.testing.expect(!isFarAheadOfReplay(slot, highest_frozen_slot, threshold));
+
+    // The two gates are now CONSISTENT for this slot: fast-wake says READY
+    // and FAR_AHEAD does not reject it.
+}
+
+test "isFarAheadOfReplay: genuinely far-ahead slot (no frozen parent anywhere near) still gates" {
+    // A slot 300 ahead of the highest-ever-frozen ancestor, with no parent
+    // freeze anywhere in range, is a REAL far-ahead push (needs repair to
+    // bridge the intermediate gap) — must still defer, not be exempted by
+    // the fix. This proves the fix narrows the false-positive, not the gate
+    // itself.
+    try std.testing.expect(isFarAheadOfReplay(424000300, 424000000, 200));
+    // Slot exactly at the boundary (gap == threshold) does not fire (matches
+    // the original strict `>` semantics — unchanged by this fix).
+    try std.testing.expect(!isFarAheadOfReplay(424000200, 424000000, 200));
+    try std.testing.expect(isFarAheadOfReplay(424000201, 424000000, 200));
+}
+
+test "isFarAheadOfReplay MONOTONICITY: a backward last-frozen-slot jump cannot re-trigger" {
+    // The exact backward jump observed live: highest-ever-frozen stays pinned
+    // at its high-water mark even though the volatile last-frozen slot (not
+    // passed to this predicate at all anymore) churns backward underneath it.
+    const slot: u64 = 423543960;
+    const threshold: u64 = 200;
+    const highest_frozen_slot: u64 = 423543887; // set once, at the high-water event
+
+    // Before the backward churn: gap = 73, no fire.
+    try std.testing.expect(!isFarAheadOfReplay(slot, highest_frozen_slot, threshold));
+    // Simulate the SAME backward churn the live log showed
+    // (423543887→423543751, a 136-slot dip) landing on a variable that is NO
+    // LONGER consulted by this predicate at all — highest_frozen_slot is
+    // untouched by construction (it is only ever advanced forward, never
+    // assigned the dipped value). Re-checking with the SAME highest_frozen_slot
+    // after the simulated churn proves the predicate is immune:
+    const last_frozen_slot_after_backward_jump: u64 = 423543751;
+    try std.testing.expect(!isFarAheadOfReplay(slot, highest_frozen_slot, threshold));
+
+    // A monotonic value, by definition, only ever moves forward. Model that
+    // explicitly: taking max() against a smaller "new" reading never regresses
+    // the tracked high-water mark, which is exactly the update rule the
+    // freeze-record point applies (`if (frozen_slot > prev_high) store`).
+    const simulated_next_highest = @max(highest_frozen_slot, last_frozen_slot_after_backward_jump);
+    try std.testing.expectEqual(highest_frozen_slot, simulated_next_highest); // unchanged — no regression
+    try std.testing.expect(!isFarAheadOfReplay(slot, simulated_next_highest, threshold));
+
+    // Forward progress still works normally: once a NEW higher freeze lands,
+    // the high-water mark advances and a previously-far-ahead slot's gap
+    // shrinks accordingly (no regression in legitimate forward catch-up).
+    const advanced = @max(highest_frozen_slot, @as(u64, 423543900));
+    try std.testing.expectEqual(@as(u64, 423543900), advanced);
+    try std.testing.expect(!isFarAheadOfReplay(slot, advanced, threshold));
 }
