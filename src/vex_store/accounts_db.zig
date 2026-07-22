@@ -515,7 +515,6 @@ pub const AccountsDb = struct {
     /// CoW-amplification control (shrink REWRITES whole 64 MB stores, dirtying
     /// pages the child still shares) and (b) the truncate invariant for
     /// file-backed Agave-boot mmaps (truncate ⇒ child SIGBUS; unlink is fine).
-    /// Design: vexor-designs/FORK-BGSAVE-SNAPSHOT-DESIGN-2026-07-01.md §3.
     gc_quiesce: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     accounts_shrink_enabled: bool,
     accounts_shrink_ratio_percent: u32,

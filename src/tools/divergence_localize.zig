@@ -1,7 +1,5 @@
 //! divergence-localize (M1) — the offline bank_hash-divergence CLASSIFIER CLI.
 //!
-//! DESIGN: vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
-//!
 //! This is the native, std-only front-end to the pure 4-input localizer engine
 //! (`src/vex_ledger/divergence_alarm.zig`). It reads ONE JSON object (from --input <file>
 //! or stdin) carrying our slot's frozen bank_hash inputs (from the [BANK-FROZEN] log line /

@@ -1742,10 +1742,6 @@ pub const SnapshotManager = struct {
     // ════════════════════════════════════════════════════════════════════════
     // fork()-BGSAVE forensic snapshot (task #26, 2026-07-01)
     //
-    // Design + datum-by-datum fork-safety audit:
-    //   vexor-designs/FORK-BGSAVE-SNAPSHOT-DESIGN-2026-07-01.md
-    //   vexor-designs/FORK-BGSAVE-FORK-SAFETY-AUDIT-2026-07-01.md
-    //
     // Replaces the ~41 s SHARED hold of accounts_db.storage.lock in
     // `saveFullSnapshotAtTip` (which stalls replay's EXCLUSIVE writeAccount →
     // the recurring ~13-min transient delinquency) with a Redis-BGSAVE-style

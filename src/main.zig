@@ -1577,7 +1577,6 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                     -1;
 
                 // ── fork()-BGSAVE (task #26, 2026-07-01) ─────────────────────
-                // Design: vexor-designs/FORK-BGSAVE-SNAPSHOT-DESIGN-2026-07-01.md
                 // Mode comes from the three-state arming gate above (default-
                 // OFF; we only get here armed). fork mode: the legacy in-thread
                 // path's ~41 s storage.lock hold (replay writeAccount blocked →

@@ -4352,7 +4352,6 @@ pub fn build(b: *std.Build) void {
     // The offline bank_hash-divergence localizer: a std-only CLI over the pure
     // 4-input classifier engine (src/vex_ledger/divergence_alarm.zig). No vex_svm /
     // validator import — a tiny, fast, dependency-free binary the wrapper composes.
-    // DESIGN: vexor-designs/LEDG-P5-MOAT2-DIVERGENCE-ALARM-DESIGN-2026-06-25.md
     const divalarm_mod = b.createModule(.{ .root_source_file = b.path("src/vex_ledger/divergence_alarm.zig"), .target = target, .optimize = optimize });
 
     const divloc_exe = b.addExecutable(.{
