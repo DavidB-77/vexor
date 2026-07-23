@@ -14,6 +14,12 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-d
+### Validator
+#### Fixed
+* Consensus: the `--wait-for-supermajority` restart gate's observed-stake calculation now excludes gossip peers on a different shred version than expected, matching Agave's shred-version-pure stake accounting. Previously the gate summed stake for every staked node identity in gossip regardless of shred version; during a coordinated cluster restart (where the shred version changes) this counted nodes still on the pre-restart chain toward the new chain's supermajority, over-reporting observed stake and risking the gate resuming before real supermajority was reached. Validated on a live testnet coordinated restart against an Agave reference node and independent RPC ground truth: observed stake went from a ~21-point overcount to within ~2 points of both references. No-op when `--expected-shred-version` is unset, so non-restart boots are unchanged.
+* The version-report string (gossip client-id advertisement and boot banner) now reads `0.9.3-d`, matching this release.
+
 ## 0.9.3-c
 ### Validator
 #### Fixed
