@@ -2605,10 +2605,20 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 var last_log_time: i64 = 0;
                 while (signal_received.load(.seq_cst) == 0) {
                     // Sum the stake of every staked node identity currently in gossip.
+                    // SHRED-VERSION FILTER (2026-07-22): Agave's equivalent
+                    // (get_stake_percent_in_gossip -> tvu_peers()) is shred-version-pure —
+                    // it only counts peers on the SAME shred version as us. During a
+                    // coordinated restart the shred version changes, so without this
+                    // filter nodes still gossiping on the OLD chain get counted toward
+                    // the NEW chain's supermajority, over-reporting observed stake.
+                    // When expected_shred_version is unset/0 (non-restart boots), skip
+                    // the filter so behavior is byte-identical to before.
+                    const expected_sv: u16 = config.expected_shred_version orelse 0;
                     var observed: u128 = 0;
                     gossip_svc.table.contacts_rw.lockShared();
                     var it = gossip_svc.table.contacts.iterator();
                     while (it.next()) |kv| {
+                        if (expected_sv != 0 and kv.value_ptr.shred_version != expected_sv) continue;
                         if (node_stake.get(kv.key_ptr.data)) |s| observed += s;
                     }
                     gossip_svc.table.contacts_rw.unlockShared();
