@@ -62,12 +62,16 @@ jobs:
       # Keyless signing: cosign requests a short-lived cert from Fulcio
       # using this job's OIDC token (identity = this workflow/repo/ref),
       # signs the binary, and logs the signature to the public Rekor
-      # transparency log. No private key is stored anywhere.
+      # transparency log. No private key is stored anywhere. cosign v4
+      # defaults to the new bundle format, which folds the signature,
+      # signing certificate, and Rekor log entry into a single
+      # `.sigstore.json` bundle file rather than separate
+      # `--output-signature`/`--output-certificate` outputs (those flags
+      # are deprecated and silently ignored under this format).
       - name: Sign release binary (cosign keyless)
         run: |
           cosign sign-blob --yes \
-            --output-signature "${{ steps.artifact.outputs.name }}.sig" \
-            --output-certificate "${{ steps.artifact.outputs.name }}.pem" \
+            --bundle "${{ steps.artifact.outputs.name }}.sigstore.json" \
             "${{ steps.artifact.outputs.name }}"
 
       # Pre-release tags carry a letter suffix (e.g. v0.9.3-a); everything
@@ -90,5 +94,4 @@ jobs:
           files: |
             ${{ steps.artifact.outputs.name }}
             ${{ steps.artifact.outputs.name }}.sha256
-            ${{ steps.artifact.outputs.name }}.sig
-            ${{ steps.artifact.outputs.name }}.pem
+            ${{ steps.artifact.outputs.name }}.sigstore.json

@@ -13,6 +13,9 @@ per-file behavior provenance against upstream Agave, Firedancer, and Sig lives
 in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
+### Validator
+#### Fixed
+* Release: fixed the cosign signing step in the release workflow, which had started failing on every tag push because the pinned cosign version now defaults to its new bundle format and silently ignores the separate signature/certificate output flags. Release assets now include a single `.sigstore.json` bundle (signature + certificate + Rekor entry) in place of the separate `.sig`/`.pem` files. No change to validator behavior.
 
 ## 0.9.3-e
 ### Validator
