@@ -14,6 +14,11 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-e
+### Validator
+#### Changes
+* Release: tagged release binaries are now built and attached to the GitHub Release as downloadable assets, alongside a keyless cosign signature, a Fulcio-issued signing certificate, a Rekor transparency-log entry, and a sha256 checksum file. No signing key is stored in the repo; trust is rooted in the release workflow's own OIDC identity, so anyone downloading a release binary can independently verify it was built and signed by this repository's release pipeline rather than trusting an unsigned download. The attached binary is a portable `x86_64_v2` baseline for broad compatibility, not the CPU-tuned build used in the reference deployment; operators who want a tuned build should build from source. No change to validator behavior.
+
 ## 0.9.3-d
 ### Validator
 #### Fixed
