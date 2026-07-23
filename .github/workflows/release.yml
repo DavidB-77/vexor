@@ -11,15 +11,64 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Only this job needs write access (to create the GitHub Release);
-    # scoped here instead of at workflow level per least-privilege.
+    # This job needs write access to create the GitHub Release, and an
+    # OIDC id-token to sign the release binary keylessly via cosign/Fulcio
+    # (no long-lived signing key stored in the repo). Both scoped here
+    # instead of at workflow level per least-privilege.
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+
+      - name: Install system dependencies
+        # The allocator layer links jemalloc (mallctl); present on the
+        # reference deployment but not on stock GitHub runners.
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libjemalloc-dev
+
+      - name: Install Zig 0.15.2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.15.2
+
+      # Public GitHub-hosted runners are generic x86_64 (Cascade Lake/Ice
+      # Lake-class Azure VMs), not Zen 4 — they cannot run a -Dcpu=znver4
+      # binary, and this backend has previously failed to codegen that
+      # target on the shared runner image (see build.yml for the same
+      # constraint on the build/test/fuzz jobs). -Dcpu=x86_64_v2 is the
+      # portable baseline verified to build here; the release asset below
+      # is a portable-CPU convenience binary, NOT the znver4-tuned build
+      # the reference deployment runs — operators building for a specific
+      # host should still build from source with -Dcpu=native or the
+      # target of their choice.
+      - name: Build release binary (portable CPU baseline)
+        run: zig build -Dprod -Dpure_zig --release=safe -Dcpu=x86_64_v2
+
+      - name: Stage release artifact
+        id: artifact
+        run: |
+          set -euo pipefail
+          name="vexor-${GITHUB_REF_NAME}-linux-x86_64_v2"
+          cp zig-out/bin/vexor "${name}"
+          sha256sum "${name}" > "${name}.sha256"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Keyless signing: cosign requests a short-lived cert from Fulcio
+      # using this job's OIDC token (identity = this workflow/repo/ref),
+      # signs the binary, and logs the signature to the public Rekor
+      # transparency log. No private key is stored anywhere.
+      - name: Sign release binary (cosign keyless)
+        run: |
+          cosign sign-blob --yes \
+            --output-signature "${{ steps.artifact.outputs.name }}.sig" \
+            --output-certificate "${{ steps.artifact.outputs.name }}.pem" \
+            "${{ steps.artifact.outputs.name }}"
 
       # Pre-release tags carry a letter suffix (e.g. v0.9.3-a); everything
       # else is a stable tag. Matches this project's SemVer + CHANGELOG
@@ -38,3 +87,8 @@ jobs:
         with:
           generate_release_notes: true
           prerelease: ${{ steps.prerelease.outputs.flag }}
+          files: |
+            ${{ steps.artifact.outputs.name }}
+            ${{ steps.artifact.outputs.name }}.sha256
+            ${{ steps.artifact.outputs.name }}.sig
+            ${{ steps.artifact.outputs.name }}.pem
