@@ -2241,6 +2241,13 @@ pub fn executeSystemInstruction(
     var old_lamports: [8]u64 = undefined;
     var old_owners: [8][32]u8 = undefined;
     var old_data_lens: [8]usize = undefined;
+    // Pre-exec `executable` flag per account, captured alongside the other
+    // pre-state fields below. This must be the account's REAL executable bit,
+    // not a hardcoded value — accountLtHash() folds `executable` into the
+    // lattice-hash input, so using the wrong flag for the pre-state subtract
+    // corrupts accounts_lt_hash (and therefore bank_hash) whenever a write
+    // touches a program (executable) account.
+    var old_execs: [8]bool = undefined;
     // fix/wire-nonce-ops (2026-06-10, carrier @414201776): pristine PRE-exec
     // data bytes per account. Needed because (a) the durable-nonce ops mutate
     // the 80-byte nonce data IN PLACE (len unchanged), which the old
@@ -2301,6 +2308,7 @@ pub fn executeSystemInstruction(
             old_lamports[acct_count] = pw.lamports;
             old_owners[acct_count] = pw.owner.data;
             old_data_lens[acct_count] = pw.data.len;
+            old_execs[acct_count] = pw.executable;
             old_datas[acct_count] = old_copy;
             found_pending = true;
         }
@@ -2342,6 +2350,7 @@ pub fn executeSystemInstruction(
             old_lamports[acct_count] = a.lamports;
             old_owners[acct_count] = a.owner.data;
             old_data_lens[acct_count] = a.data.len;
+            old_execs[acct_count] = a.executable;
             old_datas[acct_count] = old_copy;
         } else {
             // New account (doesn't exist yet) — system_v2 will populate it
@@ -2356,6 +2365,7 @@ pub fn executeSystemInstruction(
             old_lamports[acct_count] = 0;
             old_owners[acct_count] = NATIVE_PROGRAM_IDS.SYSTEM;
             old_data_lens[acct_count] = 0;
+            old_execs[acct_count] = false;
             old_datas[acct_count] = &[_]u8{};
         }
         acct_count += 1;
@@ -2463,11 +2473,18 @@ pub fn executeSystemInstruction(
         // in-place mutation meta.data already holds the POST bytes, which
         // would make old_lt == new_lt-shaped garbage and corrupt the
         // accumulator delta.
+        //
+        // old_lt MUST also use the account's real pre-exec `executable` flag
+        // (old_execs[i]), not a hardcoded false: for an ordinary account
+        // false happens to be correct, but for an executable (program)
+        // account it would subtract the lthash of a state that never
+        // existed, corrupting accounts_lt_hash / bank_hash for any slot that
+        // writes to a program account.
         const old_lt = bank_mod.Bank.accountLtHash(
             &key,
             &old_owners[i],
             old_lamports[i],
-            false,
+            old_execs[i],
             old_datas[i],
         );
         const new_lt = bank_mod.Bank.accountLtHash(
