@@ -14,6 +14,11 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-f
+### Validator
+#### Fixed
+* Consensus: fixed the lattice-hash (`accounts_lt_hash`) delta computed for a modified account, which previously computed the account's pre-state hash with the `executable` field hardcoded to `false` instead of the account's real pre-execution value. This was invisible for ordinary (non-executable) accounts, but for an executable (program) account it subtracted the lattice hash of a state that never existed, corrupting `accounts_lt_hash` — and therefore `bank_hash` — for any slot containing a write to a program account (for example, a plain lamport transfer into a program account). In the field this surfaced as a silent fork: replay stayed at the chain tip while every vote was rejected with `SlotHashMismatch`, leaving the validator delinquent with no other error surfaced. Verified by deterministic offline replay of the affected slot against the cluster's canonical bank hash.
+
 ## 0.9.3-e
 ### Validator
 #### Fixed
