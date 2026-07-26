@@ -14,6 +14,18 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-h
+### Validator
+#### Fixed
+* Consensus: Ed25519 signature verification on the consensus path now uses strict verification, matching Agave. Agave's `Signature::verify` resolves to dalek's `verify_strict`, which rejects signatures whose `R` or `A` component lies in a small-order subgroup; Vexor used the cofactored variant, which accepts them. Any such signature was therefore valid to Vexor and invalid to the cluster, so a transaction carrying one would execute locally and be rejected everywhere else, producing an attacker-constructible `bank_hash` divergence. The in-tree comment had asserted the opposite of Agave's actual behavior and is corrected with source citations.
+* Consensus: vote instructions that verify a BLS proof of possession (SIMD-0387) are now charged the additional 34,500 compute units Agave charges, on top of the flat vote-instruction default. Vexor charged only the flat amount, so any block containing such a vote computed a different total consumed compute — divergent block cost accounting against the rest of the cluster. The charge is applied in Agave's order: after the preceding validity checks and before the signature check, so a vote that fails an earlier check is not billed for verification it never performed.
+* Consensus: allocation failures in the epoch-boundary reward computation now abort the boundary instead of being silently absorbed. Ten container insertions along that path — the vote-account index, per-vote metadata, the owned epoch-credits slice, the reward accumulator, stake delegations, and both reward-distribution account writes — discarded the value on allocation failure and continued. Each feeds the inflation-reward calculation whose output becomes account writes and therefore the boundary bank's `accounts_lt_hash` and `bank_hash`, so a single failure silently dropped a validator's rewards, produced a `bank_hash` no other node would agree with, and logged nothing at all. They now propagate; the caller abandons the slot without freezing it, so the node stalls on that fork rather than publishing a hash it cannot compute correctly. Sites that skip malformed account data are deliberate, match Agave, and are unchanged.
+* Consensus: the live vote executor no longer reports failed vote executions as successful. Seven failure paths — five allocation and table-construction sites, an inverted error branch that propagated every instruction error *except* out-of-memory, and the account-commit loop — incremented a debug counter and returned success. No caller branches on those counters; each is read only by a debug print, so none could prevent a slot from freezing. A dropped account write in the commit loop carries the account's lattice-hash delta, so losing it froze the slot with a missing contribution: a wrong `bank_hash` whose only trace was a counter in a log line.
+
+#### Changes
+* Diagnostics: a slot abandoned because replay failed is now logged at error level and states that the slot was left unfrozen. It was previously logged at debug level — invisible in a production configuration — despite leaving the slot unfrozen and orphaning its children, which is a top-tier operational event.
+* Diagnostics: failure to record a dead slot, and failure to append to the lattice-hash write-capture buffer used by the write-carrier localizer, are now both reported. Neither was previously distinguishable from the success path, and in the latter case a dropped entry makes the localizer report a false dropped write — precisely the signal an operator arms it to read.
+
 ## 0.9.3-g
 ### Validator
 #### Fixed
