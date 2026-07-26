@@ -18,13 +18,29 @@ const pure = @import("ed25519/root.zig");
 /// Verify a single Ed25519 signature — CONSENSUS-PATH default (Zig stdlib, Agave/dalek-equivalent
 /// acceptance criteria). Used by transaction sigverify (tx_ingest), gossip/CRDS, keypair, precompile.
 ///
-/// ⚠️ DO NOT route this to a verify_strict implementation. verify_strict REJECTS non-canonical /
-/// malleable ed25519 signatures that Agave/dalek (the cluster) ACCEPTS. Routing the consensus tx path
-/// through it caused a live bank_hash DIVERGENCE → fork-choice collapse → vote wedge (perf#1, slot
-/// 415479361, 2026-06-15: recent_resolved 547→1, no_bh +546). The AVX-512 win is captured on the
-/// shred path only via `verifyShred` (see below), which is drop-safe.
+/// 2026-07-26 CORRECTION — this comment previously said "DO NOT route this to a verify_strict
+/// implementation … Agave/dalek (the cluster) ACCEPTS [what strict rejects]". **That was FACTUALLY
+/// WRONG and it made us non-compliant with Agave for six weeks.** Verified from the actual crate
+/// source Agave compiles against:
+///     agave perf/src/sigverify.rs:51      signature.verify(pubkey.as_ref(), message)
+///     solana-signature-3.4.0 lib.rs:78    publickey.verify_strict(message_bytes, &signature)
+///     solana-signature-2.3.0 lib.rs:70    publickey.verify_strict(message_bytes, &signature)
+/// Agave's `Signature::verify()` IS dalek `verify_strict`. Cofactored stdlib verify ACCEPTS
+/// small-order-R signatures that Agave REJECTS ⇒ we executed transactions Agave invalidates ⇒
+/// attacker-constructible bank_hash divergence.
+///
+/// On the 2026-06-15 wedge (slot 415479361) that the old comment cited: it was real, but the cause
+/// was **Firedancer's `fd_ed25519_verify` C/AVX-512 FFI** (wired globally by bd3d2cd, scoped back out
+/// by e484d98) — a deviation in that specific library, NOT strictness as a policy. The reductio is
+/// decisive: Agave is strict and does not wedge, so every transaction in a finalized block was
+/// accepted by real dalek verify_strict. `pure.verifyStrict` below is a DIFFERENT implementation
+/// (pure-Zig, dalek-derived IFMA floor), differential-KAT-pinned in ed25519/kat.zig.
+///
+/// Note SIMD-0376 would legitimise cofactored verification (it exists because strict blocks
+/// *aggregated* batch verification). It is status Review and NOT active — so strict is correct today.
+/// Lane-parallel SIMD verification and per-key precomputed tables are unaffected by strictness.
 pub fn verify(sig: *const [64]u8, pubkey: *const [32]u8, message: []const u8) bool {
-    return verifyStdlib(sig, pubkey, message);
+    return pure.verifyStrict(sig, pubkey, message);
 }
 
 /// SHRED-PATH verify (perf#1, scoped 2026-06-15). Under `-Dpure_zig` this uses Vexor's own pure-Zig
