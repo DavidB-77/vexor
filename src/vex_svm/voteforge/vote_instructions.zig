@@ -41,14 +41,23 @@
 //! CompactUpdateVoteState(+Switch), TowerSync(+Switch) — discriminants
 //! 2,6,8,9,12,13,14,15) has landed and is executed here directly.
 //!
-//! Compute-unit metering (BLS PoP verification unconditionally charges
-//! `BLS_PROOF_OF_POSSESSION_VERIFICATION_COMPUTE_UNITS = 34_500` in Agave,
-//! `vote_state/mod.rs:1017-1060`, BEFORE the crypto check) is NOT modeled at
-//! this layer — Vexor's compute-budget accounting is a separate subsystem one
-//! layer up (Stage 4 dispatch glue's concern, matching how `vote_processor.rs`
-//! itself only *consumes* CU via a closure passed down from the entrypoint,
-//! not the state-transition functions computing it themselves). Flagged, not
-//! a state-transition correctness gap.
+//! Compute-unit metering (SIMD-0387 fix, 2026-07-26): Agave's
+//! `verify_bls_proof_of_possession` (`vote_state/mod.rs:1047-1063`) calls the
+//! `consume_pop_compute_units` closure — `consume_checked(
+//! BLS_PROOF_OF_POSSESSION_VERIFICATION_COMPUTE_UNITS = 34_500)`,
+//! `vote_processor.rs:104,124-129` — BEFORE the crypto check, from INSIDE the
+//! `VoterWithBLS`/`InitializeAccountV2` arms only, i.e. conditionally and
+//! AFTER every preceding fallible check in that arm (feature gate, signer,
+//! collector validation, ...). A failed PoP still consumes the 34,500 (charge
+//! precedes the crypto check); an early error in a PRECEDING check does not
+//! (the closure is never reached). `consumePopComputeUnits()` below
+//! reproduces this exactly at the two call sites that mirror
+//! `verify_bls_proof_of_possession` (`authorize`'s `.voter_with_bls` arm,
+//! `initializeAccountV2`). The base 2,100 `DEFAULT_COMPUTE_UNITS` entry charge
+//! remains a Stage 4 dispatch-glue concern one layer up (`instruction_dispatch
+//! .zig`'s `executeVoteViaVoteforge` threads the SAME shared per-tx meter in
+//! as `ExecContext.pop_cu_meter` so the surcharge draws from the identical
+//! pool Agave's closure closes over, not a separate counter).
 
 const std = @import("std");
 const codec = @import("vote_codec.zig");
@@ -76,6 +85,12 @@ pub const InstrError = error{
     AccountNotRentExempt,
     InvalidAccountOwner,
     Custom,
+    /// [agave] `InstructionError::ComputationalBudgetExceeded`, the mapped
+    /// error of a failed `consume_checked` (`vote_processor.rs:128`). Named to
+    /// match `instruction_dispatch.zig`/`replay_stage.zig`'s existing
+    /// `error.ComputationalBudgetExceeded` (the flat-2,100 entry-charge gate)
+    /// so both CU-exhaustion paths surface under one error name.
+    ComputationalBudgetExceeded,
 } || aio.AccountIoError || codec.CodecError || std.mem.Allocator.Error;
 // NOTE: [agave]/sigvote `InstructionError` has ONE overflow variant,
 // `ProgramArithmeticOverflow` (`core/instruction.zig:167`) -- no separate
@@ -197,7 +212,43 @@ pub const ExecContext = struct {
     alloc: std.mem.Allocator,
     custom_error: ?u32 = null,
     slot_hashes: SlotHashesView = SlotHashesView.EMPTY,
+    /// [agave] the shared per-tx `invoke_context.compute_meter` that
+    /// `consume_pop_compute_units` draws down (`vote_processor.rs:124-129`).
+    /// Threaded in by the caller from the SAME meter that already took the
+    /// flat 2,100 `DEFAULT_COMPUTE_UNITS` entry charge one layer up, so the
+    /// 34,500 BLS PoP surcharge (SIMD-0387) hits the identical pool. `null`
+    /// means no meter is wired at this call site (KAT harnesses; the CPI
+    /// trampoline and the dead svm_pool worker path in
+    /// `instruction_dispatch.zig` — see call sites) — `consumePopComputeUnits`
+    /// then performs the PoP crypto check with no CU gate, same as before this
+    /// fix, rather than silently mis-charging an unrelated counter.
+    pop_cu_meter: ?*u64 = null,
 };
+
+/// [agave] `BLS_PROOF_OF_POSSESSION_VERIFICATION_COMPUTE_UNITS`,
+/// `vote_processor.rs:104`.
+pub const BLS_PROOF_OF_POSSESSION_VERIFICATION_COMPUTE_UNITS: u64 = 34_500;
+
+/// [agave] the `consume_pop_compute_units` closure body (`vote_processor.rs:
+/// 124-129`) as invoked from `verify_bls_proof_of_possession` (`vote_state/
+/// mod.rs:1056-1057`) — called BEFORE the crypto check, so a CU-exhausted
+/// meter aborts the instruction without ever verifying the PoP signature (no
+/// state mutation occurs either way: the caller has not mutated `state` yet
+/// at either of this function's two call sites).
+fn consumePopComputeUnits(ctx: *ExecContext) InstrError!void {
+    const meter = ctx.pop_cu_meter orelse return;
+    if (meter.* < BLS_PROOF_OF_POSSESSION_VERIFICATION_COMPUTE_UNITS) {
+        // Zeroing (vs. Agave's `checked_sub`, which leaves `remaining`
+        // untouched on failure) matches the existing local convention at
+        // `replay_stage.zig`'s own entry-charge gate (`tx_cus_remaining = 0`
+        // on the same kind of failure). Unobservable either way: the tx fails
+        // and `compute_units_consumed` is never threaded into RPC metadata on
+        // this path (`replay_stage.zig` — "always null today, flagged").
+        meter.* = 0;
+        return error.ComputationalBudgetExceeded;
+    }
+    meter.* -= BLS_PROOF_OF_POSSESSION_VERIFICATION_COMPUTE_UNITS;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rent — [agave] canonical `Rent::default()` / `Rent.INIT` (3480
@@ -557,6 +608,10 @@ pub fn authorize(
         },
         .voter_with_bls => |args| {
             if (!bls_enabled) return error.InvalidInstructionData;
+            // [agave] `authorize()` `vote_state/mod.rs:733-745` — PoP CU charge
+            // happens here, after the feature-gate check, before the crypto
+            // check and before any state mutation.
+            try consumePopComputeUnits(ctx);
             if (!bls_pop.verifyVoteProofOfPossession(&vote_pubkey, &args.bls_pubkey, &args.bls_proof_of_possession))
                 return error.InvalidArgument;
             const target_epoch = std.math.add(u64, ctx.leader_schedule_epoch, 1) catch return error.InvalidAccountData;
@@ -931,6 +986,10 @@ pub fn initializeAccountV2(
     const block_collector_key = try resolveCollector(table, vote_idx, block_collector_idx);
 
     const vote_pubkey = vb.pubkey();
+    // [agave] `initialize_account_v2()` `vote_state/mod.rs:1142-1179` — PoP CU
+    // charge happens here, after length/uninitialized/signer/collector checks,
+    // before the crypto check and before any state mutation.
+    try consumePopComputeUnits(ctx);
     if (!bls_pop.verifyVoteProofOfPossession(&vote_pubkey, &args.authorized_voter_bls_pubkey, &args.authorized_voter_bls_proof_of_possession))
         return error.InvalidArgument;
 
