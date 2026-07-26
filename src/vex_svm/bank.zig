@@ -5234,9 +5234,21 @@ test "EpochSchedule: DEFAULT carries canonical Solana warmup (vex-058 anti-regre
     // Smoke: a real testnet slot lands in the post-warmup branch.
     // 524256 + 13 * 432000 = 6,140,256 = first slot of epoch 27 (post-warmup).
     try std.testing.expectEqual(@as(u64, 27), sched.getEpoch(524_256 + 13 * 432_000));
-    // 524255 is the last warmup slot; the warmup branch of getEpoch returns 0
-    // today (TODO in source: full warmup-epoch calc not yet wired).
-    try std.testing.expectEqual(@as(u64, 0), sched.getEpoch(524_255));
+    // 524255 is the LAST warmup slot, i.e. the last slot of warmup epoch 13.
+    //
+    // 2026-07-26: this asserted 0, pinning the old stub behaviour from when the
+    // warmup branch of getEpoch was an unwired TODO. The warmup calc has since been
+    // implemented correctly, so the test — not the source — was wrong, and it had
+    // been failing on every run, masking any real regression in this file.
+    // Canonical derivation (Agave epoch_schedule.rs get_epoch_and_slot_index):
+    //   epoch = log2(next_pow2(slot + MINIMUM_SLOTS_PER_EPOCH + 1))
+    //           - log2(MINIMUM_SLOTS_PER_EPOCH) - 1
+    //         = log2(524255 + 32 + 1 = 524288 = 2^19) - log2(32) - 1
+    //         = 19 - 5 - 1 = 13
+    // Cross-check: the warmup epochs have 32·2^i slots for i in 0..13, summing to
+    // 32·(2^14 - 1) = 524_256 = first_normal_slot asserted above, so slot 524_255 is
+    // exactly one before the first normal slot — the final warmup slot, epoch 13.
+    try std.testing.expectEqual(@as(u64, 13), sched.getEpoch(524_255));
 }
 
 test "EpochSchedule: getLeaderScheduleEpoch (vote-authorize target_epoch carrier)" {

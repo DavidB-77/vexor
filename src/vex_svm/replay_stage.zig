@@ -3494,6 +3494,26 @@ pub const ReplayStage = struct {
         // whose local hash truly diverges fall through to the real kill path.
         // Cache-only lookup (no fetch) to avoid re-entering fetchSlotHashes →
         // sweeps → markSlotDead recursion.
+        // THREAD-SAFETY (audited 2026-07-26): this reads `self.banks` — documented
+        // at the field declaration as "protected by banks_lock" — WITHOUT taking the
+        // lock, and then dereferences the returned *Bank. That is sound only because
+        // markSlotDeadOne is reachable from the replay thread ALONE, which is also
+        // the only mutator of `self.banks`:
+        //   - ReplayStage spawns exactly two long-lived threads (:1364 replayWorker,
+        //     :1375 sysvarRefreshWorker) plus transient parallelFetchWorkers (:11272).
+        //   - sysvarRefreshWorker only writes pending_slot_hashes under
+        //     sysvar_fetch_lock; parallelFetchWorker touches only its own ctx.
+        //     Neither reaches markSlotDead or self.banks.
+        //   - every banks.put/remove (:3352, :7715, :7735, :7775, :8031, :11070) is
+        //     inside getOrCreateBank/acquireBank/pruneOldBanks/reviveDeadSlotDump, all
+        //     under exclusive banks_lock and all called only from onSlotCompleted.
+        //   - all 9 markSlotDead/markSlotDeadOne call sites reach here from
+        //     onSlotCompleted or installSlotHashes' sweeps, i.e. the replay thread.
+        // Do NOT take banks_lock here: it is unnecessary on a single-threaded path,
+        // and RwLock is not reentrant, so a future caller that already holds it would
+        // deadlock. If a SECOND thread ever gains a path to markSlotDead, this read
+        // becomes a genuine use-after-free (banks.remove can free the *Bank) and must
+        // be revisited together with the lock-ordering rules at :709.
         if (self.banks.get(slot)) |local_bank| {
             if (self.scanCachedSlotHash(slot)) |cluster_hash| {
                 if (std.mem.eql(u8, &local_bank.bank_hash.data, &cluster_hash.data)) {
@@ -3510,7 +3530,17 @@ pub const ReplayStage = struct {
         {
             self.dead_slots_lock.lock();
             defer self.dead_slots_lock.unlock();
-            const gop = self.dead_slots.getOrPut(slot) catch return false;
+            // 2026-07-26: `catch return false` is the right CONTROL FLOW (a slot we
+            // failed to record must not be treated as newly-dead, or the cascade
+            // below would run against an unrecorded parent), but it was silent and
+            // indistinguishable from the already-marked case. On OOM the slot stays
+            // eligible for replay forever with no trace — so say so. markSlotDead
+            // discards the return value, making the log the only signal.
+            const gop = self.dead_slots.getOrPut(slot) catch {
+                std.log.err("[REPLAY-DEAD-SLOT-OOM] slot={d} reason={s} — could not record dead slot; " ++
+                    "it stays replayable and its orphan cascade is SKIPPED", .{ slot, reason });
+                return false;
+            };
             if (gop.found_existing) return false; // already marked, avoid cascade re-entry
         }
         std.log.warn("[REPLAY-DEAD-SLOT] slot={d} reason={s} — Agave canonical mark-dead", .{ slot, reason });
