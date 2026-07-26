@@ -294,6 +294,25 @@ pub const UmemFrameManager = struct {
         }
     }
 
+    /// Return a frame straight to the free reservoir WITHOUT touching its
+    /// refcount. The copy-mode recv() path never calls acquire() on the
+    /// frames it consumes from the RX ring — it just memcpy's the payload
+    /// out — so calling release() on them would decrement an already-zero
+    /// u16 refcount (wraps to 65535, the "was last reference" test fails,
+    /// and the frame is never enqueued to free_ring), stranding that frame
+    /// index outside the tracked pool permanently. Use this instead: push
+    /// the index directly onto free_ring, mirroring the tail of release()
+    /// below minus the refcount step.
+    pub fn returnFrame(self: *Self, frame_addr: u64) void {
+        const idx = @as(u32, @intCast(frame_addr / self.frame_size));
+        if (idx >= self.frame_count) return;
+        self.free_mutex.lock();
+        const head = self.free_head.load(.monotonic);
+        self.free_ring[head & self.free_ring_mask] = idx;
+        self.free_head.store(head +% 1, .release);
+        self.free_mutex.unlock();
+    }
+
     /// Drain free ring and push frame addresses back into the XDP Fill Ring.
     /// Call this periodically from the main receive loop.
     pub fn replenishFillRing(self: *Self, fill_ring: *UmemRing) usize {
@@ -864,6 +883,19 @@ pub const XdpSocket = struct {
                     .len = desc.len,
                 };
                 received += 1;
+
+                // This copy-mode path consumes the frame straight out of the
+                // fill ring (kernel wrote into it, rx_ring handed it to us)
+                // but, unlike recvZeroCopy, never runs it through
+                // UmemFrameManager.acquire() — so without this call the frame
+                // index was never returned anywhere: not to free_ring, not to
+                // the fill ring. It simply vanished from the tracked pool on
+                // every call, draining free_depth while frames_held stayed 0
+                // (acquire was never called, so nothing was ever "held").
+                // Return it to the free reservoir now that the payload has
+                // been copied out — the same invariant recvZeroCopy's
+                // release() restores.
+                if (self.frame_manager) |*fm| fm.returnFrame(desc.addr);
             }
 
             self.rx_ring.release(@intCast(received));
@@ -1093,13 +1125,65 @@ pub const XdpSocket = struct {
         const fm = &(self.frame_manager.?);
         const rx_prod = @atomicLoad(u32, self.rx_ring.producer, .acquire);
         const rx_cons = @atomicLoad(u32, self.rx_ring.consumer, .acquire);
-        return .{
+        const result = XdpDiag{
             .frames_held = fm.framesHeld(),
             .free_depth = fm.freeDepth(),
             .fill_free = self.fill_ring.free(),
             .rx_avail = rx_prod -% rx_cons,
             .spill_events = fm.spill_events.load(.monotonic),
         };
+
+        // Frame-accounting leak detector, gated behind VEX_UMEM_INVARIANT_LOG
+        // (default off) so it never fires on a production box unless
+        // explicitly armed for diagnosis. diag() is already caller-rate-
+        // limited to roughly once a second, so this is cheap.
+        if (umemInvariantLogEnabled()) {
+            const fill_occupied = @as(u64, self.fill_ring.ring.len) -| @as(u64, result.fill_free);
+            // Include frames the kernel has handed back but we have not
+            // consumed yet (rx_avail). Even with that, a residual remains:
+            // frames in flight inside the kernel are not observable from
+            // userspace, so `accounted` is legitimately BELOW frame_count at
+            // any instant (measured steady-state residual ~2047 on live
+            // hardware). A strict equality assert therefore fires on every
+            // tick of a perfectly healthy node — it would cry wolf and bury
+            // a real leak in noise. What actually distinguishes a leak is
+            // that the gap GROWS without bound, since the in-flight residual
+            // is constant. Track a high-water mark and warn only when the
+            // gap grows meaningfully beyond it.
+            const accounted = result.free_depth + fill_occupied + result.frames_held + @as(u64, result.rx_avail);
+            const frame_count: u64 = fm.frame_count;
+            const delta: u64 = frame_count -| accounted;
+            const Hw = struct {
+                var max_delta: u64 = 0;
+            };
+            if (delta > Hw.max_delta + UMEM_DELTA_GROWTH_SLACK) {
+                Hw.max_delta = delta;
+                std.log.warn("[UMEM-LEAK-SUSPECT] delta GREW to {d} (free={d} fill={d} rx={d} held={d} accounted={d} of {d}) — frames leaving the pool without return", .{
+                    delta, result.free_depth, fill_occupied, result.rx_avail, result.frames_held, accounted, frame_count,
+                });
+            } else if (delta > Hw.max_delta) {
+                Hw.max_delta = delta;
+            }
+        }
+
+        return result;
+    }
+
+    /// Growth slack for the UMEM leak detector. At any instant some frames
+    /// are in flight inside the kernel and invisible to userspace, so the
+    /// accounted total sits a constant amount below the pool size. Only
+    /// growth beyond the running high-water mark indicates frames are
+    /// leaving the pool without being returned. Sized above normal jitter so
+    /// a healthy node stays silent.
+    const UMEM_DELTA_GROWTH_SLACK: u64 = 4096;
+
+    var umem_invariant_log_state: std.atomic.Value(i8) = std.atomic.Value(i8).init(-1);
+    fn umemInvariantLogEnabled() bool {
+        const cached = umem_invariant_log_state.load(.monotonic);
+        if (cached >= 0) return cached == 1;
+        const enabled = if (std.posix.getenv("VEX_UMEM_INVARIANT_LOG")) |v| (v.len > 0 and v[0] != '0') else false;
+        umem_invariant_log_state.store(if (enabled) 1 else 0, .monotonic);
+        return enabled;
     }
 
     /// Send packets

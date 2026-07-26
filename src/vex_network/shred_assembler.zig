@@ -1326,16 +1326,34 @@ pub const ShredAssembler = struct {
     /// for first 50 calls + every 100th + all null-return cases.
     var get_parent_call_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
 
+    /// This probe's "always log" null/failure branches were previously
+    /// ungated. Under sustained catch-up load, most calls land on one of
+    /// those branches, and the unconditional logging became the dominant
+    /// source of log volume — competing for I/O with replay on a node that
+    /// was already struggling. Gate ALL [GET-PARENT-DIAG] logging behind an
+    /// explicit env var, default off. The call counter itself stays ungated;
+    /// it is a single atomic increment and other code may want it later.
+    var get_parent_diag_log_state: std.atomic.Value(i8) = std.atomic.Value(i8).init(-1);
+    fn getParentDiagLogEnabled() bool {
+        const cached = get_parent_diag_log_state.load(.monotonic);
+        if (cached >= 0) return cached == 1;
+        const enabled = if (std.posix.getenv("VEX_GET_PARENT_DIAG")) |v| (v.len > 0 and v[0] != '0') else false;
+        get_parent_diag_log_state.store(if (enabled) 1 else 0, .monotonic);
+        return enabled;
+    }
+
     pub fn getParentSlot(self: *ShredAssembler, slot_val: u64) ?u64 {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         const call_n = get_parent_call_count.fetchAdd(1, .monotonic);
-        const verbose = call_n < 50 or @mod(call_n, 100) == 0;
+        const diag_on = getParentDiagLogEnabled();
+        const verbose = diag_on and (call_n < 50 or @mod(call_n, 100) == 0);
 
         const assembly = self.slots.get(slot_val) orelse {
-            // null path is always informative — log unconditionally
-            std.log.warn("[GET-PARENT-DIAG] slot={d} -> NULL (no assembly entry) call#{d}", .{ slot_val, call_n });
+            // Previously logged unconditionally; now gated (see
+            // getParentDiagLogEnabled above).
+            if (diag_on) std.log.warn("[GET-PARENT-DIAG] slot={d} -> NULL (no assembly entry) call#{d}", .{ slot_val, call_n });
             return null;
         };
         // d27m (2026-05-11): scan for the first DATA shred specifically.
@@ -1370,16 +1388,19 @@ pub const ShredAssembler = struct {
                 }
                 return slot_val - offset;
             }
-            // data shred with bad offset (=0 or >= slot) — always log; rare and informative
-            std.log.warn(
+            // data shred with bad offset (=0 or >= slot) — rare and informative,
+            // but still gated (see getParentDiagLogEnabled above).
+            if (diag_on) std.log.warn(
                 "[GET-PARENT-DIAG] slot={d} idx={d} data offset={d} -> NULL (bad offset; n_coding={d}) call#{d}",
                 .{ slot_val, idx, offset, n_coding, call_n },
             );
             return null;
         }
-        // No data shred found across entire MAX_SHREDS scan — always log; this
-        // is the suspected dominant failure mode per d27m empirical.
-        std.log.warn(
+        // No data shred found across entire MAX_SHREDS scan — this is the
+        // suspected dominant failure mode, and under sustained catch-up load
+        // it is ALSO the dominant call outcome — gated (see
+        // getParentDiagLogEnabled above).
+        if (diag_on) std.log.warn(
             "[GET-PARENT-DIAG] slot={d} -> NULL (no data shred in scan; n_coding={d} n_payload_null={d} n_parse_fail={d}) call#{d}",
             .{ slot_val, n_coding, n_payload_null, n_parse_fail, call_n },
         );
