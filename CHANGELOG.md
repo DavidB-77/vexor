@@ -14,6 +14,15 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-g
+### Validator
+#### Fixed
+* Networking: fixed a UMEM frame leak in the AF_XDP copy-mode receive fallback, which consumed a frame from the RX ring, copied the packet out, and never returned the frame to the free reservoir or the fill ring. Because that path never acquires the frame, the loss was invisible in the held-frame counter while the free pool drained monotonically — roughly 24,000 frames per hour from a 131,072-frame pool under sustained catch-up load. The failure was self-accelerating: a depleted reservoir pushes more traffic onto the same fallback. Terminal state was mass receive-shedding, dropped shreds, slots that never completed, and a replay stalled far behind the cluster tip while the node still appeared partly alive. Fixed by returning the frame to the free ring directly, since the refcount-based release path can't be used when the frame was never acquired. Validated on live testnet: free-pool depth flat versus a ~24k/hour decline, zero receive-shed events versus 144.9 million previously, and the node at chain tip and voting.
+* Networking: the frame-accounting invariant check on the AF_XDP UMEM pool is now a leak detector that reports sustained growth in unaccounted frames rather than asserting exact equality, since frames in flight inside the kernel are not observable from userspace and a healthy node always sits a constant amount below full accounting.
+
+#### Changes
+* Diagnostics: the parent-slot diagnostic probe is now gated behind an environment variable and off by default; ungated, it produced many gigabytes of logs per day and competed with replay for I/O.
+
 ## 0.9.3-f
 ### Validator
 #### Fixed
