@@ -4576,7 +4576,13 @@ pub const ReplayStage = struct {
             std.log.warn("[GOC-SLOW] slot={d} getOrCreateBank={d}ms", .{ slot, goc_ms });
         }
         self.replayEntries(bank, assembled_data) catch |err| {
-            std.log.debug("[REPLAY] Failed to replay slot {d}: {any} (data_len={d})\n", .{ slot, err, assembled_data.len });
+            // 2026-07-26: was std.log.debug, i.e. INVISIBLE in production. This `return`
+            // abandons the slot unfrozen — the node stalls on this fork and its children
+            // orphan. That is a top-tier operational event and must be loud. It is also
+            // now the landing site for allocation failures inside processEpochBoundary
+            // (see bank.zig's ALLOCATION-FAILURE POLICY comment), which previously
+            // corrupted rewards silently instead of failing here.
+            std.log.err("[REPLAY] Failed to replay slot {d}: {s} (data_len={d}) — slot left UNFROZEN", .{ slot, @errorName(err), assembled_data.len });
             return;
         };
         const t2 = std.time.milliTimestamp();

@@ -3267,11 +3267,27 @@ pub const Bank = struct {
         defer self.allocator.free(stake_accounts);
         std.log.warn("[EPOCH] Found {d} stake accounts", .{stake_accounts.len});
 
+        // ALLOCATION-FAILURE POLICY for this function (2026-07-26).
+        // Every container insert below feeds the inflation-reward computation, whose
+        // output becomes account writes and therefore the boundary bank's
+        // accounts_lt_hash → bank_hash. Until today these sites were `catch continue`
+        // / `catch {}`: on OOM they DROPPED a vote account, a delegation, or an
+        // admitted-set entry and carried on, producing a silently wrong reward total,
+        // a wrong bank_hash, and a fork — with nothing logged anywhere.
+        //
+        // They now `try`. processEpochBoundary is `!void` and both callers propagate
+        // (replay_stage.zig replayEntriesInternal:8909 → replayEntries:8087 `return err`
+        // → :4548, which abandons the slot WITHOUT freezing it). So an OOM at a boundary
+        // now stalls this node on that fork instead of publishing a divergent hash.
+        // That is the correct trade: liveness is recoverable, a wrong bank_hash is not.
+        // Sites that skip MALFORMED data (`orelse continue`) are unchanged — those are
+        // deliberate and Agave-matching; only allocation failures were being swallowed.
+        //
         // ── Build vote account index (pubkey → array index) ─────────────────
         var vote_idx = std.AutoHashMap([32]u8, usize).init(self.allocator);
         defer vote_idx.deinit();
         for (vote_accounts, 0..) |va, i| {
-            vote_idx.put(va.pubkey.data, i) catch continue;
+            try vote_idx.put(va.pubkey.data, i);
         }
 
         // ── Deserialize vote states → VoteRewardAccumulator[] ───────────────
@@ -3398,14 +3414,14 @@ pub const Bank = struct {
             const vs = vote_serde.deserializeVoteState(va.data) orelse continue;
             // VAT: capture per-vote BLS-present + lamports for the admitted-set filter.
             if (vat_active) {
-                vat_meta.put(va.pubkey.data, .{ .has_bls = vs.has_bls_pubkey_compressed, .lamports = va.lamports }) catch {};
+                try vat_meta.put(va.pubkey.data, .{ .has_bls = vs.has_bls_pubkey_compressed, .lamports = va.lamports });
             }
 
             // Owned per-account epoch_credits slice (no shared growing buffer →
             // no realloc can dangle another account's slice). Reuses the proven
             // `deserializeVoteState` walk; only the OWNERSHIP model changed, so
             // the credits bytes (and therefore rewards/bank_hash) are identical.
-            const owned_ec = self.allocator.alloc(rewards_mod.EpochCreditsEntry, vs.ec_count) catch continue;
+            const owned_ec = try self.allocator.alloc(rewards_mod.EpochCreditsEntry, vs.ec_count);
             for (0..vs.ec_count) |ei| {
                 const ec = vs.epoch_credits[ei];
                 owned_ec[ei] = .{
@@ -3440,9 +3456,13 @@ pub const Bank = struct {
                 .vote_account = .{ .data = va.pubkey.data },
                 .commission_bps = commission_bps,
                 .epoch_credits = owned_ec,
-            }) catch {
+            }) catch |err| {
+                // 2026-07-26: was `continue`, which silently dropped this vote account
+                // from the reward accumulation → wrong rewards → wrong bank_hash → fork.
+                // Free the slice we own, then propagate: a boundary we cannot compute
+                // completely must fail, not publish a quietly incorrect result.
                 self.allocator.free(owned_ec);
-                continue;
+                return err;
             };
         }
 
@@ -3629,7 +3649,7 @@ pub const Bank = struct {
                 }
             }
 
-            delegations.append(self.allocator, .{
+            try delegations.append(self.allocator, .{
                 .stake_account = .{ .data = sa.pubkey.data },
                 .vote_account = .{ .data = voter_pubkey },
                 .effective_stake = activation.effective,
@@ -3637,7 +3657,7 @@ pub const Bank = struct {
                 .activation_epoch = act_epoch,
                 .credits_observed = credits_observed,
                 .precomputed_points = sp,
-            }) catch continue;
+            });
         }
 
         // VEX_DUMP_STAKEPTS: dump top-N votes by accumulated points (advisor localizer).
@@ -3649,7 +3669,7 @@ pub const Bank = struct {
             defer vlist.deinit(self.allocator);
             var vit = vote_acc.iterator();
             while (vit.next()) |e| {
-                vlist.append(self.allocator, .{ .vote = e.key_ptr.*, .points = e.value_ptr.points, .eff = e.value_ptr.eff, .n = e.value_ptr.n }) catch {};
+                try vlist.append(self.allocator, .{ .vote = e.key_ptr.*, .points = e.value_ptr.points, .eff = e.value_ptr.eff, .n = e.value_ptr.n });
             }
             std.sort.pdq(VEntry, vlist.items, {}, struct {
                 fn lt(_: void, a: VEntry, b: VEntry) bool {
@@ -3697,7 +3717,7 @@ pub const Bank = struct {
                 if (!m.has_bls) continue; // has_bls
                 if (e.value_ptr.eff_new == 0) continue; // has_stake (stake @new_epoch != 0)
                 if (m.lamports < vat_min_balance) continue; // has_balance
-                cands.append(self.allocator, .{ .vote = e.key_ptr.*, .stake = e.value_ptr.eff_new }) catch continue;
+                try cands.append(self.allocator, .{ .vote = e.key_ptr.*, .stake = e.value_ptr.eff_new });
             }
             // Steps 3+4: if more than MAX remain, drop all whose stake <= the MAX-th
             // ranked stake (Agave select_nth_unstable_by(MAX) + retain stake > floor;
@@ -3743,7 +3763,7 @@ pub const Bank = struct {
             defer admitted.deinit();
             for (cands.items) |c| {
                 if (apply_floor and c.stake <= floor_stake) continue;
-                admitted.put(c.vote, {}) catch {};
+                try admitted.put(c.vote, {});
             }
             // Filter delegations[] in place (keep order; admitted votes only).
             var w: usize = 0;
@@ -3825,7 +3845,7 @@ pub const Bank = struct {
             const new_lam = va.lamports + vr.lamports;
             const new_lt = accountLtHash(&va.pubkey.data, &vote_owner.data, new_lam, va.executable, va.data);
 
-            self.collectWrite(.{
+            try self.collectWrite(.{
                 .pubkey = .{ .data = va.pubkey.data },
                 .lamports = new_lam,
                 .owner = .{ .data = vote_owner.data },
@@ -3834,7 +3854,7 @@ pub const Bank = struct {
                 .data = va.data,
                 .old_lt = old_lt,
                 .new_lt = new_lt,
-            }) catch continue;
+            });
 
             vote_reward_total += vr.lamports;
         }
@@ -4220,7 +4240,7 @@ pub const Bank = struct {
 
             const new_lt = accountLtHash(&sr.stake_account.data, &stake_owner_bytes, new_lam, acct.executable, new_data);
 
-            self.collectWrite(.{
+            try self.collectWrite(.{
                 .pubkey = sr.stake_account,
                 .lamports = new_lam,
                 .owner = Pubkey{ .data = stake_owner_bytes },
@@ -4229,7 +4249,7 @@ pub const Bank = struct {
                 .data = new_data,
                 .old_lt = old_lt,
                 .new_lt = new_lt,
-            }) catch continue;
+            });
 
             // d28gg: accumulator overflow protection. Cluster total stake rewards
             // per slot are bounded well below u64::MAX, but a corrupted partition
@@ -4767,7 +4787,12 @@ pub const Bank = struct {
 
         // Pass A: aggregate per-pubkey first.old_lt + last.new_lt + last_w_idx.
         for (self.pending_writes.items, 0..) |w, i| {
-            const gop = per_pk.getOrPut(w.pubkey.data) catch continue;
+            // 2026-07-26: was `catch continue`, which on allocation failure silently
+            // DROPPED that pubkey's lthash contribution — producing a wrong
+            // accounts_lt_hash, a wrong bank_hash, and a fork, with no error anywhere.
+            // freeze() returns !void, so propagate: a bank we cannot hash correctly must
+            // fail loudly rather than be published with a quietly incorrect hash.
+            const gop = try per_pk.getOrPut(w.pubkey.data);
             if (!gop.found_existing) {
                 gop.value_ptr.* = .{
                     .first_old_lt = w.old_lt,
@@ -4820,6 +4845,8 @@ pub const Bank = struct {
             break :blk self.slot >= bound;
         };
         if (lt_write_on) self.lt_write_capture.clearRetainingCapacity();
+        // Per-slot latch so a capture OOM logs once, not once per pubkey.
+        var lt_capture_oom_logged = false;
 
         var iter = per_pk.iterator();
         while (iter.next()) |entry| {
@@ -4910,7 +4937,19 @@ pub const Bank = struct {
                     .applied_owner = last_w.owner.data,
                     .first_old_lt = cap_old,
                     .had_old = e.first_old_lt != null,
-                }) catch {};
+                }) catch {
+                    // Diagnostic-only buffer (env VEX_VERIFY_LTHASH_WRITES) — must never
+                    // kill the node, so this stays non-fatal. But it must not lie either:
+                    // a missing capture entry makes the DROPPED/PHANTOM set-diff in
+                    // accounts_db.verifyLtHashWrites report a FALSE "dropped write" for
+                    // this pubkey — precisely the signal you armed the localizer to read.
+                    // Log once per slot so the operator discounts that run's set-diff.
+                    if (!lt_capture_oom_logged) {
+                        lt_capture_oom_logged = true;
+                        std.log.err("[LT-WRITE-CAPTURE-OOM] slot={d}: capture append failed; " ++
+                            "DROPPED/PHANTOM set-diff for this slot is UNRELIABLE (false drops expected)", .{self.slot});
+                    }
+                };
             }
         }
 
