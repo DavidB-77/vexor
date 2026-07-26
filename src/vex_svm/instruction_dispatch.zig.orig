@@ -1205,12 +1205,7 @@ pub const wave6b = struct {
         switch (kind) {
             .vote => {
                 if (bank_mod.TvTrace.on()) _ = fb.bank.tvt2_site_tramp.fetchAdd(1, .monotonic); // [TOPVOTES-TRACE] TEMPORARY
-                // SIMD-0387: no shared per-tx CU meter is threaded into this CPI
-                // trampoline today (pre-existing gap, out of scope for the
-                // top-level-instruction CU-parity fix) — `null` preserves prior
-                // behavior (PoP crypto enforced, no CU gate) rather than
-                // fabricating an unrelated counter. Flagged as a follow-up.
-                executeVoteInstruction(fb.ix, fb.ptx, fb.bank, fb.db, alloc, fb.ancestor_slots, null) catch {
+                executeVoteInstruction(fb.ix, fb.ptx, fb.bank, fb.db, alloc, fb.ancestor_slots) catch {
                     if (fb.bank.pending_writes.items.len > pre_len) {
                         tvtCountVoteRolled(fb.bank, pre_len); // [TOPVOTES-TRACE] TEMPORARY measurement
                         fb.bank.pending_writes.shrinkRetainingCapacity(pre_len);
@@ -2563,13 +2558,6 @@ pub fn executeVoteInstruction(
     // Day-2 PR-A.2 fork-isolation: ancestor chain for overlay reads.
     // Empty = legacy flat-read.
     ancestor_slots: []const u64,
-    // SIMD-0387 CU-parity fix (2026-07-26): the caller's shared per-tx CU
-    // meter (the same one already charged the flat 2,100 builtin entry cost
-    // one level up), threaded to `voteforge.ExecContext.pop_cu_meter` so the
-    // 34,500 BLS-PoP surcharge draws from the identical pool Agave's
-    // `consume_pop_compute_units` closure closes over. `null` where no such
-    // meter exists at the call site (see call-site comments).
-    cu_meter: ?*u64,
 ) !void {
     // r31 [VOTE-WRITE-PATH]: comprehensive
     // counter coverage closing every silent-return path so we can name
@@ -2775,7 +2763,6 @@ pub fn executeVoteInstruction(
         &VoteDbg.append_ok,
         &VoteDbg.append_fail,
         &VoteDbg.ok,
-        cu_meter,
     );
     if (bank_mod.TvTrace.on()) {
         if (VoteDbg.ok > tvt_ok_before) bank.tvt_vote_exec_ok += 1;
@@ -2820,8 +2807,6 @@ pub fn executeVoteViaVoteforge(
     append_ok: *u32,
     append_fail: *u32,
     ok: *u32,
-    // SIMD-0387 CU-parity fix — see `executeVoteInstruction`'s param doc.
-    cu_meter: ?*u64,
 ) !void {
     const tvt_on = bank_mod.TvTrace.on();
     if (tvt_on) _ = bank.tvt2_enter.fetchAdd(1, .monotonic);
@@ -3014,9 +2999,6 @@ pub fn executeVoteViaVoteforge(
         // resize/free is allocator-consistent and the grown `post.data` is what
         // the diff-and-commit loop below reads.
         .alloc = alloc,
-        // SIMD-0387 CU-parity fix — threaded straight from the caller's shared
-        // per-tx meter; see `executeVoteInstruction`'s param doc.
-        .pop_cu_meter = cu_meter,
     };
 
     const dispatch_result = vp.dispatch(alloc, &table, program_id, ix.data, signers_buf[0..n_signers], &ctx);

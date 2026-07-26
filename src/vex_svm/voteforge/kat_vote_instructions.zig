@@ -256,6 +256,262 @@ test "STAGE3-KAT: authorize voter_with_bls — gate off (bls_pubkey_management_i
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SIMD-0387 CU-parity fix (2026-07-26) — locks the two-stage charge a real
+// VoterWithBLS tx experiences: replay_stage.zig's PRE-EXISTING flat
+// DEFAULT_COMPUTE_UNITS=2,100 entry draw, then THIS fix's
+// BLS_PROOF_OF_POSSESSION_VERIFICATION_COMPUTE_UNITS=34,500 surcharge at the
+// exact `vi.authorize` `.voter_with_bls` call site — both draining the same
+// per-tx meter, exactly mirroring `vote_processor.rs`'s
+// `declare_process_instruction!(.., DEFAULT_COMPUTE_UNITS, ..)` entry charge
+// plus the `consume_pop_compute_units` closure Agave invokes from inside
+// `verify_bls_proof_of_possession` (`vote_state/mod.rs:1056-1057`).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Not a new harness — a thin two-line composition of this file's existing
+/// `vi.authorize` call plus the entry-gate arithmetic replay_stage.zig
+/// already performs one layer up, so `cu_limit` (the tx's declared CU limit)
+/// is the single input, matching how a real transaction is specified.
+fn simulateVoterWithBlsTx(
+    cu_limit: u64,
+    table: *aio.AccountTable,
+    signers: []const [32]u8,
+    new_authority: [32]u8,
+    // Zig struct types are nominal: this MUST be the actual public union
+    // (`vote_instructions.zig:525`'s `VoteAuthorizeArg`), not a locally
+    // re-declared anonymous struct — an anonymous payload here would be a
+    // distinct type that fails to coerce into `.{ .voter_with_bls = .. }`.
+    vote_authorize: vi.VoteAuthorizeArg,
+    ctx_template: vi.ExecContext,
+) !u64 {
+    // [vexor] replay_stage.zig:8324-8337 / :10133-10153 — the flat builtin
+    // entry charge, unchanged by this fix, runs BEFORE the vote body at all.
+    if (cu_limit < 2_100) return error.ComputationalBudgetExceeded;
+    var meter: u64 = cu_limit - 2_100;
+    var ctx = ctx_template;
+    ctx.pop_cu_meter = &meter;
+    try vi.authorize(table, 0, signers, new_authority, vote_authorize, &ctx);
+    return meter; // remaining CU, so callers can assert the drawdown amount
+}
+
+fn voterWithBlsFixture() struct { buf: [3762]u8, withdrawer: [32]u8 } {
+    const withdrawer = key(2);
+    var s = emptyV4(key(1), withdrawer);
+    withAuthorizedVoter(&s, 8, key(3));
+    var buf: [3762]u8 = undefined;
+    serializeInto(&buf, &s);
+    return .{ .buf = buf, .withdrawer = withdrawer };
+}
+
+test "SIMD0387-KAT: authorize voter_with_bls — cu_limit below 2,100 fails at the entry gate, PoP never reached" {
+    var fx = voterWithBlsFixture();
+    var tab = oneAccountTable(&fx.buf, true, true);
+    var table = mkTable(&tab.metas, &tab.records);
+    const kp = bls_pop.TestKeypair.fromIkm(&[_]u8{0x44} ** 32);
+    var payload: [41]u8 = undefined;
+    @memcpy(payload[0..9], "ALPENGLOW");
+    @memcpy(payload[9..41], &VOTE_KEY);
+    const pop = kp.signPop(&payload);
+    const signers = [_][32]u8{fx.withdrawer};
+    try testing.expectError(error.ComputationalBudgetExceeded, simulateVoterWithBlsTx(
+        2_000,
+        &table,
+        &signers,
+        key(6),
+        .{ .voter_with_bls = .{ .bls_pubkey = kp.pubkey_compressed, .bls_proof_of_possession = pop } },
+        defaultCtx(),
+    ));
+}
+
+test "SIMD0387-KAT: authorize voter_with_bls — cu_limit exactly 2,100 (0 left for the 34,500 surcharge) fails" {
+    var fx = voterWithBlsFixture();
+    var tab = oneAccountTable(&fx.buf, true, true);
+    var table = mkTable(&tab.metas, &tab.records);
+    const kp = bls_pop.TestKeypair.fromIkm(&[_]u8{0x45} ** 32);
+    var payload: [41]u8 = undefined;
+    @memcpy(payload[0..9], "ALPENGLOW");
+    @memcpy(payload[9..41], &VOTE_KEY);
+    const pop = kp.signPop(&payload);
+    const signers = [_][32]u8{fx.withdrawer};
+    try testing.expectError(error.ComputationalBudgetExceeded, simulateVoterWithBlsTx(
+        2_100,
+        &table,
+        &signers,
+        key(6),
+        .{ .voter_with_bls = .{ .bls_pubkey = kp.pubkey_compressed, .bls_proof_of_possession = pop } },
+        defaultCtx(),
+    ));
+}
+
+test "SIMD0387-KAT: authorize voter_with_bls — cu_limit in [2100,36600) with a VALID PoP now FAILS (the verified fork condition)" {
+    var fx = voterWithBlsFixture();
+    var tab = oneAccountTable(&fx.buf, true, true);
+    var table = mkTable(&tab.metas, &tab.records);
+    var buf_before = fx.buf;
+    const kp = bls_pop.TestKeypair.fromIkm(&[_]u8{0x46} ** 32);
+    var payload: [41]u8 = undefined;
+    @memcpy(payload[0..9], "ALPENGLOW");
+    @memcpy(payload[9..41], &VOTE_KEY);
+    const pop = kp.signPop(&payload); // genuinely valid PoP — crypto would pass
+    const signers = [_][32]u8{fx.withdrawer};
+    // 20,000 is comfortably inside [2100, 36600): Agave rejects with
+    // ComputationalBudgetExceeded BEFORE the (would-pass) crypto check runs;
+    // pre-fix Vexor charged flat 2,100 and would have ACCEPTED this tx —
+    // exactly the bank_hash-diverging fork condition this fix closes.
+    try testing.expectError(error.ComputationalBudgetExceeded, simulateVoterWithBlsTx(
+        20_000,
+        &table,
+        &signers,
+        key(6),
+        .{ .voter_with_bls = .{ .bls_pubkey = kp.pubkey_compressed, .bls_proof_of_possession = pop } },
+        defaultCtx(),
+    ));
+    try testing.expectEqualSlices(u8, &buf_before, &fx.buf); // no state mutation on rejection
+}
+
+test "SIMD0387-KAT: authorize voter_with_bls — cu_limit exactly 36,600 (2,100+34,500) with a VALID PoP SUCCEEDS" {
+    var fx = voterWithBlsFixture();
+    var tab = oneAccountTable(&fx.buf, true, true);
+    var table = mkTable(&tab.metas, &tab.records);
+    const kp = bls_pop.TestKeypair.fromIkm(&[_]u8{0x47} ** 32);
+    var payload: [41]u8 = undefined;
+    @memcpy(payload[0..9], "ALPENGLOW");
+    @memcpy(payload[9..41], &VOTE_KEY);
+    const pop = kp.signPop(&payload);
+    const signers = [_][32]u8{fx.withdrawer};
+    const remaining = try simulateVoterWithBlsTx(
+        36_600,
+        &table,
+        &signers,
+        key(6),
+        .{ .voter_with_bls = .{ .bls_pubkey = kp.pubkey_compressed, .bls_proof_of_possession = pop } },
+        defaultCtx(),
+    );
+    try testing.expectEqual(@as(u64, 0), remaining); // exact boundary: fully drained, not negative/wrapped
+    const parsed = (try codec.VoteStateV4.parse(&fx.buf)).state;
+    try testing.expect(parsed.bls_pubkey_compressed != null);
+}
+
+test "SIMD0387-KAT: authorize voter_with_bls — early failure (gate off) in the gap consumes only the 2,100 entry charge, matching Agave" {
+    var fx = voterWithBlsFixture();
+    var tab = oneAccountTable(&fx.buf, true, true);
+    var table = mkTable(&tab.metas, &tab.records);
+    var buf_before = fx.buf;
+    var ctx_template = defaultCtx();
+    ctx_template.features.bls_pubkey_management_in_vote_account = false; // fails BEFORE the PoP checkpoint
+    const signers = [_][32]u8{fx.withdrawer};
+    // cu_limit=20,000 sits in the sensitive [2100,36600) gap, but the feature
+    // gate check (vote_state/mod.rs:733-736 / vote_instructions.zig:559) is
+    // reached before verify_bls_proof_of_possession, so the closure/
+    // consumePopComputeUnits is never invoked — only the flat 2,100 is spent,
+    // exactly as Agave's `consume_pop_compute_units()?` is never reached
+    // either when an earlier check in the same match arm errors first.
+    const remaining_or_err = simulateVoterWithBlsTx(
+        20_000,
+        &table,
+        &signers,
+        key(6),
+        .{ .voter_with_bls = .{ .bls_pubkey = [_]u8{1} ** 48, .bls_proof_of_possession = [_]u8{2} ** 96 } },
+        ctx_template,
+    );
+    try testing.expectError(error.InvalidInstructionData, remaining_or_err);
+    try testing.expectEqualSlices(u8, &buf_before, &fx.buf);
+    // Re-run with a meter we can inspect after the call (expectError above
+    // consumes the value) to assert the drawdown amount directly.
+    var meter: u64 = 20_000 - 2_100;
+    var ctx2 = ctx_template;
+    ctx2.pop_cu_meter = &meter;
+    try testing.expectError(error.InvalidInstructionData, vi.authorize(&table, 0, &signers, key(6), .{ .voter_with_bls = .{ .bls_pubkey = [_]u8{1} ** 48, .bls_proof_of_possession = [_]u8{2} ** 96 } }, &ctx2));
+    try testing.expectEqual(@as(u64, 20_000 - 2_100), meter); // 34,500 NOT drawn
+}
+
+test "SIMD0387-KAT: initializeAccountV2 — cu_limit in the gap with a VALID PoP now FAILS (second Agave call site)" {
+    var buf: [3762]u8 = [_]u8{0} ** 3762;
+    var cdata1: [0]u8 = .{};
+    var cdata2: [0]u8 = .{};
+    var out: struct { table: aio.AccountTable, metas: [3]aio.AccountMeta, records: [3]aio.AccountRecord } = undefined;
+    out.metas = [_]aio.AccountMeta{
+        .{ .pubkey = VOTE_KEY, .is_signer = true, .is_writable = true },
+        .{ .pubkey = key(0x50), .is_signer = false, .is_writable = true },
+        .{ .pubkey = key(0x51), .is_signer = false, .is_writable = true },
+    };
+    out.records = [_]aio.AccountRecord{
+        .{ .pubkey = VOTE_KEY, .lamports = vi.minimumBalance(3762), .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = &buf },
+        .{ .pubkey = key(0x50), .lamports = vi.minimumBalance(0), .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &cdata1 },
+        .{ .pubkey = key(0x51), .lamports = vi.minimumBalance(0), .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &cdata2 },
+    };
+    out.table = aio.AccountTable.init(VOTE_PROGRAM_ID, &out.metas, &out.records) catch unreachable;
+
+    const kp = bls_pop.TestKeypair.fromIkm(&[_]u8{0x48} ** 32);
+    var payload: [41]u8 = undefined;
+    @memcpy(payload[0..9], "ALPENGLOW");
+    @memcpy(payload[9..41], &VOTE_KEY);
+    const pop = kp.signPop(&payload); // genuinely valid PoP
+    const node = key(1);
+    var meter: u64 = 20_000 - 2_100; // cu_limit=20,000, entry charge already drawn one layer up
+    var ctx = defaultCtx();
+    ctx.pop_cu_meter = &meter;
+    try testing.expectError(error.ComputationalBudgetExceeded, vi.initializeAccountV2(&out.table, 0, 1, 2, .{
+        .node_pubkey = node,
+        .authorized_voter = key(2),
+        .authorized_voter_bls_pubkey = kp.pubkey_compressed,
+        .authorized_voter_bls_proof_of_possession = pop,
+        .authorized_withdrawer = key(3),
+        .inflation_rewards_commission_bps = 777,
+        .block_revenue_commission_bps = 888,
+    }, &[_][32]u8{node}, &ctx));
+    // Account must remain uninitialized — no partial mutation on rejection.
+    try testing.expect(std.mem.allEqual(u8, &buf, 0));
+}
+
+test "SIMD0387-KAT: initializeAccountV2 — LIVE-reachable early failure (unsigned node) in the gap consumes only 2,100, matching Agave" {
+    // Unlike the `.voter_with_bls` gate-off case above (unreachable once
+    // SIMD-0387 is active, as it has been since epoch 977), this precondition
+    // — `verify_authorized_signer(&vote_init.node_pubkey, signers)`,
+    // `vote_state/mod.rs:1164`, ported at `vote_instructions.zig:928` — is a
+    // normal, LIVE failure mode: it fires on every malformed/hostile
+    // InitializeAccountV2 tx, so this is the invariant that actually matters
+    // in production, not just a mechanism check.
+    var buf: [3762]u8 = [_]u8{0} ** 3762;
+    var cdata1: [0]u8 = .{};
+    var cdata2: [0]u8 = .{};
+    var out: struct { table: aio.AccountTable, metas: [3]aio.AccountMeta, records: [3]aio.AccountRecord } = undefined;
+    out.metas = [_]aio.AccountMeta{
+        .{ .pubkey = VOTE_KEY, .is_signer = true, .is_writable = true },
+        .{ .pubkey = key(0x50), .is_signer = false, .is_writable = true },
+        .{ .pubkey = key(0x51), .is_signer = false, .is_writable = true },
+    };
+    out.records = [_]aio.AccountRecord{
+        .{ .pubkey = VOTE_KEY, .lamports = vi.minimumBalance(3762), .owner = VOTE_PROGRAM_ID, .executable = false, .rent_epoch = 0, .data = &buf },
+        .{ .pubkey = key(0x50), .lamports = vi.minimumBalance(0), .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &cdata1 },
+        .{ .pubkey = key(0x51), .lamports = vi.minimumBalance(0), .owner = [_]u8{0} ** 32, .executable = false, .rent_epoch = 0, .data = &cdata2 },
+    };
+    out.table = aio.AccountTable.init(VOTE_PROGRAM_ID, &out.metas, &out.records) catch unreachable;
+
+    const kp = bls_pop.TestKeypair.fromIkm(&[_]u8{0x49} ** 32);
+    var payload: [41]u8 = undefined;
+    @memcpy(payload[0..9], "ALPENGLOW");
+    @memcpy(payload[9..41], &VOTE_KEY);
+    const pop = kp.signPop(&payload); // genuinely valid PoP — irrelevant, never reached
+    const node = key(1);
+    var meter: u64 = 20_000 - 2_100; // cu_limit=20,000, entry charge already drawn one layer up
+    var ctx = defaultCtx();
+    ctx.pop_cu_meter = &meter;
+    // node is NOT in signers -> MissingRequiredSignature fires before the
+    // collector-validation and PoP-charge checks that follow it.
+    try testing.expectError(error.MissingRequiredSignature, vi.initializeAccountV2(&out.table, 0, 1, 2, .{
+        .node_pubkey = node,
+        .authorized_voter = key(2),
+        .authorized_voter_bls_pubkey = kp.pubkey_compressed,
+        .authorized_voter_bls_proof_of_possession = pop,
+        .authorized_withdrawer = key(3),
+        .inflation_rewards_commission_bps = 777,
+        .block_revenue_commission_bps = 888,
+    }, &[_][32]u8{}, &ctx));
+    try testing.expectEqual(@as(u64, 20_000 - 2_100), meter); // 34,500 NOT drawn
+    try testing.expect(std.mem.allEqual(u8, &buf, 0));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // getAndUpdateAuthorizedVoter / purge — [agave] handler.rs unit-level pinning
 // ─────────────────────────────────────────────────────────────────────────────
 

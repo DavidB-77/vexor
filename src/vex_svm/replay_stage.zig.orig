@@ -331,8 +331,7 @@ pub fn parallelWorkerFn(ctx: *WorkerCtx) void {
                 if (bank_mod.TvTrace.on()) _ = ctx.bank.tvt2_site_worker.fetchAdd(1, .monotonic); // [TOPVOTES-TRACE] TEMPORARY
                 // Day-2: dead-code parallel worker path. Pass empty ancestor_slots
                 // (feature_set arg was stale anyway — was never in fn signature).
-                // SIMD-0387: dead path, no CU meter to thread — null.
-                executeVoteInstruction(ix, ptx, ctx.bank, ctx.db, ctx.alloc, &[_]u64{}, null) catch {};
+                executeVoteInstruction(ix, ptx, ctx.bank, ctx.db, ctx.alloc, &[_]u64{}) catch {};
             } else if (std.mem.eql(u8, program_id, &NATIVE_PROGRAM_IDS.STAKE)) {
                 ctx.stake += 1;
                 // Phase-1: dead worker path (svm_pool removed) — no live
@@ -3494,26 +3493,6 @@ pub const ReplayStage = struct {
         // whose local hash truly diverges fall through to the real kill path.
         // Cache-only lookup (no fetch) to avoid re-entering fetchSlotHashes →
         // sweeps → markSlotDead recursion.
-        // THREAD-SAFETY (audited 2026-07-26): this reads `self.banks` — documented
-        // at the field declaration as "protected by banks_lock" — WITHOUT taking the
-        // lock, and then dereferences the returned *Bank. That is sound only because
-        // markSlotDeadOne is reachable from the replay thread ALONE, which is also
-        // the only mutator of `self.banks`:
-        //   - ReplayStage spawns exactly two long-lived threads (:1364 replayWorker,
-        //     :1375 sysvarRefreshWorker) plus transient parallelFetchWorkers (:11272).
-        //   - sysvarRefreshWorker only writes pending_slot_hashes under
-        //     sysvar_fetch_lock; parallelFetchWorker touches only its own ctx.
-        //     Neither reaches markSlotDead or self.banks.
-        //   - every banks.put/remove (:3352, :7715, :7735, :7775, :8031, :11070) is
-        //     inside getOrCreateBank/acquireBank/pruneOldBanks/reviveDeadSlotDump, all
-        //     under exclusive banks_lock and all called only from onSlotCompleted.
-        //   - all 9 markSlotDead/markSlotDeadOne call sites reach here from
-        //     onSlotCompleted or installSlotHashes' sweeps, i.e. the replay thread.
-        // Do NOT take banks_lock here: it is unnecessary on a single-threaded path,
-        // and RwLock is not reentrant, so a future caller that already holds it would
-        // deadlock. If a SECOND thread ever gains a path to markSlotDead, this read
-        // becomes a genuine use-after-free (banks.remove can free the *Bank) and must
-        // be revisited together with the lock-ordering rules at :709.
         if (self.banks.get(slot)) |local_bank| {
             if (self.scanCachedSlotHash(slot)) |cluster_hash| {
                 if (std.mem.eql(u8, &local_bank.bank_hash.data, &cluster_hash.data)) {
@@ -3530,17 +3509,7 @@ pub const ReplayStage = struct {
         {
             self.dead_slots_lock.lock();
             defer self.dead_slots_lock.unlock();
-            // 2026-07-26: `catch return false` is the right CONTROL FLOW (a slot we
-            // failed to record must not be treated as newly-dead, or the cascade
-            // below would run against an unrecorded parent), but it was silent and
-            // indistinguishable from the already-marked case. On OOM the slot stays
-            // eligible for replay forever with no trace — so say so. markSlotDead
-            // discards the return value, making the log the only signal.
-            const gop = self.dead_slots.getOrPut(slot) catch {
-                std.log.err("[REPLAY-DEAD-SLOT-OOM] slot={d} reason={s} — could not record dead slot; " ++
-                    "it stays replayable and its orphan cascade is SKIPPED", .{ slot, reason });
-                return false;
-            };
+            const gop = self.dead_slots.getOrPut(slot) catch return false;
             if (gop.found_existing) return false; // already marked, avoid cascade re-entry
         }
         std.log.warn("[REPLAY-DEAD-SLOT] slot={d} reason={s} — Agave canonical mark-dead", .{ slot, reason });
@@ -4606,13 +4575,7 @@ pub const ReplayStage = struct {
             std.log.warn("[GOC-SLOW] slot={d} getOrCreateBank={d}ms", .{ slot, goc_ms });
         }
         self.replayEntries(bank, assembled_data) catch |err| {
-            // 2026-07-26: was std.log.debug, i.e. INVISIBLE in production. This `return`
-            // abandons the slot unfrozen — the node stalls on this fork and its children
-            // orphan. That is a top-tier operational event and must be loud. It is also
-            // now the landing site for allocation failures inside processEpochBoundary
-            // (see bank.zig's ALLOCATION-FAILURE POLICY comment), which previously
-            // corrupted rewards silently instead of failing here.
-            std.log.err("[REPLAY] Failed to replay slot {d}: {s} (data_len={d}) — slot left UNFROZEN", .{ slot, @errorName(err), assembled_data.len });
+            std.log.debug("[REPLAY] Failed to replay slot {d}: {any} (data_len={d})\n", .{ slot, err, assembled_data.len });
             return;
         };
         const t2 = std.time.milliTimestamp();
@@ -8723,12 +8686,7 @@ pub const ReplayStage = struct {
                 };
             } else if (std.mem.eql(u8, program_id, &NATIVE_PROGRAM_IDS.VOTE)) {
                 if (bank_mod.TvTrace.on()) _ = bank.tvt2_site_dag.fetchAdd(1, .monotonic); // [TOPVOTES-TRACE] TEMPORARY
-                // SIMD-0387 CU-parity fix (2026-07-26): thread THIS tx's shared
-                // meter so a VoterWithBLS/InitializeAccountV2 PoP charge (34,500,
-                // on top of the flat 2,100 already drawn above) can abort the ix
-                // before the crypto check, matching Agave's `consume_pop_compute
-                // _units` closure over the same `invoke_context.compute_meter`.
-                executeVoteInstruction(ix, ptx, bank, db, arena, ancestor_slots, &tx_cus_remaining) catch |e| {
+                executeVoteInstruction(ix, ptx, bank, db, arena, ancestor_slots) catch |e| {
                     // [TOPVOTES-TRACE] TEMPORARY per-slot one-shot: name the exact vote error.
                     if (bank_mod.TvTrace.on() and bank.tvt2_errprobe_done.cmpxchgStrong(0, 1, .monotonic, .monotonic) == null) {
                         std.log.warn("[TOPVOTES-TRACE] voteerr slot={d} err={s}", .{ bank.slot, @errorName(e) });
@@ -10547,8 +10505,7 @@ pub const ReplayStage = struct {
                                         } else if (std.mem.eql(u8, program_id, &NATIVE_PROGRAM_IDS.VOTE)) {
                                             native_vote += 1;
                                             if (bank_mod.TvTrace.on()) _ = bank.tvt2_site_serial.fetchAdd(1, .monotonic); // [TOPVOTES-TRACE] TEMPORARY
-                                            // SIMD-0387 CU-parity fix (2026-07-26): see DAG twin above.
-                                            executeVoteInstruction(ix, &ptx, bank, self.accounts_db.?, arena_alloc, ancestor_slots, &tx_cus_remaining) catch |e| {
+                                            executeVoteInstruction(ix, &ptx, bank, self.accounts_db.?, arena_alloc, ancestor_slots) catch |e| {
                                                 // FIX-1b: genuine vote InstructionError (plumbing
                                                 // filtered inside the seam) → tx failure. See DAG
                                                 // path counterpart.
