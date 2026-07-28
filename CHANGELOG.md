@@ -14,6 +14,15 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-j
+### Validator
+#### Fixed
+* Block production: leader-slot production now executes through the same instruction-dispatch ladder replay uses, retiring the reduced block executor that understood only two System-program instruction shapes. With the reduced executor, a candidate transaction could be packed on the strength of an execution model the cluster does not share; the block would then be rejected wholesale. Production and replay now agree byte-for-byte on what a transaction does before it is packed.
+
+#### Changes
+* Block production: a pre-admission oracle checks each candidate against a scratch child bank before packing — fee-payer balance, program-account existence, already-processed status, and recent-blockhash validity. A candidate the cluster would reject is refused up front instead of being packed blind, and each refusal is counted per reason in the leader-slot ingest log line.
+* Consensus: vote arming reads SlotHashes fork-aware. The previous read could observe a sibling fork's SlotHashes through the rooted-cache path; arming on the wrong fork's state risks voting against the chain the cluster converges on. Not arming for one slot costs one slot of vote throughput; arming on a sibling fork's SlotHashes costs the chain — the read now refuses rather than guesses.
+
 ## 0.9.3-i
 ### Validator
 #### Fixed
