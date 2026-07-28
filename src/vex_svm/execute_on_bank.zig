@@ -1,5 +1,26 @@
 //! SB-1 (parity backlog, shared blocker — execute half): canonical `executeOnBank`.
 //!
+//! ── NOTE: the produce path DELIBERATELY does not use this file ───────────────────────────────────
+//! This module reads like the obvious home for "the block producer's engine", and the produce-oracle
+//! work evaluated it for exactly that. It was NOT used, on purpose — recording why so the reasoning
+//! is not rebuilt from scratch:
+//!
+//!   1. There is no `executeOnBank` function here yet. The file is the TYPES and the Overlay discard
+//!      primitive (KAT-green), not the tx loop the header describes.
+//!   2. Zero production callers.
+//!   3. Its `Overlay` is a parallel universe to how instruction_dispatch actually writes. The live
+//!      ladder commits via bank.collectWrite -> bank.pending_writes; this Overlay is a separate
+//!      structure that nothing on that path consults.
+//!
+//! The decisive point is (3) plus a simpler observation: a scratch *Bank* IS already the discard
+//! primitive, and it already exists. The oracle builds a child bank for the slot being produced, runs
+//! the real ladder against it, reads state back through bank.overlayNewest, and throws the bank away.
+//! Simulate-vs-produce is then "keep the bank or drop it", with no second write model to keep in sync
+//! — which is the same class of duplication (two engines, two truths) that the produce oracle exists
+//! to remove. Building this file's tx loop would have re-introduced it.
+//!
+//! If this module is ever completed, it should be built ON the bank/pending_writes model, not beside it.
+//!
 //! RPC simulateTransaction + the block producer share ONE engine: load a tx's accounts, execute every
 //! instruction against the existing per-instruction dispatch, collect {err, logs, units_consumed,
 //! return_data, post_accounts}, and either DISCARD the writes (simulate) or COMMIT them (produce).

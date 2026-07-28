@@ -4401,4 +4401,19 @@ pub fn build(b: *std.Build) void {
     test_divalarm_rt_step.dependOn(&run_test_divalarm_rt.step);
     test_divloc_step.dependOn(&run_test_divalarm_rt.step);
     test_migrated_step.dependOn(&run_test_divalarm_rt.step);
+
+    // ── check-single-ladder — ANTI-DRIFT, the only layer that closes the bug CLASS ─────────────────
+    // Vexor produced empty blocks because production and replay had SEPARATE executors. Routing
+    // production through the real executor fixes THIS instance; it does not stop a third reduced
+    // router from being added the next time some path wants "just a little" execution. This step
+    // fails the build when a program-id dispatch arm appears in a new file (or when the arm count in
+    // the one allowed file grows), turning that class of drift into a compile-time question.
+    //
+    // Attached to the aggregate test step rather than to `install`: the deploy path must not depend
+    // on a shell script being present and executable. CI runs the aggregate.
+    const single_ladder = b.addSystemCommand(&.{ "bash", "scripts/check-single-ladder.sh" });
+    single_ladder.has_side_effects = true; // always re-run; it is a source-tree assertion, not a build product
+    const single_ladder_step = b.step("check-single-ladder", "Anti-drift: exactly ONE program-id dispatch ladder (a second executor is the bug class behind empty blocks)");
+    single_ladder_step.dependOn(&single_ladder.step);
+    test_migrated_step.dependOn(&single_ladder.step);
 }

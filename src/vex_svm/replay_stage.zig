@@ -1992,37 +1992,413 @@ pub const ReplayStage = struct {
         return block_produce.admitTxSeqBroadcast(gctx.allocator, gctx.state, parsed, tx_wire, bh_set, fpv, gctx.recent_sigs, gctx.producing_slot);
     }
 
-    // ── PASS 3 (durable execute-once-and-record) LIVE adapters ────────────────────────────────────────
-    // Feed block_produce.InclusionGate.execute a REAL accounts_db-backed executor so produceSlotBytes
-    // packs a tx IFF it truly was_processed against live parent state (inclusion == execution), closing
-    // the drain-chain + third-party-mover dead-block residuals the static whitelist path leaves open.
-    // Wired ONLY on the inline/loopback produce path (the tile has no accounts_db reach — see :5353).
-    // INERT while VEX_TPU_INGEST is unset (the tx-bearing pack branch is never entered).
+    // ── PRODUCE ORACLE — the InclusionGate engine ────────────────────────────────────────────────────
+    // REPLACES the PASS-3 block_executor adapters that used to live here (bankLoadAccountForBroadcast +
+    // bankExecuteForBroadcast, deleted with this change).
+    //
+    // WHAT WAS WRONG. Vexor had TWO executors. Replay runs the full per-instruction ladder via
+    // executeDagTx (the golden-gate-proven path). Production ran block_executor.zig, a mini-executor
+    // that understood only System discriminants 0 (CreateAccount) and 2 (Transfer) — so a VOTE was
+    // never "was_processed" and never got packed. That is a bug CLASS, not a bug: every program would
+    // have had to be re-taught to a second engine forever. Both gold standards keep ONE executor (Agave
+    // 4.2: consumer.rs:319 and vote_worker.rs:353 both bottom out in Bank::load_and_execute_transactions,
+    // the identical function replay reaches; Firedancer splits execrp/execle across TILES but both call
+    // fd_runtime_prepare_and_execute_txn — it separates SCHEDULING, not SEMANTICS).
+    //
+    // WHAT THIS DOES. The InclusionGate now consults the REAL runtime (executeDagTx) against a
+    // child-bank-shaped SCRATCH bank, so the admit decision becomes the replay decision by
+    // construction. Loopback replay remains the SOLE authority for bank state and bank_hash — the
+    // scratch bank is discarded — so the golden-proven path is untouched.
+    //
+    // THE ONE THING THAT MUST NOT BE "SIMPLIFIED": the admit bit does NOT come from executeDagTx.
+    // It comes from produce_admit.checkTxDetailed, evaluated BEFORE the engine runs. Deriving it from
+    // "the ladder completed" would be an OVER-ADMIT trap: the fee-debit else inside executeDagTx emits
+    // only a forensic recorder line — no tx_fail — so an UNPAYABLE tx completes the ladder cleanly.
+    // Packing it is Agave InsufficientFundsForFee at LOAD -> get_first_error -> DEAD SLOT. Coupling the
+    // admit set to the executor's reach is precisely the defect being closed here.
+    //
+    // FAILURE DIRECTION. Every path below (arm refusal, deadline seal, parse failure, checkTx
+    // reject/refuse) is UNDER-admit: a smaller or empty block, self-healing, today's behaviour. The
+    // only over-admit direction is deliberately unreachable.
+    //
+    // ARMING RECIPE — all four variables are required, and the first three are EXISTENCE-checked
+    // (`getenv != null`), so only leaving a variable UNSET disarms it:
+    //     VEX_TPU_INGEST=1 VEX_FORCE_INLINE_PRODUCE=1 VEXOR_STATUS_CACHE=1 VEX_PRODUCE_EXEC=vote_only
+    // VEX_TPU_INGEST alone is not enough: it also spawns the produce TILE, and the oracle lives solely
+    // on the INLINE path (produceAndBroadcastEmptySlot, the `else` arm of `if (produce_tile_active)`),
+    // so without VEX_FORCE_INLINE_PRODUCE every leader slot would dispatch to the tile and the oracle
+    // body would never run. Two COMPTIME gates also sit underneath and no env value substitutes:
+    // build_options.leader_mode and build_options.status_cache (`statusCacheActive` is comptime-false
+    // without it, so slotArmable REFUSES). `-Dprod` bundles both. THE TILE IS NOT WIRED, deliberately:
+    // it has no live-bank deref (it works from a value snapshot), and the oracle needs a real parent
+    // bank + AccountsDb for its scratch child bank, prologue and account reads.
 
-    /// Load-on-demand backing for the produce-time BlockExecutor: fetch a touched account read-only from
-    /// the producing (parent) bank's accounts_db at its slot — the SAME proven-safe read
-    /// bankAdmitTxForBroadcast uses. `ctx` = *Bank (parent_bank). Returns null when the account is absent
-    /// (no DB, or getAccountInSlot null on lamports==0) ⇒ the executor treats it as NotLoaded. `data` is
-    /// intentionally EMPTY: the executor's System Transfer/CreateAccount(space=0) path never reads account
-    /// data, so we avoid borrowing an AccountView.data slice whose lifetime we don't own. ISOLATION: this
-    /// is read-only — the executor commits ONLY into its private overlay, never back to accounts_db.
-    fn bankLoadAccountForBroadcast(ctx: ?*anyopaque, pubkey: [32]u8) ?@import("block_executor.zig").Account {
-        const bank: *Bank = @ptrCast(@alignCast(ctx.?));
-        const adb = bank.accounts_db orelse return null;
-        const pk = core.Pubkey{ .data = pubkey };
-        const acct = adb.getAccountInSlot(&pk, bank.slot, bank.ancestors()) orelse return null;
-        return .{ .lamports = acct.lamports, .owner = acct.owner.data, .executable = acct.executable, .data = &.{} };
+    const produce_admit = @import("produce_admit.zig");
+
+    /// SlotHashes sysvar pubkey. Local copy so the oracle's parent-SlotHashes precondition reads the
+    /// same blob replay's prologue does (see the fork-BLIND accounts_db fallback warning in
+    /// buildProduceOracle).
+    const ORACLE_SLOT_HASHES_PUBKEY: [32]u8 = .{
+        0x06, 0xa7, 0xd5, 0x17, 0x19, 0x2f, 0x0a, 0xaf,
+        0xc6, 0xf2, 0x65, 0xe3, 0xfb, 0x77, 0xcc, 0x7a,
+        0xda, 0x82, 0xc5, 0x29, 0xd0, 0xbe, 0x3b, 0x13,
+        0x6e, 0x2d, 0x00, 0x55, 0x20, 0x00, 0x00, 0x00,
+    };
+
+    /// Rent-exempt minimum for `data_len` bytes: (data_len + 128) * 3480 * 2, the canonical Solana
+    /// formula (runtime.RentParams.exemptMinBalance with default params; 0 -> 890_880).
+    ///
+    /// DELIBERATELY STRICTER THAN AGAVE, and that direction is the safe one. Agave's validate_fee_payer
+    /// uses min_balance = 0 for a plain (data-less) System account, so it would admit a payer we
+    /// reject. Requiring the payer to stay rent-exempt AFTER the fee is the same conservative floor
+    /// block_produce.RENT_EXEMPT_MIN_ZERO already applies on the static admit path. Stricter = fewer
+    /// packed txs = UNDER-admit = empty block, never dead. Do not "fix" this toward Agave's number
+    /// without re-deriving the whole safety argument.
+    fn oracleRentMinForLen(data_len: usize) u64 {
+        return (@as(u64, data_len) + 128) * 3480 * 2;
     }
 
-    /// InclusionGate.execute adapter: execute-and-commit one candidate against the per-block overlay and
-    /// return Agave was_processed() (the pack decision). `ctx` = *block_executor.BlockExecutor (per block).
-    fn bankExecuteForBroadcast(ctx: *anyopaque, tx_wire: []const u8) bool {
-        const block_executor = @import("block_executor.zig");
-        const ex: *block_executor.BlockExecutor = @ptrCast(@alignCast(ctx));
-        var ssig: [tx_ingest_mod.MAX_SIGNATURES][64]u8 = undefined;
-        var skey: [tx_ingest_mod.MAX_SIGNATURES][32]u8 = undefined;
-        const parsed = tx_ingest_mod.parse(tx_wire, &ssig, &skey) catch return false;
-        return ex.executeAndCommit(parsed, tx_wire).wasProcessed();
+    /// Per-reason attribution for every candidate the oracle did NOT pack.
+    ///
+    /// This is not decoration. "The oracle refused everything, correctly" and "the oracle is broken"
+    /// have the SAME observable — an empty block — and block_produce bumps no counter when the execute
+    /// callback returns false. Without these counters the natural response to a flat vote metric is to
+    /// start relaxing refusals, which is the path from a safe empty block to a fatal dead one.
+    const OracleTally = struct {
+        refuse_arm_off: u32 = 0,
+        refuse_versioned: u32 = 0,
+        refuse_program_filter: u32 = 0,
+        refuse_status_cache: u32 = 0,
+        refuse_empty_window: u32 = 0,
+        refuse_nonce_payer: u32 = 0,
+        /// program_id_index out of static-key range (an ALT-resolved program id — never canonical for
+        /// a native program). Refused rather than indexed: indexing past the array is a panic, and
+        /// asserts compile out in the ReleaseFast build we ship.
+        refuse_unresolved_program: u32 = 0,
+        reject_dup_key: u32 = 0,
+        reject_too_many_locks: u32 = 0,
+        reject_stale_blockhash: u32 = 0,
+        reject_already_processed: u32 = 0,
+        reject_payer: u32 = 0,
+        reject_program_acct: u32 = 0,
+        parse_fail: u32 = 0,
+        deadline_stop: u32 = 0,
+        /// Admitted, handed to the engine, and packed.
+        ///
+        /// There is no executed_ok/executed_failed split here ON PURPOSE: executeDagTx returns void and
+        /// absorbs per-instruction failures internally, so the distinction is not observable at this
+        /// seam without editing executeDagTx — which is exactly the bank_hash-critical edit this design
+        /// exists to avoid. An instruction-FAILED tx is still packed (Agave packs executed-and-failed
+        /// txs; included_exec_failed is TRUE under wasProcessed), so it counts here.
+        packed_ok: u32 = 0,
+
+        fn note(self: *OracleTally, reason: produce_admit.Reason) void {
+            switch (reason) {
+                .ok => {},
+                .arm_off => self.refuse_arm_off += 1,
+                .versioned => self.refuse_versioned += 1,
+                .dup_key => self.reject_dup_key += 1,
+                .too_many_locks => self.reject_too_many_locks += 1,
+                .empty_window => self.refuse_empty_window += 1,
+                .stale_blockhash => self.reject_stale_blockhash += 1,
+                .status_cache_off => self.refuse_status_cache += 1,
+                .already_processed => self.reject_already_processed += 1,
+                .payer_missing, .payer_owner, .payer_funds => self.reject_payer += 1,
+                .payer_nonce => self.refuse_nonce_payer += 1,
+                .program_missing, .program_not_executable, .program_owner => self.reject_program_acct += 1,
+                .arm_filter => self.refuse_program_filter += 1,
+            }
+        }
+    };
+
+    /// Per-produced-block oracle state. `scratch` is a child bank for the slot being produced; it is
+    /// NEVER inserted into self.banks (getOrCreateBank fast-paths on self.banks.get(slot), so an oracle
+    /// bank left in the map would BECOME the loopback replay's bank — silently making the oracle
+    /// authoritative over bank state and bank_hash, the exact authority inversion this design prevents).
+    const ProduceOracle = struct {
+        rs: *Self,
+        scratch: *Bank,
+        db: *AccountsDb,
+        arena: std.mem.Allocator,
+        arm: produce_admit.ArmState,
+        window: []const [32]u8,
+        recent_sigs: ?*const @import("block_produce").RecentSigCache,
+        producing_slot: u64,
+        deadline_ns: i128,
+        next_info_idx: usize = 0,
+        sealed: bool = false,
+        tally: OracleTally = .{},
+    };
+
+    /// produce_admit.Reader backing: the EXACT read replay does — the bank's newest write overlay
+    /// first, then the fork-aware accounts_db read at the scratch slot over the inherited ancestor
+    /// chain. Real owner, real data_len, real executable (block_executor's loader returned
+    /// `.data = &.{}` unconditionally, which is why arming its vote_ctx alone would NOT have fixed the
+    /// vote defect: voteforge would deserialize a 0-byte vote account and drop the vote).
+    fn oracleReadAccount(ctx: *anyopaque, key: [32]u8) produce_admit.AccountView {
+        const o: *ProduceOracle = @ptrCast(@alignCast(ctx));
+        var k = key;
+        if (o.scratch.overlayNewest(&k)) |w| {
+            return .{
+                .exists = true,
+                .lamports = w.lamports,
+                .owner = w.owner.data,
+                .executable = w.executable,
+                .data_len = w.data.len,
+            };
+        }
+        const pk = core.Pubkey{ .data = key };
+        const acct = o.db.getAccountInSlot(&pk, o.scratch.slot, o.scratch.ancestors()) orelse
+            return .{ .exists = false };
+        return .{
+            .exists = true,
+            .lamports = acct.lamports,
+            .owner = acct.owner.data,
+            .executable = acct.executable,
+            .data_len = acct.data.len,
+        };
+    }
+
+    /// Wire-only "is this a versioned (v0) transaction?" — the version bit sits immediately after the
+    /// signature array. Checked BEFORE parseTxFromBytes so a v0 tx never drives ALT resolution against
+    /// the scratch bank on a path nothing admitted will ever exercise. ANY parse trouble returns TRUE
+    /// (= unsupported = refuse), which is the under-admit direction.
+    fn txWireIsVersioned(tx_data: []const u8) bool {
+        var pos: usize = 0;
+        const num_sigs = readCompactU16(tx_data, &pos) catch return true;
+        if (num_sigs == 0 or num_sigs > 127) return true;
+        pos += @as(usize, num_sigs) * 64;
+        if (pos >= tx_data.len) return true;
+        return (tx_data[pos] & 0x80) != 0;
+    }
+
+    /// Build the oracle for `next_slot`, or return null to fall through to produceEmptySlotBytes —
+    /// which is BYTE-IDENTICAL to today's behaviour. Every refusal below is a deliberate empty block.
+    fn buildProduceOracle(
+        self: *Self,
+        next_slot: u64,
+        parent_slot: u64,
+        parent_bank: *Bank,
+        arena: std.mem.Allocator,
+        sc: ?*const @import("block_produce").RecentSigCache,
+        window: []const [32]u8,
+    ) ?ProduceOracle {
+        // LATCH 1 of 3 keeping this change inert on the canonical deploy: NAMED values only, default off.
+        const arm = produce_admit.ArmState.parse(std.posix.getenv("VEX_PRODUCE_EXEC"));
+        if (arm == .off) return null;
+
+        // Parent SlotHashes MUST come from the parent bank's pending_writes (fork-aware, per-bank),
+        // NEVER the accounts_db fallback: the fork-BLIND _getRooted -> unflushed_cache path in bank.zig
+        // can hand back a SIBLING FORK's SlotHashes, which is a recorded cause of sustained vote
+        // rejection and replay divergence.
+        const parent_sh = parent_bank.getSysvarFromPendingWrites(&ORACLE_SLOT_HASHES_PUBKEY);
+
+        const pre = produce_admit.SlotPreconditions{
+            // An unfrozen parent has bank_hash == Hash.default(), so the SlotHashes entry we prepend
+            // would carry a zero hash.
+            .parent_frozen = parent_bank.is_frozen,
+            .has_accounts_db = parent_bank.accounts_db != null,
+            .status_cache_armed = sc != null,
+            .blockhash_window_len = window.len,
+            .parent_slot_hashes_present = parent_sh != null,
+            // EPOCH-BOUNDARY REFUSAL. apply_feature_activations + processEpochBoundary are NOT
+            // replicated on the scratch bank. One empty block per epoch is free; a boundary divergence
+            // is a fork. Computed via epoch_schedule.getEpoch on BOTH slots — never `slot % 432000`,
+            // which does not reproduce a real epoch's first slot. This also keeps the oracle clear of
+            // the latent EPOCH_STAKES refresh cliff past which Clock resolves null.
+            .epoch_boundary = parent_bank.epoch_schedule.getEpoch(next_slot) !=
+                parent_bank.epoch_schedule.getEpoch(parent_slot),
+            // threadlocal write-sink redirect (bank.zig's worker_writes_override), genuinely in use
+            // whenever parallel execution is armed. An explicit REFUSE, not an assert — asserts compile
+            // out in ReleaseFast.
+            .worker_override_clear = bank_mod.worker_writes_override == null,
+            .live_features_present = self.live_feature_set != null,
+        };
+        if (!produce_admit.slotArmable(pre)) {
+            // Fires only when the operator ASKED for an arm and a precondition denied it — the case
+            // worth a line. Never fires on the default (.off) path, which returned above.
+            std.log.warn(
+                "[PRODUCE-ORACLE] slot={d} NOT ARMED (producing empty block) — parent_frozen={} accounts_db={} status_cache={} window_len={d} parent_slot_hashes={} epoch_boundary={} worker_override_clear={} live_features={}",
+                .{ next_slot, pre.parent_frozen, pre.has_accounts_db, pre.status_cache_armed, pre.blockhash_window_len, pre.parent_slot_hashes_present, pre.epoch_boundary, pre.worker_override_clear, pre.live_features_present },
+            );
+            return null;
+        }
+
+        const db = parent_bank.accounts_db.?;
+
+        // Scratch child bank for the slot we are packing. Same constructor and same parent-derived
+        // seeds replay uses.
+        const scratch = Bank.init(
+            self.allocator,
+            next_slot,
+            parent_slot,
+            parent_bank.bank_hash,
+            parent_bank.accounts_lthash,
+            parent_bank.poh_hash,
+        ) catch |e| {
+            std.log.warn("[PRODUCE-ORACLE] slot={d} scratch Bank.init failed: {any} — producing empty block", .{ next_slot, e });
+            return null;
+        };
+        // MUST precede inheritChildBankFields: it reads child.accounts_db for the rooted-slot bound.
+        scratch.accounts_db = db;
+        inheritChildBankFields(scratch, parent_bank);
+
+        // The IDENTICAL ancestor-chain call replay makes before its own prologue. setAncestors COPIES
+        // into the bank, so the local buffer need not outlive this function.
+        var ancestor_buf: [bank_mod.ANCESTORS_CAP]u64 = undefined;
+        scratch.setAncestors(db.unrootedAncestorChain(parent_slot, &ancestor_buf));
+
+        // PROLOGUE — replay's pre-execute sysvar updates, in replay's order, and then STOP.
+        //
+        // The omission of flushPendingWritesToDb is the ISOLATION INVARIANT, not a shortcut. Flushing
+        // would write THIS slot's sysvars into the LIVE accounts_db before the slot has been replayed.
+        // Omitting it is CORRECT because BankSysvarAdapter.lookupBytes walks bank.pending_writes
+        // newest-first BEFORE the db, and instruction_dispatch NEVER writes to AccountsDb itself — so
+        // every state effect of everything the oracle executes is confined to scratch.pending_writes
+        // and dies with the scratch bank.
+        scratch.updateClockSysvar() catch |e| {
+            std.log.warn("[PRODUCE-ORACLE] slot={d} updateClockSysvar failed: {any} — producing empty block", .{ next_slot, e });
+            scratch.deinit();
+            return null;
+        };
+        scratch.updateSlotHashesSysvar(parent_sh) catch |e| {
+            std.log.warn("[PRODUCE-ORACLE] slot={d} updateSlotHashesSysvar failed: {any} — producing empty block", .{ next_slot, e });
+            scratch.deinit();
+            return null;
+        };
+        scratch.updateLastRestartSlot() catch |e| {
+            std.log.warn("[PRODUCE-ORACLE] slot={d} updateLastRestartSlot failed: {any} — producing empty block", .{ next_slot, e });
+            scratch.deinit();
+            return null;
+        };
+
+        // Wall-clock budget measured from arm. On expiry the oracle SEALS (see produceOracleExecute):
+        // the block completes with the validly-admitted prefix. A produce that overruns the leader slot
+        // yields a MISSED slot, which is ranked strictly worse than an empty one.
+        const budget_ms: i128 = blk: {
+            const s = std.posix.getenv("VEX_PRODUCE_EXEC_BUDGET_MS") orelse break :blk 120;
+            break :blk std.fmt.parseInt(i128, s, 10) catch 120;
+        };
+
+        std.log.warn("[PRODUCE-ORACLE] slot={d} ARMED arm={s} budget_ms={d} window={d} ancestors={d}", .{ next_slot, @tagName(arm), budget_ms, window.len, scratch.ancestors().len });
+
+        return ProduceOracle{
+            .rs = self,
+            .scratch = scratch,
+            .db = db,
+            .arena = arena,
+            .arm = arm,
+            .window = window,
+            .recent_sigs = sc,
+            .producing_slot = next_slot,
+            .deadline_ns = std.time.nanoTimestamp() + budget_ms * std.time.ns_per_ms,
+        };
+    }
+
+    /// InclusionGate.execute. Signature unchanged — block_produce stays executor-agnostic and needs
+    /// ZERO code changes. Called AFTER the block-CU cost gate accepted the tx, so a dropped tx leaves
+    /// its cost charged: an over-count, which is safe, never a dead block.
+    fn produceOracleExecute(ctx: *anyopaque, tx_wire: []const u8) bool {
+        const o: *ProduceOracle = @ptrCast(@alignCast(ctx));
+        if (o.sealed) return false;
+        if (std.time.nanoTimestamp() > o.deadline_ns) {
+            o.sealed = true;
+            o.tally.deadline_stop += 1;
+            return false;
+        }
+
+        // Cheap wire check before the ALT-resolving parse (see txWireIsVersioned).
+        if (txWireIsVersioned(tx_wire)) {
+            o.tally.refuse_versioned += 1;
+            return false;
+        }
+
+        // The SAME fee unit replay will compute for these bytes (E2's single source). Never
+        // block_produce.txFee — that is the packer's CU/fee ESTIMATE, a different quantity.
+        const fu = parseFeeUnitFromWire(tx_wire);
+        if (fu.abort) {
+            o.tally.parse_fail += 1;
+            return false;
+        }
+
+        // parseTxFromBytes (not tx_ingest.parse): it takes db+bank for v0/ALT resolution, and it is the
+        // parse replay itself uses. File-private, but this seam is in the same file.
+        const ptx = parseTxFromBytes(tx_wire, o.arena, o.db, o.scratch) catch {
+            o.tally.parse_fail += 1;
+            return false;
+        };
+
+        // Resolve one program id per instruction. An out-of-range index is REFUSED, never indexed.
+        const n_ix: usize = ptx.num_instructions;
+        const prog_ids = o.arena.alloc([32]u8, n_ix) catch {
+            o.tally.parse_fail += 1;
+            return false;
+        };
+        for (ptx.instructions[0..n_ix], 0..) |ix, i| {
+            if (ix.program_id_index >= ptx.static_key_count) {
+                o.tally.refuse_unresolved_program += 1;
+                return false;
+            }
+            prog_ids[i] = ptx.account_keys[ix.program_id_index];
+        }
+
+        var already_processed = false;
+        if (o.recent_sigs) |rsc| {
+            if (ptx.first_signature) |sig| already_processed = rsc.isRecent(sig, o.producing_slot);
+        }
+
+        const view = produce_admit.TxView{
+            .account_keys = ptx.account_keys,
+            .num_required_sigs = ptx.num_required_sigs,
+            .num_readonly_signed = ptx.num_readonly_signed,
+            .num_readonly_unsigned = ptx.num_readonly_unsigned,
+            .is_versioned = false, // proven above
+            .recent_blockhash = ptx.blockhash.*,
+            .program_ids = prog_ids,
+            .fee_payer = ptx.fee_payer,
+        };
+        const env = produce_admit.AdmitEnv{
+            .arm = o.arm,
+            .blockhash_window = o.window,
+            .status_cache_armed = o.recent_sigs != null,
+            .already_processed = already_processed,
+            .total_fee = fu.base_fee +| fu.priority_fee,
+            .rent_min_for_len = oracleRentMinForLen,
+        };
+
+        // ── THE ADMIT BIT. Decided HERE, before the engine runs, and never derived from it. ──
+        const decision = produce_admit.checkTxDetailed(view, .{ .ctx = o, .readFn = oracleReadAccount }, env);
+        if (decision.verdict != .admit) {
+            o.tally.note(decision.reason);
+            return false;
+        }
+
+        // Every field explicit — DagTxInfo's defaults must not silently supply consensus inputs.
+        var info = DagTxInfo{
+            .tx_data = tx_wire,
+            .num_sigs = fu.sig_count,
+            .parsed = null,
+            .eligible = false, // serial/ineligible path: the oracle never runs the wave pool
+            .fee_payer = fu.fee_payer,
+            .base_fee = fu.base_fee,
+            .priority_fee = fu.priority_fee,
+            .fee_sig_count = fu.sig_count,
+            .has_fee = fu.has_fee,
+        };
+
+        // The golden-proven router. It already does tx_mark / verifyTxPrecompiles /
+        // loadedAccountsDataSizeCheck / rentCheckSnapshot / the real CU meter seeded from
+        // compute_budget.executionLimit / per-tx rollbackFailedTxSink — we inherit all of it. The real
+        // CU meter also RETIRES vote_arming.zig's SIMD-0387 refusal by construction, since that
+        // refusal existed only because block_executor threaded pop_cu_meter=null.
+        o.rs.executeDagTx(o.scratch, o.db, o.arena, o.scratch.ancestors(), &ptx, o.next_info_idx, &info);
+        o.next_info_idx += 1;
+        o.tally.packed_ok += 1;
+
+        // TRUE even if an instruction failed. Agave packs executed-and-failed txs (included_exec_failed
+        // is TRUE under wasProcessed). Returning false there would be under-admit: safe, but blocks stay
+        // empty and the metric never moves, which reads as "the engine doesn't work".
+        return true;
     }
 
     /// leader_mode: produce an EMPTY (tick-only) block for our leader slot `next_slot`, broadcast it as
@@ -2097,64 +2473,94 @@ pub const ReplayStage = struct {
             bs.stats.txs_received.load(.monotonic) + bs.stats.votes_received.load(.monotonic),
             bs.stats.txs_packed_into_slot.load(.monotonic),
         } else null;
-        const bytes = if (pack_tx_bearing) blk: {
-            // Loopback-only tx-bearing path: pack drained txs through the SEQUENTIAL pre-filter
-            // (sigverify + blockhash-age + fee-payer-can-pay using a RUNNING per-block balance, so the
-            // sequential fee-stacking drain is caught) + in-block dedup. The block only loops back to
-            // OUR bank (broadcast is off here), so an imperfect pre-filter can at worst waste our own
-            // loopback slot — never a cluster-visible dead block. seq_state holds the running balances;
-            // freed when this block's production completes.
-            var seq_state = block_produce.SeqGateState{};
-            defer seq_state.deinit(self.allocator);
-            const sc: ?*const block_produce.RecentSigCache = if (self.statusCacheActive()) &self.recent_sig_cache else null;
-            var gctx = ProduceGateCtx{ .bank = parent_bank, .state = &seq_state, .allocator = self.allocator, .recent_sigs = sc, .producing_slot = next_slot };
-            // PASS 3 durable executor: a per-block execute-once-and-record overlay over parent_bank's
-            // accounts_db (load-on-demand, read-only → isolation). When `.execute` is set, produceSlotBytes
-            // packs a tx IFF was_processed after REAL execution (bypassing the static whitelist/admit),
-            // closing the drain-chain + third-party-mover dead-block residuals. `admit` is retained as the
-            // (unused-while-execute≠null) fallback shape. bh_buf/block_exec live through produceSlotBytes
-            // below; block_exec.deinit frees the overlay when this block's production completes.
-            const block_executor = @import("block_executor.zig");
-            var block_exec = block_executor.BlockExecutor.init(self.allocator);
-            defer block_exec.deinit();
-            block_exec.load_ctx = parent_bank;
-            block_exec.load_fn = bankLoadAccountForBroadcast;
-            block_exec.recent_sigs = sc;
-            block_exec.producing_slot = next_slot;
-            // Arm blockhash-age validation from the producing bank's recent (≤150) blockhashes (a
-            // stale-blockhash tx the cluster rejects would otherwise be packed → dead block).
-            var bh_buf: [150][32]u8 = undefined;
-            const bh_entries = parent_bank.recent_blockhashes.constSlice();
-            for (bh_entries, 0..) |e, i| bh_buf[i] = e.blockhash.data;
-            block_exec.known_blockhashes = bh_buf[0..bh_entries.len];
-            const gate = block_produce.InclusionGate{
-                .ctx = &gctx,
-                .admit = bankAdmitTxForBroadcast,
-                .exec_ctx = &block_exec,
-                .execute = bankExecuteForBroadcast,
-            };
-            break :blk block_produce.produceSlotBytes(
+        // Per-reason attribution for everything the oracle did not pack. LOAD-BEARING: block_produce
+        // bumps no counter when the execute callback returns false, so without this an empty block
+        // reads identically whether the oracle refused correctly or is broken — two states debugged in
+        // opposite directions. Read the [LEADER-INGEST-ORACLE] line FIRST when votes do not move.
+        var oracle_tally: OracleTally = .{};
+        var oracle_armed = false;
+
+        // ── Block-lifetime produce-oracle scaffolding ────────────────────────────────────────────
+        // ONE arena for the WHOLE produced block. NEVER reset per transaction: AccountWrite list
+        // storage uses bank.allocator while the executors allocate their `.data` payloads from THIS
+        // arena, so a per-tx reset (or tearing the arena down before the scratch bank) is a
+        // use-after-free of a class this codebase has already been bitten by once.
+        //
+        // TEARDOWN ORDER IS LOAD-BEARING and is enforced by defer LIFO: this defer is registered
+        // FIRST, so it runs LAST — after the scratch bank's own defer below. scratch.deinit() must
+        // strictly precede produce_arena.deinit().
+        var produce_arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer produce_arena.deinit();
+
+        // The producing bank's recent (<=150) blockhash window. Lives at function scope because the
+        // oracle borrows it for the whole pack. An EMPTY window makes the oracle refuse to arm
+        // (fail-CLOSED) rather than silently skip the age check, which is what the old executor did.
+        var bh_buf: [150][32]u8 = undefined;
+        const bh_entries = parent_bank.recent_blockhashes.constSlice();
+        for (bh_entries, 0..) |e, i| bh_buf[i] = e.blockhash.data;
+        const bh_window = bh_buf[0..bh_entries.len];
+
+        const sc: ?*const block_produce.RecentSigCache = if (self.statusCacheActive()) &self.recent_sig_cache else null;
+
+        const bytes = produce_blk: {
+            if (pack_tx_bearing) {
+                // LATCHES 1+3: buildProduceOracle returns null when VEX_PRODUCE_EXEC is `off` (the
+                // default) or any slot precondition fails — including the status cache being dormant.
+                // A null falls straight through to produceEmptySlotBytes.
+                if (self.buildProduceOracle(next_slot, parent_slot, parent_bank, produce_arena.allocator(), sc, bh_window)) |built| {
+                    var oracle = built;
+                    // Registered AFTER produce_arena's defer ⇒ runs BEFORE it. See above.
+                    defer oracle.scratch.deinit();
+                    oracle_armed = true;
+
+                    // `admit` stays wired to the static pre-filter as the non-optional field shape.
+                    // It is UNUSED while `execute` is non-null (produceSlotBytes skips it), and that
+                    // is deliberate: SeqGateState carries a SHADOW running fee-payer balance while the
+                    // scratch bank carries the REAL post-execution one. Two sources of truth for payer
+                    // lamports is exactly the drift class being closed here, so the scratch bank is the
+                    // single source and block_produce gets ZERO code changes. The AUTHENTICITY half of
+                    // `admit` is NOT skipped: produceSlotBytes sigverifies every candidate on the
+                    // `execute` path at the seam that performs the bypass.
+                    var seq_state = block_produce.SeqGateState{};
+                    defer seq_state.deinit(self.allocator);
+                    var gctx = ProduceGateCtx{ .bank = parent_bank, .state = &seq_state, .allocator = self.allocator, .recent_sigs = sc, .producing_slot = next_slot };
+                    const gate = block_produce.InclusionGate{
+                        .ctx = &gctx,
+                        .admit = bankAdmitTxForBroadcast,
+                        .exec_ctx = &oracle,
+                        .execute = produceOracleExecute,
+                    };
+                    const produced = block_produce.produceSlotBytes(
+                        self.allocator,
+                        seed,
+                        block_produce.TESTNET_HASHES_PER_TICK,
+                        block_produce.TICKS_PER_SLOT,
+                        self.banking_stage.?,
+                        null,
+                        gate,
+                        block_produce.MAX_BLOCK_UNITS, // SIMD-0256 60M block-CU ceiling (cost-model pack stop)
+                    ) catch |e| {
+                        // Capture whatever the oracle decided before the failure so a partial-batch
+                        // failure is not silently invisible.
+                        oracle_tally = oracle.tally;
+                        std.log.warn("[LEADER-PRODUCE] slot={d} produceSlotBytes failed: {any}", .{ next_slot, e });
+                        return;
+                    };
+                    // Plain value struct — safe to copy out before the defers unwind.
+                    oracle_tally = oracle.tally;
+                    break :produce_blk produced;
+                }
+            }
+            break :produce_blk block_produce.produceEmptySlotBytes(
                 self.allocator,
                 seed,
                 block_produce.TESTNET_HASHES_PER_TICK,
                 block_produce.TICKS_PER_SLOT,
-                self.banking_stage.?,
                 null,
-                gate,
-                block_produce.MAX_BLOCK_UNITS, // SIMD-0256 60M block-CU ceiling (cost-model pack stop)
             ) catch |e| {
-                std.log.warn("[LEADER-PRODUCE] slot={d} produceSlotBytes failed: {any}", .{ next_slot, e });
+                std.log.warn("[LEADER-PRODUCE] slot={d} produce failed: {any}", .{ next_slot, e });
                 return;
             };
-        } else block_produce.produceEmptySlotBytes(
-            self.allocator,
-            seed,
-            block_produce.TESTNET_HASHES_PER_TICK,
-            block_produce.TICKS_PER_SLOT,
-            null,
-        ) catch |e| {
-            std.log.warn("[LEADER-PRODUCE] slot={d} produce failed: {any}", .{ next_slot, e });
-            return;
         };
         defer self.allocator.free(bytes);
 
@@ -2170,6 +2576,43 @@ pub const ReplayStage = struct {
                 const packed_count = bs.stats.txs_packed_into_slot.load(.monotonic) -% before[2];
                 std.log.warn("[INGEST-SLOT] slot={d} txs_received={d} txs_queued={d} txs_packed_into_slot={d}\n", .{ next_slot, rx, queued, packed_count });
             }
+        }
+
+        // [LEADER-INGEST-ORACLE] — the produce oracle's decisions, split by NAMED reason.
+        //
+        // READ THIS LINE FIRST when a leader slot packs nothing. `armed=false` means the oracle never
+        // engaged at all (VEX_PRODUCE_EXEC off, or a slot precondition denied it — the [PRODUCE-ORACLE]
+        // line above says which). `armed=true` with a nonzero refusal reason means it engaged and
+        // declined, and the reason NAMES why. Never relax a refusal to make a metric move: every
+        // refusal yields an EMPTY block, which is safe and self-healing, whereas the over-admit
+        // direction marks the slot DEAD on the cluster the first time it happens.
+        //
+        // Emitted as its own line, with its own tag, so no existing line-count or field-position
+        // consumer of another tag is affected; the slot number correlates them.
+        if (pack_tx_bearing) {
+            std.log.warn(
+                "[LEADER-INGEST-ORACLE] slot={d} armed={} refuse{{arm_off={d} versioned={d} prog_filter={d} status_cache={d} empty_window={d} nonce_payer={d} unresolved_prog={d}}} reject{{dup_key={d} too_many_locks={d} stale_bh={d} already={d} payer={d} prog_acct={d}}} parse_fail={d} deadline_stop={d} packed={d}",
+                .{
+                    next_slot,
+                    oracle_armed,
+                    oracle_tally.refuse_arm_off,
+                    oracle_tally.refuse_versioned,
+                    oracle_tally.refuse_program_filter,
+                    oracle_tally.refuse_status_cache,
+                    oracle_tally.refuse_empty_window,
+                    oracle_tally.refuse_nonce_payer,
+                    oracle_tally.refuse_unresolved_program,
+                    oracle_tally.reject_dup_key,
+                    oracle_tally.reject_too_many_locks,
+                    oracle_tally.reject_stale_blockhash,
+                    oracle_tally.reject_already_processed,
+                    oracle_tally.reject_payer,
+                    oracle_tally.reject_program_acct,
+                    oracle_tally.parse_fail,
+                    oracle_tally.deadline_stop,
+                    oracle_tally.packed_ok,
+                },
+            );
         }
 
         // Mark self-produced BEFORE the loopback so the freeze handler skips self-voting it.
@@ -8120,6 +8563,110 @@ pub const ReplayStage = struct {
         return bank;
     }
 
+    /// Inherit into a freshly-created CHILD bank every field that must persist across slots
+    /// from its PARENT. Extracted verbatim from getOrCreateBank so there is exactly ONE definition
+    /// of "what a child bank inherits". The produce oracle builds a scratch child bank for the slot
+    /// it is packing and MUST inherit the same set; a field added here for replay but missed there
+    /// would make the oracle judge against state the loopback replay does not share — the same shape
+    /// as the defect the oracle closes.
+    ///
+    /// PURE MOVE: the body is byte-identical to the extracted block except `self.accounts_db` ->
+    /// `bank.accounts_db` in the proper-ancestors rooted-slot read. Those are the same pointer:
+    /// getOrCreateBank assigns `bank.accounts_db = self.accounts_db` immediately before this ran,
+    /// and the oracle assigns it before calling. Callers MUST set child.accounts_db first.
+    fn inheritChildBankFields(child: *Bank, parent: *Bank) void {
+        // Local aliases keep the moved body byte-identical to its getOrCreateBank original.
+        const bank = child;
+        const ancestor = parent;
+        bank.capitalization = ancestor.capitalization;
+        bank.block_height = ancestor.block_height + 1;
+        bank.epoch_schedule = ancestor.epoch_schedule;
+
+        // Partitioned reward state (spans multiple slots during distribution window)
+        bank.epoch_rewards_active = ancestor.epoch_rewards_active;
+        bank.stake_reward_partitions = ancestor.stake_reward_partitions;
+        // Note: child does NOT own the partitions — only the epoch-boundary bank owns them.
+        bank.owns_stake_reward_partitions = false;
+        bank.distribution_starting_block_height = ancestor.distribution_starting_block_height;
+        bank.num_reward_partitions = ancestor.num_reward_partitions;
+
+        // r38 fix (helm-fresh 2026-04-27): inherit RecentBlockhashes queue. Pre-r38 the
+        // queue was reset to .{} empty per Bank.init (bank.zig:423), so each
+        // updateRecentBlockhashes call pushed 1 entry → count=1 forever instead of the
+        // canonical rolling 150-entry window. This caused ~6008 bytes/slot of RBH sysvar
+        // byte-divergence vs Agave (prior forensics narrowed: coverage perfect +
+        // algorithm parity → carrier had to be sysvar bytes; r37-diag probed all 5
+        // per-slot sysvars and confirmed RBH was the dominant carrier). RBH queue
+        // is plain-old-data (BoundedArray of [150]BlockhashEntry + len), so a value-copy
+        // is safe — no allocation tracking. After ~150 slots of catchup advance, Vexor's
+        // queue self-fills to count=150 from this inheritance.
+        bank.recent_blockhashes = ancestor.recent_blockhashes;
+        // CONSENSUS-CRITICAL (epoch-979 tip carrier): derive THIS slot's fee-rate
+        // governor from the PARENT's governor + the PARENT's accumulated
+        // signature_count. @prov:replay.fee-rate-governor-derive The derived
+        // `fee_rate_governor.lamports_per_signature` is what gets written into
+        // the RecentBlockhashes sysvar at freeze (bank.zig updateRecentBlockhashes),
+        // replacing the old hardcoded 5000 that diverged at the slot-848 spike.
+        // Carried/derived here — adjacent to the recent_blockhashes inheritance —
+        // because the FULL parent bank (needed for ancestor.signature_count) is
+        // in scope only at this site; acquireBank receives scalars only.
+        bank.fee_rate_governor = @import("blockhash_queue.zig").FeeRateGovernor.newDerived(
+            ancestor.fee_rate_governor,
+            ancestor.signature_count,
+        );
+        bank.total_stake_rewards = ancestor.total_stake_rewards;
+        bank.distributed_rewards = ancestor.distributed_rewards;
+        bank.vote_rewards_distributed = ancestor.vote_rewards_distributed;
+        bank.epoch_reward_parent_blockhash = ancestor.epoch_reward_parent_blockhash;
+        bank.epoch_reward_total_points = ancestor.epoch_reward_total_points;
+        // RESIDUAL FIX (2026-07-02, epoch-983 gate 0/15 @419132257): this field
+        // was the ONLY sysvar input missing from this inherit list. Every child
+        // bank's updateEpochRewardsDistributed/deactivateEpochRewardsSysvar
+        // rebuilt the EpochRewards sysvar with total_rewards=0 (field default)
+        // → one 8-byte diff vs cluster in EVERY distribution-window slot →
+        // wrong lt_hash → wrong bank_hash. Byte-proven: lt(sysvar bytes with
+        // total_rewards=0 + the CORRECT distributed accumulation) == the
+        // recorded op=1 lt-contrib at 419132257 EXACTLY.
+        bank.epoch_reward_total_rewards = ancestor.epoch_reward_total_rewards;
+
+        // CARRIER #7 FIX (2026-06-23): build the COMPLETE inherited proper-ancestor
+        // set (Agave bank.rs:1420-1425 parity: child.ancestors = {parent.slot} ∪
+        // parent.proper_ancestors, filtered > rooted_slot). The tower lockout check
+        // consumes this complete set instead of the gap-fragile
+        // `ancestorChainComplete` walk, which truncated at a live sentinel bank
+        // (parent_slot=null) → false cross-fork lockout → delinquency. `ancestor`
+        // here is ALWAYS a frozen real bank or the root bank (the .defer_unconnected
+        // arm returned error.UnconnectedSlot above), so the set is built only from
+        // verified true ancestors — it can never invent a false ancestor (carrier-7
+        // safety preserved by construction). On overflow (>512 unrooted depth, deep
+        // catch-up where we don't vote) the vote site falls back to the legacy walk.
+        {
+            const proot: u64 = if (bank.accounts_db) |db| db.rooted_slot else 0;
+            const cap: u16 = bank.proper_ancestors.len;
+            var pa_n: u16 = 0;
+            var pa_overflow: bool = ancestor.proper_ancestors_overflow;
+            if (ancestor.slot > proot) {
+                if (pa_n < cap) {
+                    bank.proper_ancestors[pa_n] = ancestor.slot;
+                    pa_n += 1;
+                } else pa_overflow = true;
+            }
+            for (ancestor.proper_ancestors[0..ancestor.proper_ancestors_len]) |a| {
+                if (a > proot) {
+                    if (pa_n < cap) {
+                        bank.proper_ancestors[pa_n] = a;
+                        pa_n += 1;
+                    } else {
+                        pa_overflow = true;
+                        break;
+                    }
+                }
+            }
+            bank.proper_ancestors_len = pa_n;
+            bank.proper_ancestors_overflow = pa_overflow;
+        }
+    }
+
     fn getOrCreateBank(self: *Self, slot: Slot) !*Bank {
         const goc_t0 = std.time.milliTimestamp();
         // Fast path under shared lock
@@ -8310,93 +8857,7 @@ pub const ReplayStage = struct {
         // BUG-5 fix: inherit all fields from ancestor that must persist across slots.
         // Without this, non-root banks have capitalization=0 and epoch_rewards_active=false,
         // causing near-zero inflation rewards and distributePartitionedRewards() no-ops.
-        bank.capitalization = ancestor.capitalization;
-        bank.block_height = ancestor.block_height + 1;
-        bank.epoch_schedule = ancestor.epoch_schedule;
-
-        // Partitioned reward state (spans multiple slots during distribution window)
-        bank.epoch_rewards_active = ancestor.epoch_rewards_active;
-        bank.stake_reward_partitions = ancestor.stake_reward_partitions;
-        // Note: child does NOT own the partitions — only the epoch-boundary bank owns them.
-        bank.owns_stake_reward_partitions = false;
-        bank.distribution_starting_block_height = ancestor.distribution_starting_block_height;
-        bank.num_reward_partitions = ancestor.num_reward_partitions;
-
-        // r38 fix (helm-fresh 2026-04-27): inherit RecentBlockhashes queue. Pre-r38 the
-        // queue was reset to .{} empty per Bank.init (bank.zig:423), so each
-        // updateRecentBlockhashes call pushed 1 entry → count=1 forever instead of the
-        // canonical rolling 150-entry window. This caused ~6008 bytes/slot of RBH sysvar
-        // byte-divergence vs Agave (prior forensics narrowed: coverage perfect +
-        // algorithm parity → carrier had to be sysvar bytes; r37-diag probed all 5
-        // per-slot sysvars and confirmed RBH was the dominant carrier). RBH queue
-        // is plain-old-data (BoundedArray of [150]BlockhashEntry + len), so a value-copy
-        // is safe — no allocation tracking. After ~150 slots of catchup advance, Vexor's
-        // queue self-fills to count=150 from this inheritance.
-        bank.recent_blockhashes = ancestor.recent_blockhashes;
-        // CONSENSUS-CRITICAL (epoch-979 tip carrier): derive THIS slot's fee-rate
-        // governor from the PARENT's governor + the PARENT's accumulated
-        // signature_count. @prov:replay.fee-rate-governor-derive The derived
-        // `fee_rate_governor.lamports_per_signature` is what gets written into
-        // the RecentBlockhashes sysvar at freeze (bank.zig updateRecentBlockhashes),
-        // replacing the old hardcoded 5000 that diverged at the slot-848 spike.
-        // Carried/derived here — adjacent to the recent_blockhashes inheritance —
-        // because the FULL parent bank (needed for ancestor.signature_count) is
-        // in scope only at this site; acquireBank receives scalars only.
-        bank.fee_rate_governor = @import("blockhash_queue.zig").FeeRateGovernor.newDerived(
-            ancestor.fee_rate_governor,
-            ancestor.signature_count,
-        );
-        bank.total_stake_rewards = ancestor.total_stake_rewards;
-        bank.distributed_rewards = ancestor.distributed_rewards;
-        bank.vote_rewards_distributed = ancestor.vote_rewards_distributed;
-        bank.epoch_reward_parent_blockhash = ancestor.epoch_reward_parent_blockhash;
-        bank.epoch_reward_total_points = ancestor.epoch_reward_total_points;
-        // RESIDUAL FIX (2026-07-02, epoch-983 gate 0/15 @419132257): this field
-        // was the ONLY sysvar input missing from this inherit list. Every child
-        // bank's updateEpochRewardsDistributed/deactivateEpochRewardsSysvar
-        // rebuilt the EpochRewards sysvar with total_rewards=0 (field default)
-        // → one 8-byte diff vs cluster in EVERY distribution-window slot →
-        // wrong lt_hash → wrong bank_hash. Byte-proven: lt(sysvar bytes with
-        // total_rewards=0 + the CORRECT distributed accumulation) == the
-        // recorded op=1 lt-contrib at 419132257 EXACTLY.
-        bank.epoch_reward_total_rewards = ancestor.epoch_reward_total_rewards;
-
-        // CARRIER #7 FIX (2026-06-23): build the COMPLETE inherited proper-ancestor
-        // set (Agave bank.rs:1420-1425 parity: child.ancestors = {parent.slot} ∪
-        // parent.proper_ancestors, filtered > rooted_slot). The tower lockout check
-        // consumes this complete set instead of the gap-fragile
-        // `ancestorChainComplete` walk, which truncated at a live sentinel bank
-        // (parent_slot=null) → false cross-fork lockout → delinquency. `ancestor`
-        // here is ALWAYS a frozen real bank or the root bank (the .defer_unconnected
-        // arm returned error.UnconnectedSlot above), so the set is built only from
-        // verified true ancestors — it can never invent a false ancestor (carrier-7
-        // safety preserved by construction). On overflow (>512 unrooted depth, deep
-        // catch-up where we don't vote) the vote site falls back to the legacy walk.
-        {
-            const proot: u64 = if (self.accounts_db) |db| db.rooted_slot else 0;
-            const cap: u16 = bank.proper_ancestors.len;
-            var pa_n: u16 = 0;
-            var pa_overflow: bool = ancestor.proper_ancestors_overflow;
-            if (ancestor.slot > proot) {
-                if (pa_n < cap) {
-                    bank.proper_ancestors[pa_n] = ancestor.slot;
-                    pa_n += 1;
-                } else pa_overflow = true;
-            }
-            for (ancestor.proper_ancestors[0..ancestor.proper_ancestors_len]) |a| {
-                if (a > proot) {
-                    if (pa_n < cap) {
-                        bank.proper_ancestors[pa_n] = a;
-                        pa_n += 1;
-                    } else {
-                        pa_overflow = true;
-                        break;
-                    }
-                }
-            }
-            bank.proper_ancestors_len = pa_n;
-            bank.proper_ancestors_overflow = pa_overflow;
-        }
+        inheritChildBankFields(bank, ancestor);
 
         const goc_t6 = std.time.milliTimestamp();
         self.banks_lock.lock();
@@ -9806,72 +10267,21 @@ pub const ReplayStage = struct {
                         // are DEFERRED to executeDagTx (the DAG-ordered execution unit) so each
                         // tx's fee sees the running balance of every earlier tx in block order;
                         // here we only PARSE the wire and STASH the result into DagTxInfo.
-                        var sig_count: u16 = 1;
-                        var fee_has_dag = false;
-                        var fee_payer_dag: [32]u8 = [_]u8{0} ** 32;
-                        var fee_base_dag: u64 = 0;
-                        var fee_prio_dag: u64 = 0;
-                        if (tx_data_slice.len > 100) {
-                            var fee_pos_dag: usize = 0;
-                            // PR-5al (2026-05-20): @prov:replay.tx-processed-signature-count
-                            // Bug pre-PR-5al: counted on every header parse → over-count by K (failed
-                            // sanitization/lock/fee-payer txs) → bank_hash SHA256 input diverges
-                            // from cluster → cluster rejects votes with Custom=2 SlotHashMismatch.
-                            // Fix: defer the increment until INSIDE the fee_payer-debit guard.
-                            const num_sigs_dag = readCompactU16(tx_data_slice, &fee_pos_dag) catch {
-                                dag_tx_infos[tx_i] = .{ .tx_data = tx_data_slice, .num_sigs = 1, .parsed = null };
-                                dag_parsed += 1;
-                                continue;
-                            };
-                            sig_count = num_sigs_dag;
-                            if (sig_count == 0) sig_count = 1;
-                            if (num_sigs_dag == 0) {
-                                dag_tx_infos[tx_i] = .{ .tx_data = tx_data_slice, .num_sigs = 1, .parsed = null };
-                                dag_parsed += 1;
-                                continue;
-                            }
-                            fee_pos_dag += @as(usize, num_sigs_dag) * 64;
-                            if (fee_pos_dag < tx_data_slice.len) {
-                                if (tx_data_slice[fee_pos_dag] & 0x80 != 0) fee_pos_dag += 1;
-                                fee_pos_dag += 3;
-                                const num_keys_dag = readCompactU16(tx_data_slice, &fee_pos_dag) catch 0;
-                                if (num_keys_dag > 0 and fee_pos_dag + 32 <= tx_data_slice.len) {
-                                    var fee_payer_key_dag: [32]u8 = undefined;
-                                    @memcpy(&fee_payer_key_dag, tx_data_slice[fee_pos_dag..][0..32]);
-
-                                    // r75-bug-class-d11 (2026-05-07): include precompile sigs in
-                                    // base_fee. @prov:replay.precompile-sig-base-fee
-                                    const ix_start_dag = fee_pos_dag + @as(usize, num_keys_dag) * 32 + 32;
-                                    const precompile_sigs_dag = compute_budget.parsePrecompileSigCountFromWire(
-                                        tx_data_slice,
-                                        fee_pos_dag,
-                                        num_keys_dag,
-                                        ix_start_dag,
-                                    );
-                                    const total_sigs_dag: u64 = @as(u64, num_sigs_dag) + @as(u64, precompile_sigs_dag);
-                                    const base_fee_dag: u64 = 5000 * total_sigs_dag;
-
-                                    // r40.6: parse compute_budget instructions for priority fee.
-                                    const priority_fee_dag = compute_budget.parsePriorityFeeFromWire(
-                                        tx_data_slice,
-                                        fee_pos_dag,
-                                        num_keys_dag,
-                                        ix_start_dag,
-                                    );
-
-                                    // Stage 1 fees-in-execution (2026-07-09): STASH the parsed fee
-                                    // unit into DagTxInfo instead of debiting here. executeDagTx's
-                                    // fee unit (before instruction dispatch) does the payer read +
-                                    // sufficiency guard + debit + the three counter increments
-                                    // (execution_fees unconditionally, signature_count/priority_fees
-                                    // under the guard) in DAG order. @prov:replay.fee-unit-sequential-order
-                                    fee_payer_dag = fee_payer_key_dag;
-                                    fee_base_dag = base_fee_dag;
-                                    fee_prio_dag = priority_fee_dag;
-                                    fee_has_dag = true;
-                                }
-                            }
+                        // Stage 1 fees-in-execution: the wire-only fee parse, extracted verbatim to
+                        // parseFeeUnitFromWire so the produce oracle emits the IDENTICAL fee unit
+                        // replay does. `abort` reproduces this block's two original early `continue`
+                        // paths, which skip DAG registration entirely (not a fall-through).
+                        const fee_unit_dag = parseFeeUnitFromWire(tx_data_slice);
+                        if (fee_unit_dag.abort) {
+                            dag_tx_infos[tx_i] = .{ .tx_data = tx_data_slice, .num_sigs = 1, .parsed = null };
+                            dag_parsed += 1;
+                            continue;
                         }
+                        const sig_count: u16 = fee_unit_dag.sig_count;
+                        const fee_has_dag: bool = fee_unit_dag.has_fee;
+                        const fee_payer_dag: [32]u8 = fee_unit_dag.fee_payer;
+                        const fee_base_dag: u64 = fee_unit_dag.base_fee;
+                        const fee_prio_dag: u64 = fee_unit_dag.priority_fee;
                         // PR-5al (2026-05-20): tx_data_slice.len <= 100 = too-small tx,
                         // not a real Solana transaction. Don't count it. @prov:replay.tx-processed-signature-count
 
@@ -12300,6 +12710,86 @@ pub const ParsedTx = struct {
     }
 };
 
+/// The wire-only fee unit for one transaction: exactly what DAG Phase 1 parses and stashes into
+/// DagTxInfo for executeDagTx's fee unit to apply in DAG order. PURE WIRE — no bank, no accounts_db,
+/// no allocation — so the produce oracle can compute the SAME numbers the replay of the very same
+/// bytes will compute. Reusing this (never block_produce.txFee, which is the packer's CU/fee ESTIMATE
+/// and a different quantity) is what keeps oracle and replay fee arithmetic identical by construction.
+const FeeUnit = struct {
+    /// header signature count, floored to 1 (signature_count semantics)
+    sig_count: u16 = 1,
+    has_fee: bool = false,
+    fee_payer: [32]u8 = [_]u8{0} ** 32,
+    /// 5000 * (header sigs + precompile sigs)
+    base_fee: u64 = 0,
+    priority_fee: u64 = 0,
+    /// true ⇒ the wire was unparseable at the signature-count step (compact-u16 failure, or a
+    /// declared count of zero). DAG Phase 1 answers this by writing the short-tx DagTxInfo and
+    /// `continue`-ing, which SKIPS DAG registration for that tx entirely — a different outcome from
+    /// the len<=100 fall-through (abort=false, sig_count=1, has_fee=false), which still registers.
+    /// Preserved as a flag so the extraction is byte-faithful to both original paths.
+    abort: bool = false,
+};
+
+/// Extracted verbatim from DAG Phase 1 (2026-07-27, produce-oracle work). Byte-faithful: the
+/// `if (sig_count == 0) sig_count = 1;` before the `num_sigs_dag == 0` abort is preserved even though
+/// its effect is unobservable on that path — purity means identical, not tidier.
+fn parseFeeUnitFromWire(tx_data: []const u8) FeeUnit {
+    var fu = FeeUnit{};
+    if (tx_data.len > 100) {
+        var fee_pos_dag: usize = 0;
+        // PR-5al (2026-05-20): @prov:replay.tx-processed-signature-count
+        // Bug pre-PR-5al: counted on every header parse → over-count by K (failed
+        // sanitization/lock/fee-payer txs) → bank_hash SHA256 input diverges
+        // from cluster → cluster rejects votes with Custom=2 SlotHashMismatch.
+        // Fix: defer the increment until INSIDE the fee_payer-debit guard.
+        const num_sigs_dag = readCompactU16(tx_data, &fee_pos_dag) catch {
+            return .{ .abort = true };
+        };
+        fu.sig_count = num_sigs_dag;
+        if (fu.sig_count == 0) fu.sig_count = 1;
+        if (num_sigs_dag == 0) {
+            return .{ .abort = true };
+        }
+        fee_pos_dag += @as(usize, num_sigs_dag) * 64;
+        if (fee_pos_dag < tx_data.len) {
+            if (tx_data[fee_pos_dag] & 0x80 != 0) fee_pos_dag += 1;
+            fee_pos_dag += 3;
+            const num_keys_dag = readCompactU16(tx_data, &fee_pos_dag) catch 0;
+            if (num_keys_dag > 0 and fee_pos_dag + 32 <= tx_data.len) {
+                var fee_payer_key_dag: [32]u8 = undefined;
+                @memcpy(&fee_payer_key_dag, tx_data[fee_pos_dag..][0..32]);
+
+                // r75-bug-class-d11 (2026-05-07): include precompile sigs in
+                // base_fee. @prov:replay.precompile-sig-base-fee
+                const ix_start_dag = fee_pos_dag + @as(usize, num_keys_dag) * 32 + 32;
+                const precompile_sigs_dag = compute_budget.parsePrecompileSigCountFromWire(
+                    tx_data,
+                    fee_pos_dag,
+                    num_keys_dag,
+                    ix_start_dag,
+                );
+                const total_sigs_dag: u64 = @as(u64, num_sigs_dag) + @as(u64, precompile_sigs_dag);
+                const base_fee_dag: u64 = 5000 * total_sigs_dag;
+
+                // r40.6: parse compute_budget instructions for priority fee.
+                const priority_fee_dag = compute_budget.parsePriorityFeeFromWire(
+                    tx_data,
+                    fee_pos_dag,
+                    num_keys_dag,
+                    ix_start_dag,
+                );
+
+                fu.fee_payer = fee_payer_key_dag;
+                fu.base_fee = base_fee_dag;
+                fu.priority_fee = priority_fee_dag;
+                fu.has_fee = true;
+            }
+        }
+    }
+    return fu;
+}
+
 /// Per-tx scratch the DAG path carries from Phase-1 parse into Phase-2 execute.
 /// Hoisted to module scope for Stage B B2c so `runWaveDrain` can take a slice of it.
 /// `eligible` = Stage B native-only parallel eligibility (every instruction's program
@@ -14464,4 +14954,121 @@ test "vex-048c writes-redirect: threadlocal override + orderly merge" {
     for (0..N * K) |i| {
         try testing.expectEqual(@as(u64, @intCast(i)), merged.items[i].lamports);
     }
+}
+
+// ── Produce-oracle shared-primitive KATs (2026-07-27) ────────────────────────────────────────────
+// These cover the two PURE functions the produce oracle and DAG replay now SHARE. They are the
+// pieces where a divergence would be silent: the oracle would compute a different fee than the
+// replay of the very same bytes, or would hand a v0 transaction to a path that must never see one.
+//
+// SCOPE, stated honestly: this is NOT a test of the oracle end-to-end. buildProduceOracle /
+// produceOracleExecute need a live AccountsDb + frozen parent bank, which this test root has no
+// fixture for. The end-to-end proof is the operator-run shadow window, not an offline test.
+
+/// Build a minimal but structurally valid legacy/v0 transaction wire for the parse KATs.
+fn katBuildTxWire(buf: []u8, num_sigs: u8, versioned: bool, num_keys: u8, payer: [32]u8) []u8 {
+    var pos: usize = 0;
+    buf[pos] = num_sigs; // compact-u16, single byte for < 128
+    pos += 1;
+    @memset(buf[pos..][0 .. @as(usize, num_sigs) * 64], 0);
+    pos += @as(usize, num_sigs) * 64;
+    if (versioned) {
+        buf[pos] = 0x80;
+        pos += 1;
+    }
+    buf[pos] = 1; // num_required_sigs
+    buf[pos + 1] = 0; // num_readonly_signed
+    buf[pos + 2] = 1; // num_readonly_unsigned
+    pos += 3;
+    buf[pos] = num_keys; // compact-u16 key count
+    pos += 1;
+    @memset(buf[pos..][0 .. @as(usize, num_keys) * 32], 0);
+    @memcpy(buf[pos..][0..32], &payer); // key[0] is the fee payer
+    pos += @as(usize, num_keys) * 32;
+    @memset(buf[pos..][0..32], 7); // recent blockhash
+    pos += 32;
+    buf[pos] = 0; // zero instructions
+    pos += 1;
+    return buf[0..pos];
+}
+
+test "parseFeeUnitFromWire: base fee is 5000 per signature and the payer is key[0]" {
+    var buf: [512]u8 = undefined;
+    var payer = [_]u8{0} ** 32;
+    payer[0] = 0xAB;
+
+    const one = katBuildTxWire(&buf, 1, false, 3, payer);
+    try std.testing.expect(one.len > 100); // else the function short-circuits by design
+    const fu1 = parseFeeUnitFromWire(one);
+    try std.testing.expect(!fu1.abort);
+    try std.testing.expect(fu1.has_fee);
+    try std.testing.expectEqual(@as(u16, 1), fu1.sig_count);
+    try std.testing.expectEqual(@as(u64, 5000), fu1.base_fee);
+    try std.testing.expectEqual(@as(u64, 0), fu1.priority_fee);
+    try std.testing.expectEqualSlices(u8, &payer, &fu1.fee_payer);
+
+    // Fee scales with the header signature count — the quantity replay debits.
+    const three = katBuildTxWire(&buf, 3, false, 3, payer);
+    const fu3 = parseFeeUnitFromWire(three);
+    try std.testing.expect(fu3.has_fee);
+    try std.testing.expectEqual(@as(u16, 3), fu3.sig_count);
+    try std.testing.expectEqual(@as(u64, 15000), fu3.base_fee);
+}
+
+test "parseFeeUnitFromWire: the two abort paths are distinct from the short-tx fall-through" {
+    // <=100 bytes: NOT an abort. DAG Phase 1 still registers this tx in the conflict DAG; it simply
+    // carries no fee unit. Collapsing this into `abort` would silently drop it from the DAG.
+    const tiny = [_]u8{0} ** 40;
+    const fu_tiny = parseFeeUnitFromWire(&tiny);
+    try std.testing.expect(!fu_tiny.abort);
+    try std.testing.expect(!fu_tiny.has_fee);
+    try std.testing.expectEqual(@as(u16, 1), fu_tiny.sig_count);
+
+    // A declared signature count of zero IS an abort: Phase 1 writes the short-tx info and skips DAG
+    // registration entirely.
+    var zero_sig = [_]u8{0} ** 200;
+    zero_sig[0] = 0;
+    const fu_zero = parseFeeUnitFromWire(&zero_sig);
+    try std.testing.expect(fu_zero.abort);
+
+    // Abort always reports the safe defaults, never a half-parsed fee.
+    try std.testing.expect(!fu_zero.has_fee);
+    try std.testing.expectEqual(@as(u64, 0), fu_zero.base_fee);
+    try std.testing.expectEqual(@as(u16, 1), fu_zero.sig_count);
+}
+
+test "txWireIsVersioned: legacy is false, v0 is true, and anything unparseable is true" {
+    var buf: [512]u8 = undefined;
+    const payer = [_]u8{0} ** 32;
+
+    const legacy = katBuildTxWire(&buf, 1, false, 3, payer);
+    try std.testing.expect(!ReplayStage.txWireIsVersioned(legacy));
+
+    var buf2: [512]u8 = undefined;
+    const v0 = katBuildTxWire(&buf2, 1, true, 3, payer);
+    try std.testing.expect(ReplayStage.txWireIsVersioned(v0));
+
+    // FAIL-SAFE DIRECTION: every malformed shape must read as "versioned" (= unsupported = refuse =
+    // under-admit). The opposite default would hand junk to the admit path.
+    try std.testing.expect(ReplayStage.txWireIsVersioned(&[_]u8{}));
+    try std.testing.expect(ReplayStage.txWireIsVersioned(&[_]u8{0x01})); // sig count, then nothing
+    try std.testing.expect(ReplayStage.txWireIsVersioned(&[_]u8{0x00})); // zero signatures
+    const truncated = [_]u8{0x01} ++ [_]u8{0} ** 40; // claims 1 sig, too short for it
+    try std.testing.expect(ReplayStage.txWireIsVersioned(&truncated));
+}
+
+test "produce_admit arm filter and Vexor's native-eligibility predicate agree on the vote shape" {
+    // Cross-checks the pinned program-id bytes in produce_admit.zig (duplicated to keep that module
+    // standalone) against replay_stage's canonical NATIVE_PROGRAM_IDS. A transcription slip there is
+    // under-admit rather than dangerous, but it would silently empty every block, which is the
+    // failure mode hardest to tell from success.
+    const pa = @import("produce_admit.zig");
+    try std.testing.expectEqualSlices(u8, &NATIVE_PROGRAM_IDS.VOTE, &pa.VOTE_PROGRAM_ID);
+    try std.testing.expectEqualSlices(u8, &NATIVE_PROGRAM_IDS.SYSTEM, &pa.SYSTEM_PROGRAM_ID);
+    try std.testing.expectEqualSlices(u8, &NATIVE_PROGRAM_IDS.STAKE, &pa.STAKE_PROGRAM_ID);
+    try std.testing.expectEqualSlices(u8, &NATIVE_PROGRAM_IDS.COMPUTE_BUDGET, &pa.COMPUTE_BUDGET_PROGRAM_ID);
+    try std.testing.expectEqualSlices(u8, &NATIVE_PROGRAM_IDS.ZK_ELGAMAL, &pa.ZK_ELGAMAL_PROGRAM_ID);
+    try std.testing.expectEqualSlices(u8, &BPF_LOADER_UPGRADEABLE, &pa.BPF_LOADER_UPGRADEABLE_ID);
+    try std.testing.expectEqualSlices(u8, &BPF_LOADER_V2, &pa.BPF_LOADER_V2_ID);
+    try std.testing.expectEqualSlices(u8, &BPF_LOADER_DEPRECATED, &pa.BPF_LOADER_DEPRECATED_ID);
 }
