@@ -1,5 +1,30 @@
 //! BlockExecutor — the test-rootable "execute-once-and-record" seam for tx-bearing block production.
 //!
+//! ╔════════════════════════════════════════════════════════════════════════════════════════════════╗
+//! ║ SUPERSEDED — THIS IS NO LONGER THE PRODUCE ENGINE. Do not extend it.                           ║
+//! ╚════════════════════════════════════════════════════════════════════════════════════════════════╝
+//!
+//! replay_stage's InclusionGate now runs the PRODUCE ORACLE, which executes packing candidates
+//! through the SAME golden-proven per-instruction ladder replay uses (executeDagTx) against a scratch
+//! child bank. This file has ZERO production callers; its adapters in replay_stage
+//! (bankLoadAccountForBroadcast / bankExecuteForBroadcast) were deleted with that change.
+//!
+//! WHY IT WAS REPLACED RATHER THAN EXTENDED. The module below understands only System discriminants
+//! 0 (CreateAccount) and 2 (Transfer). Everything else — including every VOTE — was DROPPED, so
+//! blocks came out empty. Teaching it one more program would have repeated the mistake: two executors
+//! with different semantics is a bug CLASS, and no gold standard keeps a reduced produce executor
+//! (Agave's consumer.rs and vote_worker.rs both bottom out in the identical
+//! Bank::load_and_execute_transactions replay reaches; Firedancer's execrp/execle are separate TILES
+//! but share fd_runtime_prepare_and_execute_txn — it splits SCHEDULING, not SEMANTICS).
+//! scripts/check-single-ladder.sh now fails the build if a second dispatch ladder appears anywhere.
+//!
+//! Note also that arming this module's `vote_ctx` alone would NOT have fixed the vote defect: its
+//! account loader returned `.data = &.{}` unconditionally, so voteforge would have deserialized a
+//! ZERO-BYTE vote account and dropped the vote regardless.
+//!
+//! The tests over this file still pass, but they now exercise an UNWIRED path. Their green marks say
+//! nothing about the live produce engine.
+//!
 //! WHY THIS EXISTS (produce/replay parity root-cause, "Primary recommendation"):
 //!   The durable fix for the [PRODUCE-PARITY-FAIL] dead-block class is to converge the produce path
 //!   onto Agave's execute-once-and-record model: instead of a hand-rolled pre-filter that PREDICTS

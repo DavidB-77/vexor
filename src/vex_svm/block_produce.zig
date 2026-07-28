@@ -214,8 +214,19 @@ pub fn txFee(parsed: tx_ingest.ParsedTx, tx_wire: []const u8) u64 {
 /// (num_writable = (num_required_sigs − num_readonly_signed) + (num_keys − num_required_sigs −
 /// num_readonly_unsigned)), the same decomposition `bank.estimateTransactionCost` consumes. v0 ALT
 /// (loaded) writable accounts are NOT counted here (a producer-side under-estimate that can only
-/// admit MORE txs than the cluster would — but the loopback interlock means an over-packed block is
-/// never broadcast; the real cluster re-checks check_block_cost_limits on replay). Documented boundary.
+/// admit MORE txs than the cluster would; the real cluster re-checks check_block_cost_limits on
+/// replay, and exceeding it is BLOCK-FATAL). Documented boundary.
+///
+/// ⚠️ RETRACTED: this note used to claim "the loopback interlock means an over-packed block is never
+/// broadcast". THAT IS FALSE whenever broadcast is armed. In replay_stage.produceAndBroadcastEmptySlot
+/// the broadcast call PRECEDES the loopback push, so with VEX_LEADER_BROADCAST armed the loopback is a
+/// post-hoc DETECTOR ([PRODUCE-PARITY-FAIL]), not a gate — the shreds are already on the wire. The
+/// loopback is a genuine gate only while broadcast is OFF. Do not reason about producer-side
+/// under-estimates as self-contained on that basis.
+///
+/// CONTAINMENT for this specific under-count: the produce oracle REFUSES versioned (v0/ALT)
+/// transactions outright (produce_admit.zig arm 2), so the under-counted shape is never packed while
+/// the oracle is the engine.
 pub const DEFAULT_INSTRUCTION_CU_LIMIT: u64 = 200_000; // @prov:compute-budget.exec-limit
 pub const MAX_BUILTIN_ALLOCATION_COMPUTE_UNIT_LIMIT: u64 = 3_000; // @prov:compute-budget.exec-limit
 pub const MAX_COMPUTE_UNIT_LIMIT: u64 = 1_400_000; // @prov:compute-budget.exec-limit
@@ -1010,6 +1021,33 @@ pub fn produceSlotBytes(
             //     after real execution (see below, post-cost-gate). See InclusionGate's exec doc.
             if (g.execute == null) {
                 if (!g.admit(g.ctx, qt.data)) continue;
+            } else {
+                // (b2) SIGVERIFY ON THE EXECUTE PATH. `admit` carries two halves: a POLICY half (can
+                // the cluster LOAD this tx) and an AUTHENTICITY half (`checkStaticAndOwner` opens with
+                // tx_ingest.verifySignatures). The bypass above is right for the policy half — the
+                // executor supersedes it — and WRONG for the authenticity half, which nothing
+                // downstream replaces. This is not theoretical: the QUIC ingest adapter and RPC
+                // sendTransaction both enqueue any structurally-parseable wire WITHOUT verifying, and
+                // QueuedTransaction carries no verified flag, so a verified vote and a forged one are
+                // indistinguishable at pack time. A program-id arm filter does not help (a forged vote
+                // satisfies it exactly), and loopback replay does not either (the broadcast call
+                // precedes the loopback push, so it is a post-hoc detector). An invalid signature is
+                // WHOLE-BANK-fatal on cluster replay, so the outcome would be a remotely-triggerable
+                // DEAD BLOCK, not a skipped transaction.
+                //
+                // FIXED AT THE SEAM, NOT IN THE CALLBACK, so every present and future `.execute`
+                // implementation inherits it, and so a forged tx is refused BEFORE the cost gate below
+                // (in the callback it would run after `ct.tryAdd` and leave block CU charged).
+                // UNCONDITIONAL — no env gate, no arm state, no provenance exemption. Placed in this
+                // `else` so the admit-only path is not charged a second ed25519 verify;
+                // `checkStaticAndOwner` keeps its own copy and stays self-sufficient for its other
+                // callers rather than being hollowed into a partial check.
+                if (!tx_ingest.verifySignatures(parsed)) {
+                    // Expected zero forever. Non-zero means a forged signature reached our mempool and
+                    // was refused here.
+                    std.log.warn("[LEADER-PRODUCE] refused an unverified transaction on the executor packing path", .{});
+                    continue;
+                }
             }
         }
 
