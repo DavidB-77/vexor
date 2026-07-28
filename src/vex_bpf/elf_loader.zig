@@ -295,8 +295,8 @@ pub const ElfLoader = struct {
         var rela_text_section: ?*const Elf64SectionHeader = null;
         // r71-fix-7h: real Solana sBPF v0 programs put their relocations in
         // `.rel.dyn` (Elf64Rel — 16 bytes, no r_addend) rather than
-        // `.rela.text` (Elf64Rela — 24 bytes). Haiku-agent ELF inspection
-        // 2026-04-28 confirmed: 78× type-10 (R_BPF_INSN_DISP32) entries +
+        // `.rela.text` (Elf64Rela — 24 bytes). ELF inspection of representative
+        // on-chain programs confirmed: 78× type-10 (R_BPF_INSN_DISP32) entries +
         // 317× type-8 (R_BPF_DATA_8) entries in .rel.dyn for representative
         // programs. r71-fix-7g only handled .rela.text → never fired on real
         // programs → all 92 StackOverflow events at imm=-1 persisted.
