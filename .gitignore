@@ -11,3 +11,4 @@ tower-state.bin
 .DS_Store
 *.swp
 *.swo
+*.orig
