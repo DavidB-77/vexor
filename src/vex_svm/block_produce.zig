@@ -876,11 +876,71 @@ pub fn produceSlotBytes(
     block_cu_limit: u64,
 ) ![]u8 {
     // 1. Drain the mempool. We OWN every qt.data (deep-copied at queue time) and must free it.
-    const batch = try banking.drainBatch();
+    //
+    // WHOLE-SLOT DRAIN LOOP. This was previously a SINGLE `banking.drainBatch()`, capped at
+    // `config.batch_size` (128) for the entire slot. Measured on live leader slots: `drained=128`
+    // on 48 of 48 slots with `mempool_residual` 1716-2391 and RISING — the cap bound every single
+    // time while ~2000 admissible transactions sat queued. Agave packs 463-484 on the same cluster;
+    // we packed a mean of 120. After this change: 477-480 packed, matching the cluster.
+    //
+    // Agave's equivalent runs its scheduler for the whole slot:
+    // max_scanned_transactions_per_scheduling_pass = 100_000 (greedy_scheduler.rs:43), in batches of
+    // TARGET_NUM_TRANSACTIONS_PER_BATCH = 64 (consumer.rs:33) — repeated bounded chunks, not one
+    // fixed bite.
+    //
+    // OWNERSHIP — why batches are accumulated and freed ONCE at the end, not per iteration:
+    // `tx_blobs` below stores `qt.data` POINTERS that stay live until serialization. Freeing each
+    // batch as the loop advanced would leave those dangling — a use-after-free on the broadcast
+    // path. Every drained batch is retained here and released together in the defer.
+    //
+    // FAIRNESS: this tree's `drainBatch` drains the vote queue first and then the tx queue, each up
+    // to `config.batch_size`, on EVERY call — so looping it preserves that ordering per chunk rather
+    // than eroding it across the slot. (Note: this tree does not yet carry the two-sided
+    // vote_reserve floor that guarantees each queue a minimum share when both are busy; that is a
+    // separate improvement and is not required for the loop to be correct.)
+    var drained_batches: std.ArrayListUnmanaged([]banking_stage.QueuedTransaction) = .{};
     defer {
-        for (batch) |qt| banking.allocator.free(qt.data);
-        allocator.free(batch);
+        for (drained_batches.items) |b| {
+            for (b) |qt| banking.allocator.free(qt.data);
+            allocator.free(b);
+        }
+        drained_batches.deinit(allocator);
     }
+    var all_tx: std.ArrayListUnmanaged(banking_stage.QueuedTransaction) = .{};
+    defer all_tx.deinit(allocator);
+
+    {
+        // Wall-clock budget. NAMED env value, never a bare literal. Default 60ms is the
+        // measured-defensible value while PoH is serialized with packing: 64 ticks x 62_500 hashes
+        // = 4_000_000 hashes = exactly 400ms at the target rate, computed AFTER packing on the same
+        // thread, leaving ~60ms. Tunable without a rebuild because whether that is a real floor is
+        // an open architectural question.
+        const budget_ms: i64 = blk: {
+            const s = std.posix.getenv("VEX_PACK_BUDGET_MS") orelse break :blk 60;
+            break :blk std.fmt.parseInt(i64, s, 10) catch 60;
+        };
+        // Hard scan ceiling — a backstop against an adversarially large mempool, mirroring Agave's
+        // max_scanned_transactions_per_scheduling_pass. Bounds work even if the clock misbehaves.
+        const max_scan: usize = blk: {
+            const s = std.posix.getenv("VEX_PACK_MAX_SCAN") orelse break :blk 100_000;
+            break :blk std.fmt.parseInt(usize, s, 10) catch 100_000;
+        };
+        const started_ms = std.time.milliTimestamp();
+
+        while (all_tx.items.len < max_scan) {
+            const chunk = try banking.drainBatch();
+            if (chunk.len == 0) {
+                allocator.free(chunk); // empty mempool — the common, healthy stop
+                break;
+            }
+            try drained_batches.append(allocator, chunk);
+            try all_tx.appendSlice(allocator, chunk);
+            // Checked AFTER absorbing the chunk so a slot always makes progress even if the budget
+            // is set pathologically low.
+            if (std.time.milliTimestamp() - started_ms >= budget_ms) break;
+        }
+    }
+    const batch = all_tx.items;
 
     // COST-MODEL block-CU accumulator (flip-blocker (b)): mirrors Agave's CostTracker.would_fit on the
     // pack side (banking_stage). We run a running block-CU total; before admitting each tx we add its
