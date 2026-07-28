@@ -1,7 +1,6 @@
 //! sBPF syscall implementations — NOT wired into any live dispatch path.
 //!
-//! `registerAll` (below) has zero callers anywhere in this tree (verified by
-//! grep at fix/small-parity-batch-2026-07-17): this file's `SyscallMap` is
+//! `registerAll` (below) has zero callers anywhere in this tree: its `SyscallMap` is
 //! never populated and none of these handlers execute on the live validator,
 //! not even as a fallback. The live BPF dispatch chain is
 //! `instruction_dispatch.dispatchBpfExecution` -> (resolvable ELF)

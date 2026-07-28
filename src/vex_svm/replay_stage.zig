@@ -5202,7 +5202,7 @@ pub const ReplayStage = struct {
                 const bh_ctx = BankHashCtx{ .rs = self };
 
                 // FIX (switch-proof gossip-arming wedge, live specimen slot 422521275,
-                // 2026-07-17, fix/switchproof-gossip-arming-2026-07-17): switched from
+                // 2026-07-17): switched from
                 // `buildVoteAccountBatch` (sourced `db.top_votes`, a side cache upserted
                 // only by AccountsDb.refreshTopVoteForWrite from the flush chokepoints)
                 // to `buildVoteAccountBatchFresh` (reads EVERY staked voter's
@@ -8783,7 +8783,7 @@ pub const ReplayStage = struct {
                     // ONLY M4_RunFailed / V1_ProgramFailed / M4_BpfElfResolutionFailed are
                     // genuine execution failures; other DispatchError values are Vexor
                     // plumbing/fallback (requirement #3). M4_BpfElfResolutionFailed
-                    // (fix/small-parity-batch-2026-07-17) mirrors Agave's
+                    // mirrors Agave's
                     // InstructionError::UnsupportedProgramId for a BPF-loader-owned
                     // executable whose ELF failed to resolve (instruction_dispatch.zig).
                     if (e == error.M4_RunFailed or e == error.V1_ProgramFailed or e == error.M4_BpfElfResolutionFailed) {
@@ -10797,7 +10797,7 @@ pub const ReplayStage = struct {
                 }
 
                 // ALWAYS update poh hash — entry_hash is from leader's signed data,
-                // authoritative regardless of our parse success (Opus Council decision).
+                // authoritative regardless of our parse success.
                 last_entry_hash = .{ .data = entry_hash };
 
                 // d28bb-FOLLOWUP (2026-05-12): on inner-loop tx-parse failure

@@ -53,8 +53,7 @@ const INCINERATOR: [32]u8 = .{
 /// SystemProgram owner pubkey (all zeros).
 const SYSTEM_PROGRAM: [32]u8 = [_]u8{0} ** 32;
 
-// [TOPVOTES-TRACE] TEMPORARY measurement (2026-07-09, branch
-// fix/topvotes-freeze-sourced-refresh-2026-07-09): env-gated tracer
+// [TOPVOTES-TRACE] TEMPORARY measurement (2026-07-09): env-gated tracer
 // (VEX_TOPVOTES_TRACE, default OFF, one cached bool) resolving the site1=0
 // paradox — where do vote-account writes live at flush time vs freeze time?
 // Counters + log lines ONLY; zero behavior change when off (one cached-bool

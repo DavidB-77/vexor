@@ -151,8 +151,7 @@ pub fn dispatchBpfExecution(
                 return dispatchV3ViaV2Producer(ix, ptx, bank, db, alloc, feature_set, tx_meter);
             }
         } else {
-            // fix/small-parity-batch-2026-07-17 (audit: SYSCALL-WIRING-TRUTH-AUDIT
-            // fix-list item 2): resolveProgramSbpfVersion returned null. Per
+            // resolveProgramSbpfVersion returned null. Per
             // elf_version.zig:66-70 that means the program account is missing, OR
             // (native/builtin data isn't an ELF — moot here, since replay_stage.zig
             // routes every NATIVE_PROGRAM_IDS.*/BPF_LOADER_UPGRADEABLE/V2/DEPRECATED/
@@ -267,7 +266,7 @@ pub fn dispatchBpfExecution(
     }
 }
 
-/// fix/small-parity-batch-2026-07-17: thin wrapper around the standalone,
+/// A thin wrapper around the standalone,
 /// independently-unit-tested predicate in `elf_resolution_guard.zig` (kept
 /// dependency-free there so it can be test-discovered without pulling in
 /// this file's heavy `vex_svm`/`replay_stage.zig` closure, which has no

@@ -1,4 +1,4 @@
-//! fix/small-parity-batch-2026-07-17 — pure decision predicate for the
+//! A pure decision predicate for the
 //! ELF-resolution-failure hardening in `instruction_dispatch.dispatchBpfExecution`.
 //!
 //! Factored into its own zero-dependency file (only `std`) so the narrow

@@ -30,7 +30,7 @@
 //! + sysvar-refresh threads stopped AND JOINED before manual state
 //! manipulation).
 //!
-//! Design: fix/switchproof-gossip-arming-2026-07-17, commit d2c2f59.
+//! Design: commit d2c2f59.
 //!
 //! Build/run: zig build test-ancestor-walk-depth
 
