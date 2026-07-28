@@ -2848,13 +2848,13 @@ pub fn executeVoteViaVoteforge(
     // ── Build the INSTRUCTION-scoped account table (real, uncapped — this is
     // the committing path, never truncated) ──────────────────────────────────
     const n: usize = ix.account_indices.len;
-    var metas = alloc.alloc(aio.AccountMeta, n) catch {
+    var metas = alloc.alloc(aio.AccountMeta, n) catch |oom| {
         mutate_fail.* += 1;
-        return;
+        return oom;
     };
-    var records = alloc.alloc(aio.AccountRecord, n) catch {
+    var records = alloc.alloc(aio.AccountRecord, n) catch |oom| {
         mutate_fail.* += 1;
-        return;
+        return oom;
     };
     const PreState = struct {
         writable: bool,
@@ -2866,9 +2866,9 @@ pub fn executeVoteViaVoteforge(
         pubkey: [32]u8,
         is_signer: bool,
     };
-    var pre = alloc.alloc(PreState, n) catch {
+    var pre = alloc.alloc(PreState, n) catch |oom| {
         mutate_fail.* += 1;
-        return;
+        return oom;
     };
 
     var route_vote_idx: usize = 0;
@@ -2912,9 +2912,9 @@ pub fn executeVoteViaVoteforge(
         }
 
         const rec_data: []u8 = if (writable)
-            (alloc.dupe(u8, src_data) catch {
+            (alloc.dupe(u8, src_data) catch |oom| {
                 mutate_fail.* += 1;
-                return;
+                return oom;
             })
         else
             @constCast(src_data);
@@ -2927,9 +2927,9 @@ pub fn executeVoteViaVoteforge(
     if (tvt_on) _ = bank.tvt2_build_done.fetchAdd(1, .monotonic);
 
     const program_id: [32]u8 = ptx.account_keys[ix.program_id_index];
-    var table = aio.AccountTable.init(program_id, metas[0..bi], records[0..bi]) catch {
+    var table = aio.AccountTable.init(program_id, metas[0..bi], records[0..bi]) catch |oom| {
         mutate_fail.* += 1;
-        return;
+        return oom;
     };
 
     var signers_buf: [MAX_VOTE_ROUTE_ACCOUNTS]([32]u8) = undefined;
@@ -3043,7 +3043,9 @@ pub fn executeVoteViaVoteforge(
 
     exec_result catch |e| {
         mutate_fail.* += 1;
-        if (e == error.OutOfMemory) return;
+        // 2026-07-26: this returned SUCCESS on OutOfMemory, so a vote instruction
+        // that failed to execute was reported as executed. OOM is precisely the
+        // case that must propagate -- every other error already did.
         return e;
     };
 
@@ -3082,9 +3084,18 @@ pub fn executeVoteViaVoteforge(
         })) |_| {
             append_ok.* += 1;
             if (tvt_on) _ = bank.tvt2_diff_applied.fetchAdd(1, .monotonic);
-        } else |_| {
+        } else |err| {
+            // 2026-07-26: this counted the failure and carried on. `append_fail`
+            // reaches nothing but a log line -- no caller branches on it -- so a
+            // vote account whose write was dropped here still left the executor
+            // reporting success, and the slot froze with that account's lthash
+            // contribution missing: a wrong bank_hash, and a fork, with the only
+            // trace a counter in a debug print. Keep the counters (they are the
+            // diagnostic) but propagate, exactly as the allocation sites above now
+            // do. The caller invokes this with `try`.
             append_fail.* += 1;
             if (tvt_on) _ = bank.tvt2_appfail.fetchAdd(1, .monotonic);
+            return err;
         }
     }
 }

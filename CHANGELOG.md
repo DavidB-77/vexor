@@ -14,6 +14,26 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-i
+### Validator
+#### Fixed
+* Consensus: the live vote executor now propagates allocation failure instead of reporting it as success. `0.9.3-h` described this fix, but the released code did not contain it — the seven failure paths were still returning success. They now return the error. A dropped account write carries that account's lattice-hash delta, so losing one froze the slot with a missing contribution and produced a `bank_hash` no other node would agree with, leaving nothing behind but a counter in a debug line. This entry supersedes the corresponding `0.9.3-h` entry, which was accurate about the intent and wrong about the shipped code.
+* Block production: transactions that were already processed in a recent block can no longer be packed into a new one. The producer consults a cache of recently committed signatures, but that cache was only populated by the serial replay path. With parallel execution selected, every commit went through the wave path, which did not record anything — so the cache stayed empty, the producer's check never refused a candidate, and an already-processed transaction could be included. The rest of the cluster rejects such a block outright. The wave path now records committed signatures on its success branch, on the replay thread after the wave drains, which is where the cache's single-threaded contract holds.
+
+#### Changes
+* Block production: a leader slot now packs for the whole slot rather than taking a single batch. Production previously drained the pending-transaction queue exactly once per slot and packed at most one batch's worth, which bounded a block far below what the queue held. It now drains repeatedly until the queue is empty, a wall-clock budget elapses, or a scan cap is reached — the same shape Agave's scheduler uses. Two new environment variables bound it: `VEX_PACK_BUDGET_MS` (default `60`) caps time spent collecting, and `VEX_PACK_MAX_SCAN` (default `100000`) caps candidates examined. Both have working defaults and need not be set.
+* Consensus: the vote-threshold percentage calculation is computed in 128-bit arithmetic. The multiply by 100 overflowed 64 bits once cluster-voted stake exceeded roughly 184.5 million SOL in lamports, which is below the stake already present on live clusters. The path is currently reached only with a zero operand, so no incorrect threshold has been computed, but the overflow would arm as soon as real stake values are supplied.
+
+#### Build
+* The production optimize mode is **ReleaseFast**, changed from ReleaseSafe for performance. Note that `--release=fast|safe|small` are all inert while `build.zig` sets a preferred optimize mode — the value is ignored, though *omitting* `--release` still yields a Debug build. A Debug binary is also smaller than a ReleaseFast one here, so binary size cannot be used to detect the mistake. Verify from the artifact instead: ReleaseFast strips Zig's safety-check panic strings, so `strings <binary> | grep -c "reached unreachable code"` must be `0`.
+* `scripts/check-single-ladder.sh` added: an anti-drift guard requiring exactly one program-id dispatch ladder in the tree. Separate executors for production and replay are what caused blocks to be produced without vote transactions; the guard fails the tree if a second reduced router appears, closing the class rather than the instance.
+
+#### Removed
+* Two `.orig` files — pre-fix copies of `instruction_dispatch.zig` and `replay_stage.zig`, about 1.0 MB — were tracked in the repository alongside the fixed originals and have been removed. They also contained a duplicate program-id dispatch ladder.
+
+#### Diagnostics
+* The validator now warns ahead of the epoch-stake coverage cliff. Stake data loaded from a snapshot covers a bounded range of slots and is never refreshed; past the end of that range the clock estimate, the leader schedule and fork choice all degrade without raising an error. The warning does the arithmetic on a log line that already carried the numbers, and escalates to error level under twelve hours remaining. This makes the deadline visible; it does not extend the coverage.
+
 ## 0.9.3-h
 ### Validator
 #### Fixed

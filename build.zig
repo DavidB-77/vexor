@@ -14,9 +14,16 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
-    // Default ReleaseSafe (mirrors origin-tree: Debug is 30× slower; Zig 0.15.2
-    // takes `--release=safe|fast|small`).
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    // ReleaseFast is the canonical production mode — it is what runs on the cluster.
+    //
+    // NOTE `--release=fast|safe|small` are ALL INERT while preferred_optimize_mode is set: any
+    // value returns the preferred mode. What is NOT inert is OMITTING `--release` entirely — that
+    // yields Debug (std/Build.zig:1319-1326). A Debug binary is also SMALLER here than a
+    // ReleaseFast one, so a size threshold will not catch the mistake. Verify the mode from the
+    // artifact instead: ReleaseFast strips Zig's safety-check panic strings, so
+    //   strings zig-out/bin/vexor | grep -c 'reached unreachable code'
+    // must be 0. To build with safety checks on, change this line — not the command.
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseFast });
 
     // ── build options read by the migrated modules at comptime ──────────────
     // CONFIG BAKE-IN (2026-07-08): `-Dprod` bundles all 12 canonical production

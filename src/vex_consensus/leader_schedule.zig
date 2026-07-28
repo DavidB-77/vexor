@@ -433,6 +433,46 @@ pub const LeaderScheduleCache = struct {
             current_epoch, first_slot, first_slot + slot_leaders_pk.len - 1, slot_leaders_pk.len,
         });
 
+        // ── EPOCH-STAKES CLIFF WARNING (task #26, 2026-07-28) ────────────────────────────────
+        // PURELY DIAGNOSTIC. Emits a log line and nothing else — no branch, no state, no
+        // consensus surface. Safe by construction.
+        //
+        // WHY. `accounts_db.epoch_stakes` has exactly ONE writer (bootstrap.zig:264) and is never
+        // refreshed. The snapshot covers only epoch E and E+1, so past the LAST covered slot three
+        // consumers fail SILENTLY: the SIMD-0001 Clock estimate returns null (and it is a bank_hash
+        // input), the leader schedule throws NoEpochStakes and falls back to RPC ("fees WILL be
+        // burned, parity WILL diverge" — its own comment), and fork choice returns a bare 0 that
+        // collapses every subtree weight. No error, no log, no crash — the worst failure shape
+        // available on a consensus input.
+        //
+        // Masked today only because uptime here is on-demand. A continuous run past the cliff trips
+        // it. This makes the deadline VISIBLE ~2 days ahead instead of discovering it afterwards
+        // from a divergence, which is the whole point: a reactive log fires once you are already
+        // wrong. The cliff is already implicit in the line above — this just does the arithmetic
+        // nobody was doing.
+        //
+        // Uses the LAST covered slot of the newest cached epoch, which is exactly where the table
+        // runs out. Deliberately not gated behind an env var: a warning that must be switched on
+        // is a warning nobody sees.
+        {
+            const cliff_slot = first_slot + slot_leaders_pk.len - 1;
+            // `current_slot` is a parameter of populateAgaveCanonical — the slot we are populating
+            // for. Using it (rather than inventing a field) keeps this purely local.
+            const now_slot = current_slot;
+            if (cliff_slot > now_slot) {
+                const remaining = cliff_slot - now_slot;
+                // 400ms/slot nominal — the same figure the produce budget is derived from.
+                const hours = (@as(f64, @floatFromInt(remaining)) * 0.4) / 3600.0;
+                if (hours < 12.0) {
+                    std.log.err("[EPOCH-STAKES-CLIFF] 🔴 {d} slots (~{d:.1}h) until slot {d}, past which epoch_stakes is EXHAUSTED: Clock estimate -> null (bank_hash input), leader schedule -> RPC fallback, fork choice -> silent 0. Re-bootstrap before this.", .{ remaining, hours, cliff_slot });
+                } else {
+                    std.log.warn("[EPOCH-STAKES-CLIFF] {d} slots (~{d:.1}h) of epoch_stakes coverage remain (exhausted after slot {d}).", .{ remaining, hours, cliff_slot });
+                }
+            } else {
+                std.log.err("[EPOCH-STAKES-CLIFF] 🔴 PAST THE CLIFF: slot {d} > last covered {d}. epoch_stakes is EXHAUSTED — Clock estimate, leader schedule and fork-choice weights are now unreliable. Re-bootstrap.", .{ now_slot, cliff_slot });
+            }
+        }
+
         // d28yy diag: dump a slice of the computed schedule + top-5 stakes so we
         // can compare to cluster's getLeaderSchedule. Remove once carrier-2
         // (leader-credit drift) is closed.

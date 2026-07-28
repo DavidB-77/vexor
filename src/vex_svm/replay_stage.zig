@@ -10044,6 +10044,54 @@ pub const ReplayStage = struct {
                         disp.abandonBlock();
                     } else {
                         disp.endBlock();
+
+                        // ── DAG-PATH RECENT-SIGNATURE POPULATION ────────────────────────────────
+                        // Record every committed signature for cross-block AlreadyProcessed dedup,
+                        // mirroring the SERIAL path's identical call further down this function.
+                        //
+                        // WHY THIS WAS MISSING, AND WHAT IT COST. RecentSigCache was built, wired
+                        // and gated with population on the SERIAL replay path only, because serial
+                        // was the default at the time. Once parallel execution became the default,
+                        // every commit went down the DAG path and the cache was NEVER written. The
+                        // producer gate (block_produce.zig `rsc.isRecent(...)`) therefore queried an
+                        // always-empty map, refused nothing, and packed votes that had already
+                        // landed in the preceding block. Agave replays such a block and marks it
+                        // dead: InvalidTransaction(AlreadyProcessed) — observed on 3 of 3 leader
+                        // windows before this fix, with every produced block skipped by the cluster.
+                        //
+                        // THREAD SAFETY IS WHY THE CALL SITS HERE. RecentSigCache is a plain
+                        // AutoHashMapUnmanaged with no mutex and no atomics; record() and prune()
+                        // both mutate it. runWaveDrain executes on the wave pool, so recording from
+                        // inside it would be a data race on the map — a worse defect than the one
+                        // being fixed. This site runs on the REPLAY THREAD after the drain has
+                        // returned and the block is complete, so it is single-threaded by
+                        // construction. Do not move it into a worker.
+                        //
+                        // Covers BOTH DAG sub-paths (wave drain and the per-entry serial drain)
+                        // because both converge here on success. Success branch only: an abandoned
+                        // block's transactions are not committed, so recording them would over-drop.
+                        //
+                        // Bank-hash NEUTRAL — pure dedup state, read only by our own producer gate.
+                        // Over-recording is the SAFE direction by design: the cache is deliberately
+                        // not fork-aware, so it over-includes and therefore over-drops, and can
+                        // never wrongly ADMIT a duplicate.
+                        if (comptime build_options.status_cache) {
+                            if (self.statusCacheActive()) {
+                                for (dag_tx_infos) |*dinfo| {
+                                    const dptx = dinfo.parsed orelse continue;
+                                    // `first_signature` is a zero-copy pointer into tx_data and is
+                                    // the canonical tx ID — the same key the serial path records and
+                                    // the producer gate tests. Null only for test-constructed
+                                    // ParsedTx with no signatures section, so skipping null is
+                                    // correct: a missed insert relaxes dedup, never admits a dup.
+                                    const dsig = dptx.first_signature orelse continue;
+                                    self.recent_sig_cache.record(self.allocator, dsig, bank.slot);
+                                }
+                                // prune() self-throttles per slot (idempotent), so one call here is
+                                // one prune per slot, matching the serial path's cadence.
+                                self.recent_sig_cache.prune(self.allocator, bank.slot);
+                            }
+                        }
                     }
                 } else {
                     // ═══════════════════════════════════════════════════════════
