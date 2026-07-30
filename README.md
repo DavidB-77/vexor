@@ -125,6 +125,23 @@ outputs. Full methodology, per-family breakdown, and disclosed known gaps:
   encoding differences the consensus mode recovers.
 - **Syscall/crypto corpus** (7,571 fixtures): **99.62% non-known-gap**.
 
+## Ecosystem
+
+Parts of Vexor are developed and published as standalone libraries, useful on
+their own and open to the same scrutiny as the validator:
+
+- [`zbpf`](https://github.com/DavidB-77/zbpf): a standalone sBPF virtual
+  machine in Zig, with the ELF loader, verifier, interpreter, syscalls, CPI,
+  and native builtins. 1065 tests across 31 build steps.
+- [`zolcrypt`](https://github.com/DavidB-77/zolcrypt): pure-Zig cryptography
+  extracted from the validator, including ed25519 (strict verification by
+  default, matching Agave), secp256k1/r1, bn254, blake3, and the LtHash
+  accumulator.
+- [`vexor-zig-sdk`](https://github.com/DavidB-77/vexor-zig-sdk): an
+  exploratory SDK for writing Solana on-chain programs in Zig, with a
+  constraint DSL, IDL generation, and SPL bindings. Its roadmap starts with a
+  compute-unit-exact program test harness.
+
 ## Hardware
 
 Vexor is developed and operated on a single reference machine: AMD EPYC 9374F
