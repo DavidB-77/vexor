@@ -165,8 +165,12 @@ pub fn parseGossipVote(tx_bytes: []const u8) ?GossipVote {
     pos += 32;
 
     // 5. Instructions. Walk each, looking for the vote-program instruction.
+    // F242/F062 (2026-07-29): bound matches SIMD-160's unconditional 64 top-level-
+    // instruction cap (see replay_stage.zig measureTransaction()) — any tx with
+    // >64 top-level ixs cannot be a valid on-chain transaction on current testnet,
+    // so this sanity bound stays consistent with the consensus-critical parse path.
     const num_instructions = readCompactU16(tx_bytes, &pos) orelse return null;
-    if (num_instructions > 255) return null;
+    if (num_instructions > SIMD_160_MAX_TOP_LEVEL_INSTRUCTIONS) return null;
 
     var found: ?GossipVote = null;
     var ix_idx: usize = 0;
@@ -215,6 +219,12 @@ pub fn parseGossipVote(tx_bytes: []const u8) ?GossipVote {
 /// vote-CASTING discriminant (TowerSync/Switch, UpdateVoteState/Switch,
 /// Compact*/Switch, legacy Vote/VoteSwitch). Non-vote-casting discriminants
 /// (Authorize, Withdraw, Initialize, …) and any parse failure → null.
+/// SIMD-160 top-level instruction cap (F242/F062, 2026-07-29), mirrored from
+/// `replay_stage.zig`'s `SIMD_160_MAX_TOP_LEVEL_INSTRUCTIONS` — kept as a local
+/// constant rather than a cross-file import to avoid coupling this gossip-only
+/// walker to the consensus-critical parser's module graph.
+const SIMD_160_MAX_TOP_LEVEL_INSTRUCTIONS: u16 = 64;
+
 const SlotHash = struct { slot: Slot, hash: Hash };
 
 fn voteInstructionSlotHash(ix_data: []const u8) ?SlotHash {
