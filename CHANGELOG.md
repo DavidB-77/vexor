@@ -14,6 +14,24 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-k
+### Validator
+#### Fixed
+* Stake program: Split now follows the canonical branch for a source whose delegation is neither effective nor activating — lamports move, the source's account data is never re-serialized, and the destination becomes a byte copy of the source with only its own rent-exempt reserve written. The previous code subtracted the split amount from the source's recorded stake on this path, which no other client does; twelve such splits in one block produced a `bank_hash` the rest of the cluster refused, the divergence at slot 425636293. This branch also runs before the legacy minimum-delegation guards, because the canonical arm has no minimum-delegation check: a partial split leaving the source between its rent-exempt reserve and reserve plus 1 SOL is accepted, where the old order silently dropped it. A regression test pins the exact byte semantics of that slot's carrier.
+* Stake program: the split path's activity test now counts an activating delegation as active, matching the canonical `effective > 0 || activating > 0`. Testing only effective stake disarmed the destination rent check for stake delegated in the current epoch — a split from such a source into an underfunded destination wrote two accounts where the cluster writes none.
+* Stake program: DelegateStake distinguishes the three canonical cases — fresh delegation, re-delegation to the same voter while deactivating (a resume, which preserves the original activation epoch), and re-delegation of fully inactive stake. The resume case previously re-initialized the delegation as if fresh, another `bank_hash` carrier class.
+* Runtime: the Clock sysvar reads the parent bank's pending state rather than a value that could lag a slot behind, and the sysvar cache decodes the layouts actually stored on chain instead of assuming builder defaults.
+* Replay: version-0 transactions validate their address-lookup-table resolution the way the cluster does, vote sends drain as a batch instead of one per loop iteration, and the SIMD-160 cap on top-level instructions is enforced.
+* Ingest and store: shred sanitization closes several malformed-input gaps, cache eviction runs to convergence rather than stopping after one pass, and blocks exceeding the tick budget are marked dead (`too_many_ticks`) as the cluster requires.
+
+#### Changes
+* Consensus: the depth-8 vote-stake threshold check ships armed, computed with exact rational arithmetic (128-bit cross-multiplication) rather than floating point, so the 66.67% boundary cannot be misjudged by rounding at real stake magnitudes.
+* Replay: vote timing is now instrumented end to end — bank freeze to vote submission, with the fork-choice decide and prevote phases broken out on their own log lines. Diagnostic only; no consensus surface.
+
+#### Build
+* The build now refuses to run under any Zig other than the pinned 0.15.x toolchain, turning a silent stale-artifact hazard into a hard error.
+* Three known-answer test suites are rooted as build steps: the lattice hash, address-lookup-table resolution, and the armed vote-threshold check.
+
 ## 0.9.3-j
 ### Validator
 #### Fixed
