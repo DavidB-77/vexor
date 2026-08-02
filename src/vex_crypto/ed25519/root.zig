@@ -29,12 +29,15 @@
 //! Three genuinely different ed25519 "accept" predicates exist in the wild,
 //! and conflating them is the proven fork mechanism (slot 415479361,
 //! 2026-06-15, see ../ed25519.zig's verify() doc comment):
-//!   1. `std.crypto.sign.Ed25519.Signature.verify` (Vexor consensus default,
-//!      UNTOUCHED by this module) — cofactored equality (accepts R that
-//!      differs from sB-hA by a low-order component) + rejects IDENTITY
-//!      (order-1) A/R only. This is Agave/dalek's production tx-verify
-//!      behavior and MUST stay the consensus path. This module never
-//!      overrides it.
+//!   1. `std.crypto.sign.Ed25519.Signature.verify` (cofactored equality —
+//!      accepts R that differs from sB-hA by a low-order component — plus
+//!      rejects IDENTITY (order-1) A/R only). STALE AS OF 2026-07-26: this
+//!      is NOT Vexor's consensus default and IS overridden by this module.
+//!      Real Agave `Signature::verify()` calls dalek `verify_strict`, so
+//!      `../ed25519.zig`'s `verify()` (the actual consensus path) calls
+//!      predicate #3 below (`verifyStrict`), not this cofactored stdlib
+//!      predicate. Kept only as a historical/comparison artifact — see
+//!      `../ed25519.zig verify()`'s 2026-07-26 CORRECTION comment.
 //!   2. `verifyLenientCofactorless` (this file) — Sig-derived: EXACT
 //!      (cofactorless) equality, NO low-order rejection at all (not even
 //!      identity). Ported faithfully from Sig for completeness + future
@@ -78,7 +81,13 @@ comptime {
     // still gets full generic.zig + wycheproof coverage.
     if (builtin.is_test) {
         _ = generic;
-        if (use_avx512_ifma) _ = avx512;
+        if (use_avx512_ifma) {
+            _ = avx512;
+            // F102: differential KAT proving avx512.zig matches CI-covered
+            // generic.zig byte-for-byte. Only ever imported here, inside this
+            // same use_avx512_ifma gate — see that file's own header for why.
+            _ = @import("avx512_differential_kat.zig");
+        }
         _ = @import("wycheproof.zig");
     }
 }
