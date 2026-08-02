@@ -569,7 +569,16 @@ pub const AccountsDb = struct {
     unrooted_overlay: std.AutoHashMap(u64, *SlotOverlay),
     unrooted_overlay_lock: std.Thread.Mutex,
     /// Runtime gate for the fork-isolation overlay. Set at init() from env var
-    /// `VEX_FORK_ISOLATION=1`. Default false (Phase A behavior).
+    /// `VEX_FORK_ISOLATION`. Default true — the canonical `two_tier` read path
+    /// (`build.zig:121`, always compiled in, no `-D` flag to disable it) is
+    /// hardcoded to assume this overlay is being written; a code-level default of
+    /// false let `promoteToUnflushedCache`'s unrooted_ring/sig_overlay writes go
+    /// silently dark while two_tier reads kept serving rooted-only data with no
+    /// error. deploy.sh and the golden gate already hardcode `VEX_FORK_ISOLATION=1`
+    /// operationally — this makes the code-level default agree with its own
+    /// documented/operational default instead of changing live behavior.
+    /// Set `VEX_FORK_ISOLATION=0` (or any non-`1` value) to explicitly opt back
+    /// into Phase A (no fork isolation). @prov:vex_store.fork_isolation F765
     fork_isolation_enabled: bool,
     /// PR-S2 (2026-05-15) — Sig-pattern per-slot account overlay. This is the
     /// successor to `unrooted_overlay`: ancestor-required reads enforce fork
@@ -750,10 +759,37 @@ pub const AccountsDb = struct {
             ) catch accounts_purge_age_slots;
         }
         {
+            // 🔴 FOOTGUN GUARD (2026-07-30). `accounts_clean` is DEFAULT-OFF for a CORRECTNESS
+            // reason, not a performance one: `AccountIndex.removeIf`'s predicate is INCOMPLETE.
+            // It drops any zero-lamport entry for the slot without Agave's single-ref /
+            // no-older-rooted-version / slot <= latest_full_snapshot_slot checks, so an older
+            // rooted version underneath gets RESURRECTED ⇒ bank_hash / lt_hash divergence.
+            // See the block comment on removeIf and agave accounts_db.rs:2407-2417.
+            //
+            // Until that predicate is ported, a single env var in a deploy recipe could silently
+            // diverge consensus. Refuse it, loudly, instead of honouring it quietly — a flag that
+            // can break consensus must not be settable by accident. Developing the fix stays
+            // possible via the explicit unsafe override, which names what it is.
             const clean_enabled = std.process.getEnvVarOwned(allocator, "VEXOR_ACCOUNTS_CLEAN_ENABLE") catch null;
             if (clean_enabled) |value| {
                 defer allocator.free(value);
-                accounts_clean_enabled = std.mem.eql(u8, value, "1");
+                const want = std.mem.eql(u8, value, "1");
+                if (want) {
+                    const unsafe_ok = blk: {
+                        const o = std.process.getEnvVarOwned(allocator, "VEXOR_ACCOUNTS_CLEAN_UNSAFE_INCOMPLETE_PREDICATE") catch break :blk false;
+                        defer allocator.free(o);
+                        break :blk std.mem.eql(u8, o, "1");
+                    };
+                    if (unsafe_ok) {
+                        accounts_clean_enabled = true;
+                        std.log.err("[ACCOUNTS-CLEAN] 🔴 ENABLED WITH AN INCOMPLETE PREDICATE (VEXOR_ACCOUNTS_CLEAN_UNSAFE_INCOMPLETE_PREDICATE=1). removeIf lacks the single-ref / no-older-rooted-version / snapshot-bound checks; an older rooted version can be RESURRECTED -> bank_hash divergence. DEVELOPMENT ONLY — never on a voting node.", .{});
+                    } else {
+                        accounts_clean_enabled = false;
+                        std.log.err("[ACCOUNTS-CLEAN] 🔴 REFUSING VEXOR_ACCOUNTS_CLEAN_ENABLE=1 — the reclaim predicate is INCOMPLETE and enabling it can diverge consensus (older rooted version resurrected). Clean stays OFF. Port the full predicate first (see removeIf's comment), or set VEXOR_ACCOUNTS_CLEAN_UNSAFE_INCOMPLETE_PREDICATE=1 to override on a NON-VOTING node.", .{});
+                    }
+                } else {
+                    accounts_clean_enabled = false;
+                }
             }
             accounts_clean_age_slots = parseEnvU64(
                 allocator,
@@ -833,7 +869,11 @@ pub const AccountsDb = struct {
             .unrooted_overlay = std.AutoHashMap(u64, *SlotOverlay).init(std.heap.page_allocator),
             .unrooted_overlay_lock = .{},
             .fork_isolation_enabled = blk: {
-                const env = std.posix.getenv("VEX_FORK_ISOLATION") orelse break :blk false;
+                // F765: default true — see field doc above. Unset env ⇒ true (matches
+                // deploy.sh's `${VEX_FORK_ISOLATION:-1}` and the golden gate's hardcoded
+                // `VEX_FORK_ISOLATION=1`). Explicitly set to anything other than "1" ⇒ false,
+                // preserving the ability to opt back into Phase A behavior for testing.
+                const env = std.posix.getenv("VEX_FORK_ISOLATION") orelse break :blk true;
                 break :blk std.mem.eql(u8, env, "1");
             },
             .rooted_slot = 0,
@@ -3181,9 +3221,43 @@ pub const AccountsDb = struct {
         // This is the LIVE gc entry point (replay_stage + rpc); the checks in
         // tickAccountsPurge/tickAccountsClean guard uncalled code paths.
         if (self.gc_quiesce.load(.acquire)) return;
+
+        // ── PHASE TIMING (2026-07-30, diagnostic only) ────────────────────────────────────
+        // This function runs INSIDE the vote-critical window: replay_stage.zig:6596 calls it
+        // between flushed_at_ns (:6163) and prevote_at_ns (:6606), so every microsecond here
+        // lands in `prevote_us` of [VOTE-LATENCY]. That term grew 21.8ms -> 96.2ms over an 8h
+        // run on 2026-07-30 while the per-slot WORK COUNT stayed flat, i.e. cost-per-item grew.
+        //
+        // WHICH term grows was never measured — it could be refreshGcSlots (O(n) walk + O(n log n)
+        // sort over slot_to_store, rate-limited) or the per-tick batch (shrinkSlot walks every
+        // record in a slot's store). Optimising before knowing is how the last three wrong guesses
+        // happened, so: measure first, then fix the term that actually grows.
+        const t_gc0 = std.time.nanoTimestamp();
         self.refreshGcSlots(now_ms) catch {};
+        const t_scan = std.time.nanoTimestamp();
         if (self.accounts_gc_slots.items.len == 0) return;
         const safe_slot = self.safeSlot(current_slot);
+        defer {
+            const t_end = std.time.nanoTimestamp();
+            const scan_us = @divTrunc(t_scan - t_gc0, 1000);
+            const batch_us = @divTrunc(t_end - t_scan, 1000);
+            // Emit only when this tick actually cost something, and rate-limit to keep the log
+            // sane: a per-slot line here would itself be overhead on the path we are measuring.
+            if (scan_us + batch_us >= 1000) {
+                const GcT = struct {
+                    var n: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+                };
+                const c = GcT.n.fetchAdd(1, .monotonic) + 1;
+                if (c <= 20 or c % 200 == 0) {
+                    std.log.warn("[GC-PHASE] slot={d} scan_us={d} batch_us={d} gc_slots={d} cursor={d} shrink={s} clean={s} n={d}", .{
+                        current_slot,                                     scan_us,
+                        batch_us,                                         self.accounts_gc_slots.items.len,
+                        self.accounts_gc_cursor,                          if (self.accounts_shrink_enabled) "on" else "off",
+                        if (self.accounts_clean_enabled) "on" else "off", c,
+                    });
+                }
+            }
+        }
         const batch = @min(self.accounts_gc_batch, self.accounts_gc_slots.items.len);
         var i: usize = 0;
         while (i < batch) : (i += 1) {
@@ -4090,18 +4164,37 @@ pub const AccountIndex = struct {
     // port the full Agave clean predicate (single-ref + no-older-rooted-version + slot <=
     // latest_full_snapshot_slot) or this resurrects stale data → bank_hash/lt_hash divergence.
     // Ref: agave-behavior-extractor 2026-06-13 + carrier #11 (69e1a98).
+    /// 🔴 CORRECTNESS FIX (2026-07-30): this used to call `bin.entries.remove()` from INSIDE
+    /// `while (iter.next())`. Mutating a HashMap during iteration invalidates the iterator —
+    /// entries can be skipped or visited twice, and on a rehash the iteration is undefined.
+    /// It was masked only because `accounts_clean` is default-OFF, so this never ran in
+    /// production; it would have become live the moment the flag was flipped.
+    /// Two-phase now: collect under the lock, then remove. Collection is bounded by the
+    /// zero-lamport entries for ONE slot, so the scratch buffer stays small.
+    ///
+    /// ⚠️ STILL NOT SAFE TO ENABLE — this fixes the ITERATION bug, not the PREDICATE. The
+    /// missing single-ref / no-older-rooted-version / slot <= latest_full_snapshot_slot checks
+    /// are what would resurrect stale data. See the guard in the env parsing above.
+    /// ⚠️ ALSO STILL O(total_accounts) per slot: it scans every entry in every bin to find one
+    /// slot's. That is the 6.3x replay slowdown measured on 2026-07-30 and is fixed properly by
+    /// reclaiming at root advance (where the superseded set is known exactly), not here.
     pub fn removeIf(self: *Self, slot: core.Slot, storage: *AccountStorage) void {
+        var doomed = std.ArrayListUnmanaged(core.Pubkey){};
+        defer doomed.deinit(self.allocator);
         for (self.bins) |*bin| {
+            doomed.clearRetainingCapacity();
             bin.lock.lock();
             var iter = bin.entries.iterator();
             while (iter.next()) |entry| {
                 if (entry.value_ptr.slot != slot) continue;
                 if (storage.readAccountUnlocked(entry.value_ptr.*)) |account| {
                     if (account.lamports == 0) {
-                        _ = bin.entries.remove(entry.key_ptr.*);
+                        // Collect only — removing here would invalidate `iter`.
+                        doomed.append(self.allocator, entry.key_ptr.*) catch continue;
                     }
                 }
             }
+            for (doomed.items) |pk| _ = bin.entries.remove(pk);
             bin.lock.unlock();
         }
     }
@@ -4190,7 +4283,7 @@ pub const AccountCache = struct {
         defer self.lock.unlock();
         // Check if eviction is needed
         if (self.entries.count() >= self.max_size) {
-            self.evictOldest();
+            try self.evictOldest();
         }
 
         self.access_counter += 1;
@@ -4200,49 +4293,65 @@ pub const AccountCache = struct {
         });
     }
 
-    /// Evict approximately 25% of oldest entries
-    fn evictOldest(self: *Self) void {
+    /// Evict approximately 25% of oldest entries.
+    /// F441 fix (2026-07-29): the collect buffer used to be a fixed [256]
+    /// stack array, capping remove_count at 256 regardless of how large the
+    /// actual over-threshold set is (typically ~25,000 at 25% of a 100k-entry
+    /// cache). Under sustained heavy-insert pressure a single pass could
+    /// never bring the cache back under target_count. Replaced with a
+    /// heap-allocated, dynamically-sized buffer (no cap) and a bounded loop
+    /// that re-checks the cache size after each pass and repeats until
+    /// actually under target_count.
+    fn evictOldest(self: *Self) !void {
         const target_count = self.max_size * 3 / 4;
-        const current_count = self.entries.count();
 
-        if (current_count <= target_count) return;
+        while (self.entries.count() > target_count) {
+            const current_count = self.entries.count();
+            const to_remove = current_count - target_count;
 
-        const to_remove = current_count - target_count;
+            // Find threshold access_order (entries below this will be removed)
+            // Simple approach: collect all access_orders, sort, find threshold
+            var min_order: u64 = std.math.maxInt(u64);
+            var max_order: u64 = 0;
 
-        // Find threshold access_order (entries below this will be removed)
-        // Simple approach: collect all access_orders, sort, find threshold
-        var min_order: u64 = std.math.maxInt(u64);
-        var max_order: u64 = 0;
-
-        var iter = self.entries.valueIterator();
-        while (iter.next()) |entry| {
-            if (entry.access_order < min_order) min_order = entry.access_order;
-            if (entry.access_order > max_order) max_order = entry.access_order;
-        }
-
-        // Estimate threshold (simple linear interpolation)
-        const range = max_order - min_order;
-        if (range == 0) return;
-
-        const threshold_fraction = @as(f64, @floatFromInt(to_remove)) / @as(f64, @floatFromInt(current_count));
-        const threshold_offset = @as(u64, @intFromFloat(threshold_fraction * @as(f64, @floatFromInt(range))));
-        const threshold = min_order + threshold_offset;
-
-        // Collect keys to remove (avoid modifying during iteration)
-        var keys_to_remove: [256]core.Pubkey = undefined;
-        var remove_count: usize = 0;
-
-        var key_iter = self.entries.iterator();
-        while (key_iter.next()) |kv| {
-            if (kv.value_ptr.access_order <= threshold and remove_count < 256) {
-                keys_to_remove[remove_count] = kv.key_ptr.*;
-                remove_count += 1;
+            var iter = self.entries.valueIterator();
+            while (iter.next()) |entry| {
+                if (entry.access_order < min_order) min_order = entry.access_order;
+                if (entry.access_order > max_order) max_order = entry.access_order;
             }
-        }
 
-        // Remove collected keys
-        for (keys_to_remove[0..remove_count]) |key| {
-            _ = self.entries.remove(key);
+            // Estimate threshold (simple linear interpolation)
+            const range = max_order - min_order;
+            if (range == 0) return;
+
+            const threshold_fraction = @as(f64, @floatFromInt(to_remove)) / @as(f64, @floatFromInt(current_count));
+            const threshold_offset = @as(u64, @intFromFloat(threshold_fraction * @as(f64, @floatFromInt(range))));
+            const threshold = min_order + threshold_offset;
+
+            // Collect keys to remove (avoid modifying during iteration).
+            // Heap-allocated + dynamically-sized: no fixed cap, so a single
+            // pass can remove the entire over-threshold set in one go.
+            // Zig 0.15.2: ArrayList is unmanaged — init with .empty, pass
+            // allocator to append/deinit.
+            var keys_to_remove: std.ArrayList(core.Pubkey) = .empty;
+            defer keys_to_remove.deinit(self.allocator);
+
+            var key_iter = self.entries.iterator();
+            while (key_iter.next()) |kv| {
+                if (kv.value_ptr.access_order <= threshold) {
+                    try keys_to_remove.append(self.allocator, kv.key_ptr.*);
+                }
+            }
+
+            // Remove collected keys
+            for (keys_to_remove.items) |key| {
+                _ = self.entries.remove(key);
+            }
+
+            // Threshold estimation found nothing to remove this pass (can
+            // happen with a degenerate access_order distribution) — bail to
+            // avoid spinning forever instead of converging.
+            if (keys_to_remove.items.len == 0) return;
         }
     }
 
@@ -4254,6 +4363,32 @@ pub const AccountCache = struct {
         self.misses = 0;
     }
 };
+
+test "F441: evictOldest converges under target_count for a >256-entry overflow" {
+    const allocator = std.testing.allocator;
+    var cache = AccountCache.init(allocator);
+    defer cache.deinit();
+    // Small cache so the test is fast; target_count = 750, overflow forces
+    // ~1250 removals in one insert-triggered eviction — well past the old
+    // fixed [256] cap.
+    cache.max_size = 1000;
+
+    var i: u64 = 0;
+    while (i < 2000) : (i += 1) {
+        var pk = core.Pubkey{ .data = undefined };
+        @memset(&pk.data, 0);
+        std.mem.writeInt(u64, pk.data[0..8], i, .little);
+        try cache.insert(&pk, .{
+            .lamports = 1,
+            .owner = core.Pubkey{ .data = undefined },
+            .executable = false,
+            .rent_epoch = 0,
+            .data = &[_]u8{},
+        });
+    }
+
+    try std.testing.expect(cache.entries.count() <= cache.max_size * 3 / 4);
+}
 
 fn deserializeAccount(allocator: std.mem.Allocator, data: []const u8) !*Account {
     const header_len: usize = 8 + 32 + 1 + 8 + 4;

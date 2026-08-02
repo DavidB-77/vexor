@@ -396,7 +396,10 @@ fn writeRunMetadata(dir: []const u8) !void {
 
     // Optional env vars deploy.sh / CI can set for richer metadata.
     const git_commit = std.posix.getenv("VEX_GIT_COMMIT") orelse "unset";
-    const fork_iso = std.posix.getenv("VEX_FORK_ISOLATION") orelse "0";
+    // Default string aligned 2026-07-29 to match F765 (accounts_db.zig defaults
+    // fork_isolation_enabled ON when VEX_FORK_ISOLATION is unset) — this is
+    // display-only (run_metadata.json diagnostics), no behavior change.
+    const fork_iso = std.posix.getenv("VEX_FORK_ISOLATION") orelse "1";
 
     var line_buf: [2048]u8 = undefined;
     const line = try std.fmt.bufPrint(

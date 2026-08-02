@@ -1,11 +1,15 @@
 //! Vexor Ledger Storage
 //!
-//! Persistent storage for the blockchain ledger data:
+//! In-memory-only storage for the blockchain ledger data:
 //! - Shreds (block fragments)
 //! - Slots and slot metadata
 //! - Block production data
 //!
-//! Uses RocksDB-style key-value storage optimized for sequential reads.
+//! `SlotMetaStore`/`ShredDataStore`/`BlockTimeStore` are plain `std.AutoHashMap`s
+//! with zero disk backing — all ledger history here is lost on process restart.
+//! (Whether that durability boundary is intended is a separate architecture
+//! question, out of scope for this comment fix; this header previously claimed
+//! "RocksDB-style key-value storage," which does not match the implementation.)
 
 const std = @import("std");
 const core = @import("core");

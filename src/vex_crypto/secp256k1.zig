@@ -128,11 +128,20 @@ pub fn verify(
 
     for (0..n_sigs) |i| {
         const off = OFFSETS_START + i * OFFSETS_SERIALIZED_SIZE;
-        // Safety: @sizeOf(SignatureOffsets) == 16 in Zig 0.15.2 (packed struct rounds up to
-        // next power-of-2), but only OFFSETS_SERIALIZED_SIZE (11) bytes are validated above.
-        // Ensure 16 bytes are available before the ptrCast to avoid an out-of-bounds read.
-        if (off + @sizeOf(SignatureOffsets) > data.len) return error.InvalidInstructionDataSize;
-        const offsets: *align(1) const SignatureOffsets = @ptrCast(data.ptr + off);
+        // @prov:crypto.secp256k1 F025 — @sizeOf(SignatureOffsets) == 16 in Zig 0.15.2 (packed
+        // struct backing integer rounds an 88-bit/11-byte layout up to 16), but the wire format
+        // (and Agave's bincode-based parity check) is exactly OFFSETS_SERIALIZED_SIZE (11)
+        // bytes; the `required` bound above already guarantees those 11 bytes are present for
+        // every i in 0..n_sigs. A guard demanding 16 bytes here over-rejects legal minimal
+        // instructions (data.len in [12,16)) that Agave accepts. Copy exactly the 11 defined
+        // bytes into a zero-padded local buffer and cast from that instead of `data.ptr + off`:
+        // this never reads past `data.len` (only the validated 11 bytes are touched) and never
+        // reads past the local buffer for the padded backing-integer field access the packed
+        // struct's codegen may perform — relaxing the guard and casting from `data` directly
+        // would risk an OOB read of up to 5 bytes when only 11-15 bytes are actually present.
+        var offsets_buf: [@sizeOf(SignatureOffsets)]u8 = [_]u8{0} ** @sizeOf(SignatureOffsets);
+        @memcpy(offsets_buf[0..OFFSETS_SERIALIZED_SIZE], data[off..][0..OFFSETS_SERIALIZED_SIZE]);
+        const offsets: *align(1) const SignatureOffsets = @ptrCast(&offsets_buf);
 
         // @prov:crypto.secp256k1 — validate sig_instr_idx early
         if (offsets.sig_instr_idx >= all_instr_datas.len) {
@@ -515,4 +524,69 @@ test "full round-trip: sign, encode, verify" {
     @memcpy(buf[msg_off..][0..message.len], message);
 
     try verify(buf, &.{buf});
+}
+
+test "F025 KAT: minimal 12-byte instruction with cross-instruction payload (Agave parity)" {
+    // @prov:crypto.secp256k1 F025 — regression test for the over-strict bounds guard that
+    // demanded @sizeOf(SignatureOffsets)==16 bytes present at `off` instead of the true
+    // OFFSETS_SERIALIZED_SIZE==11. Agave's minimal legal instruction (precompiles/src/
+    // secp256k1.rs:38-51, bincode-deserializes exactly 11 offset bytes) is
+    // `data.len == 12` (1 count byte + 11 offset bytes) when every offset field points at a
+    // *different* instruction that carries all the payload. Before the fix this instruction
+    // was rejected with InvalidInstructionDataSize purely due to the packed struct's 16-byte
+    // backing-integer padding, even though every byte Agave actually reads was present.
+    const allocator = std.testing.allocator;
+
+    const keypair = Ecdsa.KeyPair.generate();
+    const message = "F025 minimal-instruction KAT";
+
+    var msg_hash: [Keccak256.digest_length]u8 = undefined;
+    Keccak256.hash(message, &msg_hash, .{});
+
+    const eth_addr = ethereumAddress(&keypair.public_key);
+
+    // Payload instruction (index 1): [eth_addr(20)][sig(64)][rec_id(1)][msg].
+    const eth_off: u16 = 0;
+    const sig_off: u16 = eth_off + ETH_ADDRESS_SIZE;
+    const msg_off: u16 = sig_off + SIGNATURE_SIZE + 1;
+    const payload_len = msg_off + message.len;
+    const payload = try allocator.alloc(u8, payload_len);
+    defer allocator.free(payload);
+    @memset(payload, 0);
+    @memcpy(payload[eth_off..][0..ETH_ADDRESS_SIZE], &eth_addr);
+
+    const signature = try keypair.signPrehashed(msg_hash, null);
+    const sig_bytes = signature.toBytes();
+    @memcpy(payload[sig_off..][0..SIGNATURE_SIZE], &sig_bytes);
+
+    var rec_id: u2 = 0;
+    for (0..4) |candidate| {
+        const r: u2 = @intCast(candidate);
+        if (recoverPublicKey(&msg_hash, &sig_bytes, r)) |recovered| {
+            if (std.mem.eql(u8, &recovered.toUncompressedSec1(), &keypair.public_key.toUncompressedSec1())) {
+                rec_id = r;
+                break;
+            }
+        } else |_| {}
+    }
+    payload[sig_off + SIGNATURE_SIZE] = rec_id;
+    @memcpy(payload[msg_off..][0..message.len], message);
+
+    // Precompile instruction (index 0): exactly DATA_START (12) bytes — n_sigs(1) + the
+    // 11-byte SignatureOffsets struct, all three instr_idx fields pointing at instruction 1.
+    var instr0: [DATA_START]u8 = undefined;
+    instr0[0] = 1; // n_sigs
+    const offsets: SignatureOffsets = .{
+        .sig_offset = sig_off,
+        .sig_instr_idx = 1,
+        .eth_addr_offset = eth_off,
+        .eth_addr_instr_idx = 1,
+        .msg_offset = msg_off,
+        .msg_size = @intCast(message.len),
+        .msg_instr_idx = 1,
+    };
+    @memcpy(instr0[OFFSETS_START..][0..OFFSETS_SERIALIZED_SIZE], std.mem.asBytes(&offsets));
+
+    try std.testing.expectEqual(@as(usize, DATA_START), instr0.len);
+    try verify(&instr0, &.{ &instr0, payload });
 }

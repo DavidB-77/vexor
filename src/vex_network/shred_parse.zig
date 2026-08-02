@@ -160,10 +160,32 @@ pub const Shred = struct {
 
     pub fn fromPayload(payload: []const u8) !Shred {
         const common = try ShredCommonHeader.fromBytes(payload);
-        return Shred{
+        const shred = Shred{
             .common = common,
             .payload = payload,
         };
+
+        // F327 (b): Agave `shred_data.rs sanitize()` — LAST_SHRED_IN_SLOT (flags
+        // bit 0x80) implies DATA_COMPLETE_SHRED (flags bit 0x40) is also set
+        // (`shred.rs:148-155`: "LAST_SHRED_IN_SLOT also implies DATA_COMPLETE_SHRED
+        // ... cannot be LAST_SHRED_IN_SLOT if not also DATA_COMPLETE_SHRED").
+        // 0x80-without-0x40 is therefore an invalid flags combination -> reject
+        // (`Error::InvalidShredFlags`). Data-only: code shreds have no flags byte.
+        if (common.variant.is_data and payload.len > 85) {
+            const flags = payload[85];
+            if ((flags & 0x80) != 0 and (flags & 0x40) == 0) return error.InvalidShredFlags;
+        }
+
+        // F327 (c): Agave `traits.rs parent()` — reject `parent_offset == 0` for a
+        // non-genesis (non-zero) slot, and reject `parent_offset > slot` (the
+        // `slot.checked_sub(parent_offset)` underflow case), both surfaced as
+        // `Error::InvalidParentOffset`. Data-only: code shreds have no parent_offset.
+        if (common.variant.is_data) {
+            if (common.parent_offset == 0 and common.slot != 0) return error.InvalidParentOffset;
+            if (@as(core.Slot, common.parent_offset) > common.slot) return error.InvalidParentOffset;
+        }
+
+        return shred;
     }
 
     pub fn isLastInSlot(self: *const Shred) bool {
@@ -407,8 +429,10 @@ pub fn isUnexpectedDataComplete(shred: *const Shred) bool {
 }
 
 pub fn parseShred(data: []const u8) !Shred {
-    const common = try ShredCommonHeader.fromBytes(data);
-    return Shred{ .common = common, .payload = data };
+    // Same entry point as Shred.fromPayload (was a duplicate parse path) so the
+    // F327 flags-consistency / parent_offset rejection gates apply uniformly to
+    // every caller, not just the fromPayload call sites.
+    return Shred.fromPayload(data);
 }
 
 const testing = std.testing;
@@ -439,4 +463,57 @@ test "fromBytes: 83-byte code-shred buffer still parses (code shreds have no par
     const hdr = try ShredCommonHeader.fromBytes(&buf);
     try testing.expect(!hdr.variant.is_data);
     try testing.expectEqual(@as(u16, 0), hdr.parent_offset);
+}
+
+// F327 (b): flags byte with LAST_SHRED_IN_SLOT (0x80) set but DATA_COMPLETE_SHRED
+// (0x40) clear is an invalid combination per Agave shred.rs:148-155 -- must be
+// rejected at parse time, matching shred_data.rs sanitize()'s InvalidShredFlags.
+test "fromPayload: data shred with 0x80 flag set and 0x40 clear is rejected (InvalidShredFlags)" {
+    var buf = [_]u8{0} ** 90;
+    buf[64] = 0x80; // Merkle DATA variant, proof_size=0
+    std.mem.writeInt(u64, buf[65..73], 100, .little); // slot=100
+    std.mem.writeInt(u16, buf[83..85], 1, .little); // parent_offset=1 (valid)
+    buf[85] = 0x80; // flags: LAST_IN_SLOT bit alone, DATA_COMPLETE bit clear
+    try testing.expectError(error.InvalidShredFlags, Shred.fromPayload(&buf));
+}
+
+// Sibling positive case: the canonical LAST_SHRED_IN_SLOT encoding (0xC0 = both
+// bits) must NOT be rejected by the same check.
+test "fromPayload: data shred with canonical 0xC0 (LAST_IN_SLOT+DATA_COMPLETE) flags parses" {
+    var buf = [_]u8{0} ** 90;
+    buf[64] = 0x80;
+    std.mem.writeInt(u64, buf[65..73], 100, .little);
+    std.mem.writeInt(u16, buf[83..85], 1, .little);
+    buf[85] = 0xC0;
+    const s = try Shred.fromPayload(&buf);
+    try testing.expect(s.isLastInSlot());
+}
+
+// F327 (c): parent_offset == 0 for a non-genesis (non-zero) slot is invalid per
+// Agave traits.rs parent() -- InvalidParentOffset.
+test "fromPayload: data shred with parent_offset=0 at non-zero slot is rejected (InvalidParentOffset)" {
+    var buf = [_]u8{0} ** 90;
+    buf[64] = 0x80;
+    std.mem.writeInt(u64, buf[65..73], 100, .little); // slot=100
+    std.mem.writeInt(u16, buf[83..85], 0, .little); // parent_offset=0 -- invalid here
+    try testing.expectError(error.InvalidParentOffset, Shred.fromPayload(&buf));
+}
+
+// F327 (c): parent_offset > slot underflows Agave's `slot.checked_sub(parent_offset)`
+// -- also InvalidParentOffset.
+test "fromPayload: data shred with parent_offset > slot is rejected (InvalidParentOffset)" {
+    var buf = [_]u8{0} ** 90;
+    buf[64] = 0x80;
+    std.mem.writeInt(u64, buf[65..73], 5, .little); // slot=5
+    std.mem.writeInt(u16, buf[83..85], 10, .little); // parent_offset=10 > slot
+    try testing.expectError(error.InvalidParentOffset, Shred.fromPayload(&buf));
+}
+
+// Genesis-slot edge case: slot=0 with parent_offset=0 must NOT be rejected (Agave's
+// `parent_offset == 0 && slot != 0` guard is specifically slot-!=-0-gated).
+test "fromPayload: data shred at slot=0 with parent_offset=0 parses (genesis case)" {
+    var buf = [_]u8{0} ** 90;
+    buf[64] = 0x80;
+    // slot and parent_offset both default-zeroed.
+    _ = try Shred.fromPayload(&buf);
 }
