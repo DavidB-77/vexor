@@ -1704,6 +1704,18 @@ fn executeWithdraw(ctx: *InvokeContext, ix_data: []const u8) Error!void {
 // here REINTRODUCES the carrier on this path. See the 2026-08-01 divergence at
 // slot 425636293.
 //
+// ⚠ FOOTGUN, SECOND HALF (audit F16, 2026-08-02 evening): this twin ALSO lacks canonical
+// branch A — the full-drain special case at program@v5.0.0 processor.rs:575-618, where
+// `split_lamports == source_lamport_balance` makes the destination a verbatim copy of the
+// source state (delegation.stake NOT recomputed), applies the deficit predicate
+// `D +| L -| delegation >= dst_reserve` with `delegation == 0` for an inactive source
+// (processor.rs:581-585, :596-602), and does NOT apply the minimum-delegation check
+// (processor.rs:604-606 is gated on is_active_or_activating). That gap was fixed in the
+// native handler on 2026-08-02 as audit finding F2 (same carrier class as 425636293) and
+// is NOT ported here. So VEX_STAKE_BPF=1 reintroduces BOTH branch B (above) and branch A
+// on this path — two carriers, not one. Port both before that flag is ever considered.
+// Audit: the 2026-08-02 stake-split audit (F2, F16).
+//
 // @prov:stake-builtin.split — byte-faithful to Agave solana-program/stake@program@v5.0.0
 // commit 6ed2c60c (the rc.0 .so Firedancer runs). SIMD-0490 ACTIVE ⇒ min_delegation =
 // 1 SOL. Mirrors executeMerge/executeWithdraw (typed errors, signer-SET scan,
