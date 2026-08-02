@@ -5717,6 +5717,46 @@ pub const ReplayStage = struct {
             }
         }
 
+        // ── VOTE-PATH PHASE TIMING (2026-07-26) ──────────────────────────
+        // Vote latency (freeze -> submit) measured p50 24.8ms / p99 129ms / max 3.0s
+        // on first instrumentation -- an order of magnitude larger than the replay time
+        // this session spent optimising. These two stamps split that interval so the
+        // cost is attributable instead of aggregate: `flush` covers the post-freeze
+        // sysvar write-back, `pre_vote` covers everything between that and the vote
+        // gates. Two i128 reads per slot at 2.5 slots/sec.
+        bank.flushed_at_ns = std.time.nanoTimestamp();
+
+        // ── PREVOTE WINDOW PHASE TIMING (2026-07-30, diagnostic only, no behaviour change) ──
+        // `prevote_us` in [VOTE-LATENCY] is prevote_at_ns - flushed_at_ns, i.e. EVERYTHING
+        // between here and :prevote_at_ns below. It grew 21.8ms -> 96.2ms over an 8h run on
+        // 2026-07-30 with per-slot work COUNTS flat, and the p10 rose 2.8ms -> 72.7ms (26x),
+        // which proves the growth is in work done on EVERY slot, not in the rate-limited
+        // refreshGcSlots scan. But the window contains several per-slot consumers and we could
+        // not tell which one grows — so bracket ALL of them rather than guess a fifth time.
+        // Buckets are cumulative timestamps; a zero delta means that path did not execute.
+        // 2026-07-31 RELABEL. The first cut of these probes had FOUR stamps, and the last of
+        // them (`ph_gc`) sat INSIDE `if (slot % 64 == 0)` -> `if (self.accounts_db)`. So the
+        // bucket printed as `gc_us` was really "everything from the vote batch to the accounts
+        // GC tick" — ~260 lines containing the fork-choice feed, checkPendingChain, the cache
+        // flush and the whole 64-slot periodic block. It read 131,787us while [GC-PHASE]
+        // measured the GC itself at 11,236us: a 12x gap that is pure mislabelling, not a
+        // second cost. Anyone optimising `tickAccountsGc` off that number would have been
+        // optimising the wrong function.
+        //
+        // Every stamp below is now taken UNCONDITIONALLY at a block boundary, so each bucket
+        // means the same thing on every slot. `ph_gc` stays inside the periodic block on
+        // purpose — it splits the GC out of `periodic_us` rather than defining a bucket edge.
+        // Buckets are cumulative timestamps; a zero delta means that path did not execute.
+        var ph_lthash: i128 = 0;
+        var ph_fork: i128 = 0;
+        var ph_votebatch: i128 = 0;
+        var ph_feed: i128 = 0;
+        var ph_chain: i128 = 0;
+        var ph_flush: i128 = 0;
+        var ph_pre_gc: i128 = 0;
+        var ph_gc: i128 = 0;
+        var ph_periodic: i128 = 0;
+
         // [LTHASH-VERIFY] Decisive byte-vs-accumulation test (env VEX_VERIFY_LTHASH_SLOT).
         // Placed HERE — after BOTH the in-replay main-tx flush (flushPendingWritesToDb)
         // AND the post-freeze sysvar flush (flushPendingWritesFromIndex above) — so the
@@ -5764,6 +5804,7 @@ pub const ReplayStage = struct {
         const zero_hash = [_]u8{0} ** 32;
         if (!std.mem.eql(u8, &bank.poh_hash.data, &zero_hash)) {
             self.root_bank.store(bank, .release);
+            ph_lthash = std.time.nanoTimestamp();
             // Cache poh_hash as tx_blockhash — deterministic from PoH entries.
             // @prov:replay.cached-blockhash-poh Curl fallback for bootstrap.
             self.cached_blockhash = bank.poh_hash;
@@ -5780,6 +5821,7 @@ pub const ReplayStage = struct {
         if (self.fork_choice) |*fc| {
             const fc_mod = @import("vex_consensus").fork_choice;
             fc_mod.addForkCompat(fc, slot, bank.parent_slot, bank.bank_hash, bank.parent_hash) catch {};
+            ph_fork = std.time.nanoTimestamp();
 
             // PHASE-2 (2026-05-26): feed cluster votes into fork_choice's
             // latest_votes map so bestSlot() can weight forks by real stake.
@@ -5886,6 +5928,7 @@ pub const ReplayStage = struct {
                     bh_ctx,
                 ) catch break :phase2_delta;
                 defer self.allocator.free(out.votes);
+                ph_votebatch = std.time.nanoTimestamp();
 
                 if (out.votes.len > 0) {
                     const Lookup = ffeed.EpochStakeLookup(@TypeOf(db_ptr.epoch_stakes));
@@ -5927,6 +5970,18 @@ pub const ReplayStage = struct {
             }
         }
 
+        // Closes the fork-choice-feed phase (phase2_delta). Unconditional: taken whether or not
+        // the feed block ran, so `feed_us` is 0 rather than undefined when it is skipped.
+        //
+        // READ THIS BEFORE TRUSTING feed_us. `ph_votebatch` is stamped INSIDE phase2_delta,
+        // after the collect call, so the feed's SETUP (EpochStakeLookup + collect) is charged
+        // to `votebatch_us`, not to `feed_us` — the names are narrower than they sound. And on
+        // the `catch break :phase2_delta` path `ph_votebatch` is never stamped at all, so the
+        // fallback collapses votebatch_us and feed_us into a single span reported entirely as
+        // `votebatch_us`. A zero `feed_us` therefore means "the feed broke out early", NOT
+        // "the feed was free".
+        ph_feed = std.time.nanoTimestamp();
+
         ReplayStats.inc(&self.stats.slots_replayed);
         const total_replayed = self.stats.slots_replayed.load(.monotonic);
 
@@ -5952,6 +6007,7 @@ pub const ReplayStage = struct {
         // as repair fills the gap (s+1, s+2, ...), each freeze cascades into
         // waking the next pending child.
         self.checkPendingChain(slot);
+        ph_chain = std.time.nanoTimestamp();
 
         // Aggressive cache-to-disk flush (every 100 slots, 5000 entries)
         // Prevents RSS bloat that degrades throughput (2.77→2.05/s over 15 min without this)
@@ -5969,6 +6025,7 @@ pub const ReplayStage = struct {
                 _ = db.flushCacheToDisk(slot, 5000) catch {};
             }
         }
+        ph_flush = std.time.nanoTimestamp();
 
         // Bank pruning: free old banks below tower root (every 64 slots).
         // Safety valve: if root stalls, fall back to slot-based cutoff (slot - 512)
@@ -6070,6 +6127,7 @@ pub const ReplayStage = struct {
             // dead 64MB stores copy few live records). Target ~48 live heap
             // stores ≈ 3GB working set.
             if (self.accounts_db) |adb| {
+                ph_pre_gc = std.time.nanoTimestamp();
                 const heap_stores = vex_store.accounts.g_av_heap_count.load(.monotonic);
                 const target: u64 = 48;
                 adb.accounts_gc_batch = if (heap_stores > target)
@@ -6077,14 +6135,73 @@ pub const ReplayStage = struct {
                 else
                     2;
                 adb.tickAccountsGc(adb.rooted_slot, @intCast(md_now));
+                ph_gc = std.time.nanoTimestamp();
             }
         }
+        // Closes the 64-slot periodic block (bank prune, program-cache prune, frozen_history
+        // prune, mem diag, accounts GC). Unconditional, so `periodic_us` is 0 on the 63 slots
+        // out of 64 where the block is skipped instead of silently swallowing them.
+        ph_periodic = std.time.nanoTimestamp();
+
         // Timing breakdown
         const total_ms = t3 - t0;
 
         // Record for TPS tracking
         self.stats.recordSlot(slot, bank.signature_count, @intCast(@max(1, total_ms) * std.time.ns_per_ms));
 
+        // ── PREVOTE PHASE ATTRIBUTION ──────────────────────────────────────────────────────
+        // Emits the full breakdown of prevote_us. `other_us` is the residual — everything in the
+        // window NOT covered by a bucket. If the growth turns out to live in `other_us`, that is
+        // itself the answer: the cost is somewhere we have not bracketed yet, and the next probe
+        // goes there. Rate-limited so the logging is not itself overhead on the measured path.
+        {
+            const t_end = std.time.nanoTimestamp();
+            const ph_t0 = bank.flushed_at_ns;
+            const total_us = @divTrunc(t_end - ph_t0, 1000);
+            // 2026-07-31: the `total_us >= 1000` gate that used to wrap this emit was a
+            // SELECTION BIAS, not a volume control — it sampled only slots already slower
+            // than 1ms, so the series could never show a healthy slot and `n` counted slow
+            // slots rather than slots. Sample by COUNT over all slots instead; volume is
+            // bounded the same way it always was (first 25, then every 100th).
+            {
+                const PhT = struct {
+                    var n: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+                };
+                const c = PhT.n.fetchAdd(1, .monotonic) + 1;
+                if (c <= 25 or c % 100 == 0) {
+                    // Each bucket is measured from the previous stamp that actually fired, so a
+                    // skipped path contributes 0 rather than corrupting its neighbour.
+                    const a = if (ph_lthash != 0) ph_lthash else ph_t0;
+                    const b = if (ph_fork != 0) ph_fork else a;
+                    const d = if (ph_votebatch != 0) ph_votebatch else b;
+                    const f = if (ph_feed != 0) ph_feed else d;
+                    const g = if (ph_chain != 0) ph_chain else f;
+                    const h = if (ph_flush != 0) ph_flush else g;
+                    const p = if (ph_periodic != 0) ph_periodic else h;
+                    // gc_us is a SUBSET of periodic_us (tickAccountsGc only), bracketed by
+                    // ph_pre_gc..ph_gc. Printed so the GC can be told apart from the rest of
+                    // the periodic block. It is NOT a sequential bucket — do not sum it with
+                    // the others or you will double-count it inside periodic_us.
+                    const gc_us: i128 = if (ph_gc != 0 and ph_pre_gc != 0) @divTrunc(ph_gc - ph_pre_gc, 1000) else 0;
+                    std.log.warn("[PREVOTE-PHASES] slot={d} total_us={d} lthash_us={d} fork_us={d} votebatch_us={d} feed_us={d} chain_us={d} flush_us={d} periodic_us={d} other_us={d} gc_us={d} p64={d} n={d}", .{
+                        bank.slot,
+                        total_us,
+                        @divTrunc(a - ph_t0, 1000),
+                        @divTrunc(b - a, 1000),
+                        @divTrunc(d - b, 1000),
+                        @divTrunc(f - d, 1000),
+                        @divTrunc(g - f, 1000),
+                        @divTrunc(h - g, 1000),
+                        @divTrunc(p - h, 1000),
+                        @divTrunc(t_end - p, 1000),
+                        gc_us,
+                        @as(u8, if (ph_gc != 0) 1 else 0),
+                        c,
+                    });
+                }
+            }
+        }
+        bank.prevote_at_ns = std.time.nanoTimestamp();
         // ── Vote submission ──────────────────────────────────────────────
         // After successful freeze, submit a vote for this slot.
         // Requires: identity_secret, vote_account, and bank_hash.
@@ -7524,6 +7641,18 @@ pub const ReplayStage = struct {
         // After VEX_FC_REROOT bounded the fork-choice tree, freeze->submit fell 270ms ->
         // 23.3ms p50, and the remainder is NOT where the last probe was looking:
         //   flush 524us (2%) · prevote 1,789us (8%) · decide 21,738us (90%) · send 0us
+        // `decide_us` is prevote_at_ns -> t_decided_ns, i.e. this whole function, and it
+        // was a single opaque number — exactly the state prevote_us was in before it was
+        // bracketed. Same technique, aimed at the 90% instead of the 8%.
+        //
+        // Stamps sit at the boundaries of the labeled blocks that already exist here, so
+        // they add no structure of their own. Every stamp is unconditional: a block that
+        // breaks out early contributes 0 rather than charging its neighbour.
+        const dph_t0 = std.time.nanoTimestamp();
+        var dph_prop: i128 = 0;
+        var dph_gossip: i128 = 0;
+        var dph_canon: i128 = 0;
+        var dph_shadow: i128 = 0;
         const vex_consensus = @import("vex_consensus");
         const secret = self.identity_secret orelse return;
         const vote_acct = self.vote_account orelse return;
@@ -7691,6 +7820,7 @@ pub const ReplayStage = struct {
         // VEX_PROP_GATE stays armed: unhealthy-feed / no-target falls through to the landed armed target
         // (the fallback); with the landed gate off, that fallthrough would vote the tip = orphan risk.
         // Adopting gv_safe + downstream tower validation is the SAME mechanism the landed armed path uses.
+        dph_prop = std.time.nanoTimestamp();
         gossip_prop: {
             const gmode = self.gossipPropMode();
             if (gmode == .off) break :gossip_prop;
@@ -7879,6 +8009,7 @@ pub const ReplayStage = struct {
         // lockout-violating target is still refused. SLASHING-SAFE: only ever votes a real frozen bank.
         // OFFLINE-GATED on freeze-418669047.2 (must advance past the stall AND refuse/self-heal the orphan)
         // before being armed live. When OFF, behavior is byte-identical to the prop_retarget path above.
+        dph_gossip = std.time.nanoTimestamp();
         if (self.canonicalVoteEnabled()) canonical_vote: {
             const fc = if (self.fork_choice) |*p| p else break :canonical_vote;
             const t0 = if (self.tower) |*p| p else break :canonical_vote;
@@ -7949,6 +8080,7 @@ pub const ReplayStage = struct {
         // ARMING is a LATER, separate phase (NOT enabled here): it additionally requires
         // heaviest_slot_on_same_voted_fork + switch-threshold compose + last_vote_able_to_land refresh
         // + duplicate-invalid marking. This block only OBSERVES.
+        dph_canon = std.time.nanoTimestamp();
         heaviest_shadow: {
             if (!self.heaviestShadowEnabled()) break :heaviest_shadow;
             const fc = if (self.fork_choice) |*p| p else break :heaviest_shadow;
@@ -8042,6 +8174,7 @@ pub const ReplayStage = struct {
             }
         }
 
+        dph_shadow = std.time.nanoTimestamp();
         // Record vote in tower state (handles lockout expiry + confirmation doubling)
         if (self.tower) |*t| {
             // ── VOTE-COVERAGE target resolution (2026-07-10, vote-credit-gap-coverage mechanism) ──
@@ -8710,6 +8843,38 @@ pub const ReplayStage = struct {
         // Enqueue for async send if vote sender thread is wired.
         // Ownership transfers to queue -- sender thread frees after send.
         var enqueued = false;
+        // Stamp before transmission. The [VOTE-LATENCY] total is measured AFTER the
+        // send, so without this split we cannot tell decision-logic cost from transport
+        // cost -- and they need completely different fixes.
+        const t_decided_ns = std.time.nanoTimestamp();
+        {
+            // Same cadence and same bounding as [PREVOTE-PHASES]: first 25, then every
+            // 100th, over ALL votes — never gated on a duration threshold, which is the
+            // selection bias that made the first prevote series unusable.
+            // `tower_us` is the tail: switch-proof, tower recordVote, TowerSync build and
+            // signAndSerialize. If the cost turns out to be there it needs its own split.
+            const DphT = struct {
+                var n: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+            };
+            const dc = DphT.n.fetchAdd(1, .monotonic) + 1;
+            if (dc <= 25 or dc % 100 == 0) {
+                const q = if (dph_prop != 0) dph_prop else dph_t0;
+                const r = if (dph_gossip != 0) dph_gossip else q;
+                const u = if (dph_canon != 0) dph_canon else r;
+                const w = if (dph_shadow != 0) dph_shadow else u;
+                std.log.warn("[DECIDE-PHASES] slot={d} decide_us={d} entry_us={d} prop_us={d} gossip_us={d} canon_us={d} shadow_us={d} tower_us={d} n={d}", .{
+                    bank_in.slot,
+                    @divTrunc(t_decided_ns -| bank_in.prevote_at_ns, 1000),
+                    @divTrunc(dph_t0 -| bank_in.prevote_at_ns, 1000),
+                    @divTrunc(q - dph_t0, 1000),
+                    @divTrunc(r - q, 1000),
+                    @divTrunc(u - r, 1000),
+                    @divTrunc(w - u, 1000),
+                    @divTrunc(t_decided_ns - w, 1000),
+                    dc,
+                });
+            }
+        }
         if (self.vote_send_queue) |q| {
             enqueued = q.push(.{ .kind = entry_kind, .bytes = serialized });
         }
@@ -8726,6 +8891,28 @@ pub const ReplayStage = struct {
         const VoteDbgSubmit = struct {
             var count: u64 = 0;
         };
+        // ── VOTE LATENCY (2026-07-26) ────────────────────────────────────────
+        // freeze -> vote-submit, the interval we actually control. Timely-vote-credits
+        // pays progressively less the later a vote lands, so this is the metric closest
+        // to earnings, and until now it was not measured at all: replay_ms and freeze_ms
+        // are both proxies for it. Emitted EVERY slot (2.5/sec, one subtract and one log
+        // line) rather than sampled, because the tail is the interesting part -- a p99
+        // that misses the credit window costs real revenue even if the median is fine.
+        // The landed half of the round trip is already observable externally as the
+        // lastVote-vs-clusterSlot gap in the oracle health log.
+        if (bank_in.frozen_at_ns != 0) {
+            const vote_lat_us = @divTrunc(std.time.nanoTimestamp() - bank_in.frozen_at_ns, 1000);
+            std.log.warn("[VOTE-LATENCY] slot={d} freeze_to_submit_us={d} flush_us={d} prevote_us={d} decide_us={d} send_us={d} q={s}", .{
+                bank_in.slot,
+                vote_lat_us,
+                @divTrunc(bank_in.flushed_at_ns -| bank_in.frozen_at_ns, 1000),
+                @divTrunc(bank_in.prevote_at_ns -| bank_in.flushed_at_ns, 1000),
+                @divTrunc(t_decided_ns - bank_in.prevote_at_ns, 1000),
+                @divTrunc(std.time.nanoTimestamp() - t_decided_ns, 1000),
+                if (enqueued) "Q" else "INLINE",
+            });
+        }
+
         VoteDbgSubmit.count += 1;
         if (VoteDbgSubmit.count <= 5 or VoteDbgSubmit.count % 100 == 0) {
             const lockout_depth: usize = if (self.tower) |*t| t.vote_state.len else 0;

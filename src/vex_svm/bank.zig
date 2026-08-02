@@ -531,6 +531,19 @@ pub const Bank = struct {
 
     /// Whether this bank has been frozen (hash committed).
     is_frozen: bool,
+    /// Monotonic ns at which freeze() completed, or 0 if not yet frozen.
+    ///
+    /// 2026-07-26: added to make VOTE LATENCY measurable. Timely-vote-credits pays
+    /// progressively less the later a vote lands, so freeze->vote is the single
+    /// metric closest to validator earnings -- and it was entirely uninstrumented:
+    /// every performance number we had (replay_ms, freeze_ms) is a proxy for it.
+    /// One store per slot at 2.5 slots/sec, so the cost is unmeasurable.
+    frozen_at_ns: i128 = 0,
+    /// Phase stamps splitting freeze -> vote-submit, so that interval is attributable
+    /// rather than aggregate. flushed_at_ns: post-freeze sysvar write-back done.
+    /// prevote_at_ns: reached the vote-submission block. Both 0 if not reached.
+    flushed_at_ns: i128 = 0,
+    prevote_at_ns: i128 = 0,
 
     /// PR-5av Phase 1 (2026-05-22): chain-confirmation status.
     /// True once this bank's `block_id` has been verified to chain to a
@@ -5206,6 +5219,7 @@ pub const Bank = struct {
         }
 
         self.is_frozen = true;
+        self.frozen_at_ns = std.time.nanoTimestamp();
 
         std.log.debug(
             "[BANK] Slot {d}: frozen OK, bank_hash={x:0>8}..{x:0>8} sigs={d} writes={d}",
