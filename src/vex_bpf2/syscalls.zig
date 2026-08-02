@@ -1585,9 +1585,15 @@ fn sysvarGetGeneric(
     bytes_result: error{SysvarNotPopulated}![]const u8,
     var_addr: u64,
     type_size: u64,
+    cost_size: u64,
 ) SyscallError!u64 {
     // @prov:syscall.sysvar-getters — cost = sysvar_base_cost + size_of::<T>()
-    const cost = std.math.add(u64, CuCost.sysvar_base_cost, type_size) catch return error.M6_InvalidArgument;
+    // F084 fix (2026-07-29): `cost_size` is Agave's Rust ABI-padded
+    // `size_of::<T>()` (may exceed `type_size`, the unpadded wire size, for
+    // Rent/EpochRewards — see sysvar_cache.zig's *_PADDED_SIZE constants).
+    // The write below still uses `type_size` — this leg is CU-accounting
+    // only, not a memory-width change.
+    const cost = std.math.add(u64, CuCost.sysvar_base_cost, cost_size) catch return error.M6_InvalidArgument;
     ic.consumeCompute(cost) catch return error.M6_ConsumeOverflow;
 
     // SIMD-0459: var_addr in MM_INPUT region rejected when feature active.
@@ -1603,7 +1609,7 @@ fn sysvarGetGeneric(
 
 fn solGetClock(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _: u64) SyscallError!u64 {
     traceEntry("sol_get_clock_sysvar", ic, addr, 0, 0, 0, 0);
-    return sysvarGetGeneric(ic, ic.sysvar_cache.getClockBytes(), addr, sysvar_cache_mod.CLOCK_SIZE);
+    return sysvarGetGeneric(ic, ic.sysvar_cache.getClockBytes(), addr, sysvar_cache_mod.CLOCK_SIZE, sysvar_cache_mod.CLOCK_SIZE);
 }
 
 // PR-5an (2026-05-20): EpochSchedule wire-form vs in-memory layout fix
@@ -1636,10 +1642,15 @@ fn solGetClock(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _: u64) Sy
 // `project_carrier_i_static_analysis_2026_05_20.md`.)
 //
 // Fix: reshape the cache's 33 wire bytes into the 40-byte padded layout
-// before writing to the BPF destination. ~20 LoC inline. Other typed
-// sysvar getters (Clock, EpochRewards, LastRestartSlot) have no
-// wire-vs-padded mismatch; Rent has the same bug class (17 wire vs 24
-// padded) — separate PR.
+// before writing to the BPF destination. ~20 LoC inline. Clock and
+// LastRestartSlot have no wire-vs-padded mismatch (uniform 8-byte-aligned
+// fields). Rent (17 wire vs 24 padded) and EpochRewards (81 wire vs 96
+// padded, repr(C, align(16))) have the SAME bug class, on the CU-accounting
+// leg only — fixed in sysvarGetGeneric()'s cost_size param (F084, 2026-07-29;
+// see RENT_PADDED_SIZE/EPOCH_REWARDS_PADDED_SIZE in sysvar_cache.zig). The
+// trailing-content leg (zero-filling the padding tail in the actual VM
+// write, as done here for EpochSchedule) remains open for both — deferred,
+// see AUDITS.md's F084 section for the unverified-OOB-risk reasoning.
 fn solGetEpochSchedule(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _: u64) SyscallError!u64 {
     traceEntry("sol_get_epoch_schedule_sysvar", ic, addr, 0, 0, 0, 0);
 
@@ -1679,17 +1690,21 @@ fn solGetEpochSchedule(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _:
 
 fn solGetRent(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _: u64) SyscallError!u64 {
     traceEntry("sol_get_rent_sysvar", ic, addr, 0, 0, 0, 0);
-    return sysvarGetGeneric(ic, ic.sysvar_cache.getRentBytes(), addr, sysvar_cache_mod.RENT_SIZE);
+    // F084 fix (2026-07-29): cost keyed to the Rust-padded size (24), write
+    // width stays the unpadded wire size (17) — CU-accounting leg only.
+    return sysvarGetGeneric(ic, ic.sysvar_cache.getRentBytes(), addr, sysvar_cache_mod.RENT_SIZE, sysvar_cache_mod.RENT_PADDED_SIZE);
 }
 
 fn solGetEpochRewards(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _: u64) SyscallError!u64 {
     traceEntry("sol_get_epoch_rewards_sysvar", ic, addr, 0, 0, 0, 0);
-    return sysvarGetGeneric(ic, ic.sysvar_cache.getEpochRewardsBytes(), addr, sysvar_cache_mod.EPOCH_REWARDS_SIZE);
+    // F084 fix (2026-07-29): cost keyed to the Rust-padded size (96), write
+    // width stays the unpadded wire size (81) — CU-accounting leg only.
+    return sysvarGetGeneric(ic, ic.sysvar_cache.getEpochRewardsBytes(), addr, sysvar_cache_mod.EPOCH_REWARDS_SIZE, sysvar_cache_mod.EPOCH_REWARDS_PADDED_SIZE);
 }
 
 fn solGetLastRestartSlot(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _: u64) SyscallError!u64 {
     traceEntry("sol_get_last_restart_slot", ic, addr, 0, 0, 0, 0);
-    return sysvarGetGeneric(ic, ic.sysvar_cache.getLastRestartSlotBytes(), addr, sysvar_cache_mod.LAST_RESTART_SLOT_SIZE);
+    return sysvarGetGeneric(ic, ic.sysvar_cache.getLastRestartSlotBytes(), addr, sysvar_cache_mod.LAST_RESTART_SLOT_SIZE, sysvar_cache_mod.LAST_RESTART_SLOT_SIZE);
 }
 
 fn solGetFees(ic: *InvokeContext, addr: u64, _: u64, _: u64, _: u64, _: u64) SyscallError!u64 {
@@ -1897,8 +1912,21 @@ fn solGetEpochStake(ic: *InvokeContext, vote_pk_addr: u64, _: u64, _: u64, _: u6
     //                  = 100 + 0 + 10 = 110.
     if (vote_pk_addr == 0) {
         ic.consumeCompute(CuCost.syscall_base_cost) catch return error.M6_ConsumeOverflow;
-        // agave: addr=0 → return total active stake. Wave 4 hooks bank.
-        return 0;
+        // F763 fix (2026-07-29, SIMD-0133): agave: addr=0 → return total
+        // active stake for the CURRENT epoch (Bank::get_current_epoch_
+        // total_stake, bank.rs:6146-6148). PERF (auditor-required reshape):
+        // the reduction is LAZY — computed via `epoch_total_stake_fn` only
+        // on the first call this dispatch, then cached on `ic` so repeat
+        // calls (this dispatch, any CPI depth) don't re-sum. 0 when unwired
+        // (pre-boot / M1 test harness), identical to the pre-fix stub.
+        // F140/F744: the source table isn't epoch-boundary-refreshed —
+        // this reads it as-is, see the field doc for the interaction.
+        if (ic.epoch_total_stake) |cached| return cached;
+        const total_ctx = ic.epoch_vote_stake_ctx orelse return 0;
+        const total_fn = ic.epoch_total_stake_fn orelse return 0;
+        const total = total_fn(total_ctx);
+        ic.epoch_total_stake = total;
+        return total;
     }
     const pubkey_component = if (CuCost.cpi_bytes_per_unit == 0)
         std.math.maxInt(u64)
@@ -1906,9 +1934,18 @@ fn solGetEpochStake(ic: *InvokeContext, vote_pk_addr: u64, _: u64, _: u64, _: u6
         @as(u64, @sizeOf([32]u8)) / CuCost.cpi_bytes_per_unit;
     const cost = CuCost.syscall_base_cost +| pubkey_component +| CuCost.mem_op_base_cost;
     ic.consumeCompute(cost) catch return error.M6_ConsumeOverflow;
-    _ = try translateType(ic, [32]u8, vote_pk_addr);
-    // No epoch-stake source wired yet; honestly return 0.
-    return 0;
+    const vote_pk = try translateType(ic, [32]u8, vote_pk_addr);
+    // F763 fix (2026-07-29, SIMD-0133): agave: per-vote-account CURRENT-
+    // epoch stake lookup (get_current_epoch_vote_accounts().get(addr)
+    // .map(|(s,_)| *s).unwrap_or(0), bank.rs:6150-6156) — 0 for an
+    // absent/never-staked vote account is a LEGITIMATE Agave-matching
+    // answer, not a stub. `epoch_vote_stake_fn` is threaded from
+    // AccountsDb.epoch_stakes by v2_dispatch.zig (see InvokeContext field
+    // doc); null (pre-boot / M1 test harness) resolves to 0, same as
+    // before this fix.
+    const f = ic.epoch_vote_stake_fn orelse return 0;
+    const c = ic.epoch_vote_stake_ctx orelse return 0;
+    return f(c, vote_pk.*);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

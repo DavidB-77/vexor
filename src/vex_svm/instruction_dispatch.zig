@@ -809,6 +809,56 @@ pub fn v2DispatchInternal(
                 ptx.instructions[0..ptx.num_instructions],
                 ptx.account_keys[0..ptx.num_accounts],
             ));
+            // F763 fix (SIMD-0133 sol_get_epoch_stake, 2026-07-29): resolve
+            // the CURRENT epoch's stake table from AccountsDb.epoch_stakes —
+            // same epoch-selection shape as the switch-proof stake
+            // denominator (replay_stage.zig
+            // @prov:replay.switch-proof-stake-denominator). This lookup
+            // itself is cheap (bounded by the number of TRACKED epochs, not
+            // vote-account count). `epoch_vote_stakes_slice` is threaded
+            // into InvokeContext via the opaque (ctx, fn) hook pair (see
+            // invoke_ctx.zig epoch_vote_stake_fn/epoch_total_stake_fn docs)
+            // rather than a typed slice, so invoke_ctx.zig never has to
+            // name vex_store's VoteAccountStake type. F140/F744:
+            // epoch_stakes is boot-populated only, not epoch-boundary-
+            // refreshed — read as-is.
+            //
+            // PERF (auditor-required reshape, 2026-07-29): the ORIGINAL
+            // shape here eagerly summed the full vote-account table on
+            // EVERY top-level BPF dispatch — an O(vote-account-count) tax
+            // paid even when the program never calls sol_get_epoch_stake.
+            // The sum now lives in `EpochStakeHook.total` below, which
+            // InvokeContext calls (and caches) LAZILY, on the syscall's
+            // first actual `addr==0` invocation — never for a dispatch that
+            // doesn't call this syscall at all.
+            var epoch_vote_stakes_slice: []const vex_store.snapshot_manifest.VoteAccountStake = &.{};
+            {
+                const ep = bank.epoch_schedule.getEpoch(bank.slot);
+                for (db.epoch_stakes) |es| {
+                    if (es.epoch == ep) {
+                        epoch_vote_stakes_slice = es.vote_account_stakes;
+                        break;
+                    }
+                }
+            }
+            const EpochStakeHook = struct {
+                fn lookup(ctx: *const anyopaque, vote_pubkey: [32]u8) u64 {
+                    const slice_ptr: *const []const vex_store.snapshot_manifest.VoteAccountStake = @ptrCast(@alignCast(ctx));
+                    for (slice_ptr.*) |vs| {
+                        if (std.mem.eql(u8, &vs.vote_pubkey, &vote_pubkey)) return vs.stake;
+                    }
+                    return 0;
+                }
+                // PERF reshape: only reached when solGetEpochStake's
+                // addr==0 branch actually executes, and only on its FIRST
+                // call this dispatch (InvokeContext caches the result).
+                fn total(ctx: *const anyopaque) u64 {
+                    const slice_ptr: *const []const vex_store.snapshot_manifest.VoteAccountStake = @ptrCast(@alignCast(ctx));
+                    var sum: u64 = 0;
+                    for (slice_ptr.*) |vs| sum +%= vs.stake;
+                    return sum;
+                }
+            };
             const muts2 = v2dispatch.v2DispatchBpfProgramMetered(
                 alloc,
                 &program_key,
@@ -825,6 +875,9 @@ pub fn v2DispatchInternal(
                 requested_heap_bytes,
                 extras_raw[0..extras_count],
                 &cu_consumed,
+                if (epoch_vote_stakes_slice.len > 0) @as(*const anyopaque, @ptrCast(&epoch_vote_stakes_slice)) else null, // F763
+                if (epoch_vote_stakes_slice.len > 0) &EpochStakeHook.lookup else null, // F763
+                if (epoch_vote_stakes_slice.len > 0) &EpochStakeHook.total else null, // F763: PERF — lazy, cached on ic
             ) catch |bpf_e| {
                 logV2DispatchFallback(@errorName(bpf_e));
                 // r75-bug-class-b-2026-05-06: discriminate program-side aborts
@@ -2631,7 +2684,7 @@ pub fn executeVoteInstruction(
         // counter shows up here, it names exactly which wire-parse cap or
         // bounds-check is dropping txs at the call sites at lines 3487/3829.
         std.log.debug(
-            "[PARSE-REJ] calls={d} ok={d} sigs_short={d} sigs_zero={d} sigs_over127={d} sigs_oob={d} no_ver={d} ver_nz={d} hdr_short={d} accts_short={d} accts_zero={d} accts_over256={d} accts_oob={d} rbh_short={d} ix_cnt_short={d} ix_cnt_over255={d} ix_pid_short={d} ix_accts_cnt_short={d} ix_accts_oob={d} ix_data_len_short={d} ix_data_oob={d} alt_cnt_short={d} alt_cnt_over127={d} alt_key_short={d} alt_nw_short={d} alt_nw_oob={d} alt_nr_short={d} alt_nr_oob={d}\n",
+            "[PARSE-REJ] calls={d} ok={d} sigs_short={d} sigs_zero={d} sigs_over127={d} sigs_oob={d} no_ver={d} ver_nz={d} hdr_short={d} accts_short={d} accts_zero={d} accts_over256={d} accts_oob={d} rbh_short={d} ix_cnt_short={d} ix_cnt_over64={d} ix_pid_short={d} ix_accts_cnt_short={d} ix_accts_oob={d} ix_data_len_short={d} ix_data_oob={d} alt_cnt_short={d} alt_cnt_over127={d} alt_key_short={d} alt_nw_short={d} alt_nw_oob={d} alt_nr_short={d} alt_nr_oob={d}\n",
             .{
                 ParseRejStats.total_calls,        ParseRejStats.total_ok,
                 ParseRejStats.sigs_len_short,     ParseRejStats.sigs_zero,
@@ -2640,7 +2693,7 @@ pub fn executeVoteInstruction(
                 ParseRejStats.header_short,       ParseRejStats.accounts_len_short,
                 ParseRejStats.accounts_zero,      ParseRejStats.accounts_over_256,
                 ParseRejStats.accounts_oob,       ParseRejStats.rbh_short,
-                ParseRejStats.ix_count_short,     ParseRejStats.ix_count_over_255,
+                ParseRejStats.ix_count_short,     ParseRejStats.ix_count_over_64,
                 ParseRejStats.ix_pid_short,       ParseRejStats.ix_accts_count_short,
                 ParseRejStats.ix_accts_oob,       ParseRejStats.ix_data_len_short,
                 ParseRejStats.ix_data_oob,        ParseRejStats.alt_count_short,
@@ -3268,6 +3321,23 @@ pub fn executeStakeInstruction(
     // programdata is resolved from accounts-db like any other BPF program
     // (the migrated Stake account is owned by BPFLoaderUpgradeable); we do
     // NOT hardcode any path.
+    //
+    // ⚠ CORRECTION (2026-07-28, agave-behavior-extractor verdict): the
+    // paragraph above is NOT what actually executes for the top-level call
+    // below. `dispatchBpfExecution` ultimately reaches
+    // `v2_dispatch.v2DispatchInternal` (v2_dispatch.zig:451-461), whose FIRST
+    // check is `if (!builtins.isBuiltin(program_id)) return
+    // error.M5_BankBackedBpfNotPlumbed;`. `program_id` here is the NATIVE
+    // Stake program id (not the migrated programdata account), and
+    // `builtins.isBuiltin` still says yes for it — so control short-circuits
+    // straight into `builtins.dispatch(...)`, i.e. THIS Zig BPF2 builtin
+    // (builtins/stake_program.zig), and the vendored .so is never reached at
+    // all for a top-level Stake instruction. Only the CPI seam (a BPF
+    // program CPI-ing into Stake) actually runs the .so — a different code
+    // path entirely — which is why CPI-driven parity stayed clean while
+    // top-level Stake diverged from the .so's Core-BPF semantics. Do not
+    // trust this file's "same chokepoint every SPL program uses" framing
+    // without re-checking v2_dispatch.zig's isBuiltin gate first.
     if (vex_bpf2.stake_bpf_flag.enabled() and
         feature_set != null and
         feature_set.?.isActive(features_mod.MIGRATE_STAKE_PROGRAM_TO_CORE_BPF, bank.slot))

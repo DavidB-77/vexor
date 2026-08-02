@@ -190,6 +190,9 @@ pub fn runProgramTest(alloc: std.mem.Allocator, opts: ProgramTestOptions) !Progr
         MIN_HEAP_FRAME_BYTES, // requested heap for CU charge (no RequestHeapFrame)
         &.{}, // cpi_extras: none in M1
         &consumed_cu,
+        null, // F763: epoch_vote_stake_ctx — no bank in this harness
+        null, // F763: epoch_vote_stake_fn — no bank in this harness
+        null, // F763: epoch_total_stake_fn — no bank in this harness
     ) catch |e| blk: {
         dispatch_error = @errorName(e);
         break :blk &.{};

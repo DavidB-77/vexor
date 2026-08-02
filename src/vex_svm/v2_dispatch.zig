@@ -853,7 +853,10 @@ pub fn v2DispatchBpfProgram(
     // caller's `heap_size` as authoritative for both purposes — matches
     // this wrapper's existing pre-fix behavior of 0 heap-entry-cost whenever
     // callers pass the default 32768).
-    return v2DispatchBpfProgramMetered(alloc, program_id, ix_data, snapshots, elf_bytes, programdata_slot, sysvars, program_cache, feature_set, compute_budget, current_slot, heap_size, heap_size, cpi_extras, null);
+    // F763 fix (2026-07-29): back-compat wrapper has no bank/AccountsDb —
+    // pass null/null/null, identical to the pre-fix always-0
+    // sol_get_epoch_stake stub for this call path.
+    return v2DispatchBpfProgramMetered(alloc, program_id, ix_data, snapshots, elf_bytes, programdata_slot, sysvars, program_cache, feature_set, compute_budget, current_slot, heap_size, heap_size, cpi_extras, null, null, null, null);
 }
 
 pub fn v2DispatchBpfProgramMetered(
@@ -892,6 +895,18 @@ pub fn v2DispatchBpfProgramMetered(
     /// program failure the full remaining budget is reported (the tx dies at
     /// this ix anyway; matches cluster "consumed N of N" on exhaustion).
     consumed_out: ?*u64,
+    /// F763 fix (SIMD-0133 sol_get_epoch_stake, 2026-07-29): an opaque
+    /// (ctx, fn) hook pair resolving one vote account's current-epoch
+    /// stake, plus a LAZY total-stake reduction hook (PERF reshape,
+    /// auditor-required: the O(vote-account-count) sum must not run
+    /// unconditionally per dispatch — see invoke_ctx.zig's
+    /// `epoch_total_stake` field doc), threaded onto InvokeContext for
+    /// `vex_bpf2/syscalls.zig`'s `solGetEpochStake`. Callers with no
+    /// bank/AccountsDb (test harnesses) pass `null, null, null` —
+    /// byte-identical to the pre-fix always-0 stub for that case.
+    epoch_vote_stake_ctx: ?*const anyopaque,
+    epoch_vote_stake_fn: ?*const fn (ctx: *const anyopaque, vote_pubkey: [32]u8) u64,
+    epoch_total_stake_fn: ?*const fn (ctx: *const anyopaque) u64,
 ) DispatchError![]AccountMutation {
     if (consumed_out) |co| co.* = 0;
     // SIMD-0459/0460/0257 port (PR-1, extended PR-K 2026-05-17): resolve
@@ -1274,6 +1289,9 @@ pub fn v2DispatchBpfProgramMetered(
     ctx.direct_account_pointers_active = direct_account_pointers_active; // SIMD-0449
     ctx.disable_zk_elgamal_proof_program_active = disable_zk_elgamal_proof_program_active; // zk-elgamal gate
     ctx.reenable_zk_elgamal_proof_program_active = reenable_zk_elgamal_proof_program_active; // zk-elgamal gate
+    ctx.epoch_vote_stake_ctx = epoch_vote_stake_ctx; // F763: SIMD-0133 sol_get_epoch_stake
+    ctx.epoch_vote_stake_fn = epoch_vote_stake_fn; // F763: SIMD-0133 sol_get_epoch_stake
+    ctx.epoch_total_stake_fn = epoch_total_stake_fn; // F763: SIMD-0133 sol_get_epoch_stake (lazy total, PERF reshape)
     // fix/cu-parity-batch2 (2026-07-12): tx-wide heap_size for the CU-cost
     // charge (NOT the region-size `heap_size` param above — see
     // requested_heap_bytes doc). Propagates unchanged through every CPI

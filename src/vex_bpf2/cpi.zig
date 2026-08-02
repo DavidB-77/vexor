@@ -56,8 +56,20 @@ inline fn trace(comptime fmt: []const u8, args: anytype) void {
 // Limits (mirror agave program-runtime/src/cpi.rs + transaction_context.rs)
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// F623 fix (2026-07-29): was 256 — off-by-one high. Agave's
+/// `transaction-context/src/lib.rs:14-17` defines
+/// `MAX_ACCOUNTS_PER_TRANSACTION: usize = 256` then separately
+/// `MAX_ACCOUNTS_PER_INSTRUCTION: usize = 255` ("one less... because one
+/// index is used as NON_DUP_MARKER"). Vexor had copied the transaction-wide
+/// 256 instead of the instruction-wide 255. Tied to serialize.zig's
+/// NON_DUP_MARKER below via a comptime assert, mirroring Agave's own
+/// `static_assertions::const_assert_eq!(MAX_ACCOUNTS_PER_INSTRUCTION,
+/// NON_DUP_MARKER as usize)`.
 /// @prov:cpi.limits
-pub const MAX_ACCOUNTS_PER_INSTRUCTION: usize = 256;
+pub const MAX_ACCOUNTS_PER_INSTRUCTION: usize = 255;
+comptime {
+    std.debug.assert(MAX_ACCOUNTS_PER_INSTRUCTION == serialize.NON_DUP_MARKER);
+}
 
 /// @prov:cpi.limits
 pub const MAX_INSTRUCTION_DATA_LEN: usize = 10 * 1024;
