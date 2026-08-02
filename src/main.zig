@@ -2098,6 +2098,20 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
             // signal now (-o /dev/null drops HTTP-200 throttle JSON); this still
             // catches spawn/DNS/TLS/timeout failures (e.g. curl exit 28).
             var rpc_fail_count: u64 = 0;
+            // Layer 2 (2026-07-30 unblock-the-fallback fix, sibling of Layer 1's
+            // drainAndCollapse in replay_stage.zig): the every-5th-vote curl used
+            // to run INLINE on this function's caller (voteSenderWorker, ops-lane
+            // core 28), blocking the vote-send hot path ~200-500ms per call — the
+            // stall that produced the VoteTooOld burst diagnosed 2026-07-30
+            // (block 425096352). Wired at spawn time (main below) to a dedicated
+            // rpcFallbackWorker draining this queue; null only if that thread
+            // failed to spawn.
+            var rpc_fallback_queue: ?*replay_mod.RpcFallbackQueue = null;
+            // Monotonic count of fallback curl sends dropped because
+            // rpc_fallback_queue was full. NEVER blocks send() -- UDP+QUIC (Path
+            // 1/2 below) already carried the vote either way, so a drop here costs
+            // nothing but the (already-rare) insurance leg.
+            var rpc_fallback_dropped: u64 = 0;
             // Native QUIC TPU vote client (step 1, 2026-06-18). Set only when the validator was
             // built with -Duse_native_quic_votes; null otherwise → vote path byte-identical to today.
             var tpu_client: ?*vex_network.tpu_client.TpuClient = null;
@@ -2238,18 +2252,46 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 // relay is redundant insurance and not worth a blocking call on the hot path.
                 // Opt back IN with VEX_ENABLE_CURL_VOTES=1 (e.g. before QUIC/UDP are proven on a
                 // new cluster). VEX_DISABLE_CURL_VOTES=1 still forces off (backward-compat).
+                //
+                // Layer 2 (2026-07-30): even when opted in, sendViaRpc's blocking curl no
+                // longer runs on THIS call path. This send() may run on voteSenderWorker
+                // (the drainAndCollapse hot path, Layer 1) — a blocking curl here would
+                // re-introduce the exact stall Layer 1 was built to survive. Enqueue a copy
+                // onto rpc_fallback_queue for the dedicated rpcFallbackWorker instead; if
+                // that queue is full, drop and count rather than block (UDP+QUIC already
+                // carried this vote).
                 if (send_count % 5 == 0) {
                     const force_off = if (std.posix.getenv("VEX_DISABLE_CURL_VOTES")) |v| std.mem.eql(u8, v, "1") else false;
                     const opt_in = if (std.posix.getenv("VEX_ENABLE_CURL_VOTES")) |v| std.mem.eql(u8, v, "1") else false;
-                    if (opt_in and !force_off) sendViaRpc(tx_bytes);
+                    if (opt_in and !force_off) {
+                        if (rpc_fallback_queue) |q| {
+                            if (alloc.dupe(u8, tx_bytes) catch null) |dup| {
+                                if (!q.push(dup)) {
+                                    alloc.free(dup);
+                                    rpc_fallback_dropped += 1;
+                                    if (rpc_fallback_dropped <= 3 or rpc_fallback_dropped % 50 == 0) {
+                                        std.log.warn("[VOTE-SEND] rpc_fallback_dropped={d} (fallback queue full; UDP+QUIC still carried this vote) [#{d}]\n", .{ rpc_fallback_dropped, send_count });
+                                    }
+                                }
+                            }
+                        } else {
+                            // Fallback worker never wired (spawn failed) — preserve the old
+                            // inline behavior rather than silently drop forever.
+                            sendViaRpc(tx_bytes);
+                        }
+                    }
                 }
 
                 if (send_count <= 3 or send_count % 100 == 0) {
-                    std.log.debug("[VOTE-SEND] leaders={d} udp={d} quic={d} RPC={s} [#{d}]\n", .{
+                    // Bumped debug->warn (2026-07-30) so rpc_fallback_dropped is visible in
+                    // live soak by default (log_level=.info drops .debug entirely; see
+                    // main.zig's vexLogFn header comment).
+                    std.log.warn("[VOTE-SEND] leaders={d} udp={d} quic={d} RPC={s} rpc_fallback_dropped={d} [#{d}]\n", .{
                         n,
                         udp_sent,
                         quic_enq,
                         if (send_count % 5 == 0) "YES" else "skip",
+                        rpc_fallback_dropped,
                         send_count,
                     });
                 }
@@ -2495,6 +2537,40 @@ fn runValidator(allocator: std.mem.Allocator, args: []const []const u8) !void {
                 _ = quic_thread;
                 std.log.warn("[QUIC-VOTE] native QUIC TPU vote submission ENABLED (identity mTLS, ALPN solana-tpu) — targeted prewarm: {s}\n", .{if (vote_prewarm_enabled) "ON (VEX_VOTE_PREWARM)" else "off (default)"});
             }
+        }
+
+        // Layer 2 (2026-07-30 unblock-the-fallback fix): dedicated queue + worker
+        // thread for the RPC-vote fallback curl, so it can never again stall the
+        // vote-send hot path (see VoteSender.rpc_fallback_queue doc comment and
+        // replay_stage.zig RpcFallbackQueue/rpcFallbackWorker). Non-fatal if spawn
+        // fails: send() falls back to the old inline blocking sendViaRpc call
+        // rather than silently dropping the fallback forever.
+        //
+        // MUST be wired BEFORE vote_wiring below spawns voteSenderWorker: that
+        // thread starts calling VoteSender.send() as soon as it is spawned, and
+        // send() reads VoteSender.rpc_fallback_queue (a plain, non-atomic var) —
+        // wiring it first avoids a startup race where an early vote sees a null
+        // queue and takes the inline-sendViaRpc fallback branch instead.
+        rpc_fallback_wiring: {
+            const rpc_fallback_queue = try allocator.create(replay_mod.RpcFallbackQueue);
+            rpc_fallback_queue.* = replay_mod.RpcFallbackQueue.init(allocator);
+            const rpc_fallback_shutdown = try allocator.create(std.atomic.Value(bool));
+            rpc_fallback_shutdown.* = std.atomic.Value(bool).init(false);
+
+            VoteSender.rpc_fallback_queue = rpc_fallback_queue;
+
+            const rpc_fallback_thread = std.Thread.spawn(.{}, replay_mod.rpcFallbackWorker, .{
+                rpc_fallback_queue,
+                &VoteSender.sendViaRpc,
+                rpc_fallback_shutdown,
+            }) catch |err| {
+                std.log.warn("[MAIN] Failed to spawn RPC-fallback thread: {any} — fallback curl reverts to inline (old behavior)\n", .{err});
+                VoteSender.rpc_fallback_queue = null;
+                break :rpc_fallback_wiring;
+            };
+            _ = rpc_fallback_thread;
+
+            std.log.debug("[MAIN] RPC-fallback thread spawned (ops-lane core 28, co-resident w/ txsend)\n", .{});
         }
 
         // Create vote send queue and spawn sender thread (heap-allocated -- must outlive both threads)

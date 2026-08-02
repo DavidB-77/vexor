@@ -207,6 +207,166 @@ pub const AddressLookupTable = struct {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// resolveLookupTable — v0 message ALT resolution (F008)
+//
+// Full Agave-equivalent validation for resolving a `MessageAddressTableLookup`
+// against a candidate account, mirroring accounts-db's
+// `load_lookup_table_addresses_into` (agave accounts-db/src/accounts.rs:106-158)
+// / the address-lookup-table interface's `status()`+`get_active_addresses_len()`
+// (state.rs:92-190). Pulled out of `replay_stage.zig`'s `parseTxFromBytes` so it
+// is unit-testable without the rest of that file's dependency graph — the
+// caller (replay_stage.zig) is responsible only for the account fetch, the
+// `[]const u8 -> []u8` copy `deserialize()` requires, and fetching the
+// SlotHashes sysvar bytes ONCE per transaction (see call-site comment).
+//
+// Three independent gates, same order Agave applies them:
+//   1. owner check         -> ResolveError.InvalidAccountOwner       (Agave: AddressLoaderError::InvalidAccountOwner)
+//   2. deserialize()        -> ResolveError.InvalidAccountData        (Agave: AddressLoaderError::InvalidAccountData)
+//   3. deactivation +
+//      active-range bound  -> ResolveError.LookupTableAccountNotFound (Agave: AddressLoaderError::LookupTableAccountNotFound, aged out of SH window)
+//                           -> ResolveError.SlotHashesSysvarNotFound   (Agave: AddressLoaderError::SlotHashesSysvarNotFound, sysvar missing — fails CLOSED)
+// Index-out-of-active-range is NOT this function's concern — callers bound
+// `writable_indexes`/`readonly_indexes` against `.active_addresses.len`
+// themselves (Agave: AddressLoaderError::InvalidLookupIndex).
+// ─────────────────────────────────────────────────────────────────────────────
+
+pub const ResolveError = error{
+    InvalidAccountOwner,
+    InvalidAccountData,
+    LookupTableAccountNotFound,
+    /// Table is deactivating/deactivated but the current bank has no
+    /// SlotHashes sysvar to check the cooldown window against.
+    /// Agave: AddressLoaderError::SlotHashesSysvarNotFound (address_lookup_table.rs:44-46) — FAILS the tx.
+    SlotHashesSysvarNotFound,
+};
+
+pub const ResolvedTable = struct {
+    meta: LookupTableMeta,
+    /// Bounded to the range visible to `current_slot` (Agave
+    /// `get_active_addresses_len`), NOT the table's total stored size.
+    /// When `current_slot == null` (no bank context — see call-site comment)
+    /// this is the full stored address list, unbounded.
+    active_addresses: [][32]u8,
+};
+
+/// Resolve one ALT account's addresses, full Agave semantics.
+///
+/// `table_data` MUST be a mutable copy of the account bytes — `deserialize()`
+/// takes `[]u8` (it is also used by the Extend/Deactivate/Close instruction
+/// handlers, which write back through the same struct), while an
+/// `AccountsDb` read returns a `[]const u8` zero-copy view; callers dupe via
+/// their per-slot arena before calling (bounded by the referenced table's
+/// account size, typically <=~8 KiB for a full 256-address table).
+///
+/// `owner` is the candidate account's owner pubkey, compared against
+/// `PROGRAM_ID` before anything else is trusted.
+///
+/// `current_slot`: the executing bank's own slot (Agave: `ancestors.max_slot()`,
+/// accounts.rs:118). `null` only for the no-bank test/back-compat path some
+/// callers of `parseTxFromBytes` retain (`bank: ?*const Bank`). CONFIRMED
+/// UNREACHABLE from the live replay path: all 3 real call sites
+/// (replay_stage.zig:2647, 10846, 11429) pass a variable typed `*Bank`
+/// (non-optional) that implicitly coerces to `?*const Bank` — never a
+/// literal `null` — and `parseTxFromBytes` is file-private, so no external
+/// caller can hit this branch either. It exists solely so the function type
+/// still supports a hypothetical no-bank unit-test caller; a null bank has
+/// no slot to gate deactivation/active-range against, so those two gates are
+/// skipped and the full stored address range is returned (owner+deserialize
+/// still apply — neither needs a slot). Since this branch never executes on
+/// any consensus path, it is intentionally left fail-open rather than
+/// fail-closed — there is no live tx it could ever affect either way.
+///
+/// `sh_data`: the CURRENT bank's SlotHashes sysvar bytes, already fetched by
+/// the caller (see call-site comment for the "once per tx" requirement), wire
+/// format `[count:u64][ (slot:u64,hash:[32]u8) x count, sorted DESCENDING by
+/// slot ]` — identical layout used by `vote_state_serde.zig`. `null` means no
+/// SlotHashes sysvar was found for this bank. FAILS CLOSED: Agave maps a
+/// missing sysvar to `AddressLoaderError::SlotHashesSysvarNotFound`
+/// (address_lookup_table.rs:44-46) and fails the whole transaction — this
+/// mirrors that exactly, via `ResolveError.SlotHashesSysvarNotFound`, folded
+/// into the same reject path as every other validation failure at the call
+/// site. Only reachable when `deactivation_slot != DEACTIVATION_SLOT_NONE`
+/// (see step 3's short-circuit below) — a deactivated table with no
+/// SlotHashes sysvar ever written is provably unreachable on any real ledger
+/// (a table can only reach a deactivating state after being
+/// Created+Deactivated in EARLIER slots, by which point SlotHashes has
+/// always been written at least once — `bank.zig:updateSlotHashesSysvar`,
+/// called before any transaction executes). Fail-closed and fail-open are
+/// therefore consensus-IDENTICAL for this unreachable case; fail-closed is
+/// chosen for exact parity with Agave's mapping (scope-doc Correction 1).
+pub fn resolveLookupTable(
+    table_data: []u8,
+    owner: [32]u8,
+    current_slot: ?u64,
+    sh_data: ?[]const u8,
+) ResolveError!ResolvedTable {
+    // 1. Owner check — Agave accounts.rs:117 / Sig resolve_lookup.zig:489.
+    if (!std.mem.eql(u8, &owner, &PROGRAM_ID)) return ResolveError.InvalidAccountOwner;
+
+    // 2. Deserialize via the ALT program's own parser — Agave accounts.rs:119.
+    //    Subsumes the length + discriminant checks the old raw-slice call
+    //    site never did (deserialize() rejects data.len < LOOKUP_TABLE_META_SIZE
+    //    and disc != 1 itself, see above).
+    const table = AddressLookupTable.deserialize(table_data) catch return ResolveError.InvalidAccountData;
+
+    const slot = current_slot orelse {
+        // No bank context: cannot evaluate deactivation/active-range against
+        // a slot that doesn't exist. See doc comment above.
+        return .{ .meta = table.meta, .active_addresses = table.addresses };
+    };
+
+    // 3. Deactivation status — Agave state.rs:101-127 status().
+    if (table.meta.deactivation_slot != DEACTIVATION_SLOT_NONE and
+        table.meta.deactivation_slot != slot)
+    {
+        // Not "deactivating this very slot" (state.rs:107-110's special
+        // case, which stays active for lookups) — must still be inside the
+        // SlotHashes cooldown window, else the table is fully Deactivated.
+        const sh = sh_data orelse return ResolveError.SlotHashesSysvarNotFound; // fail CLOSED, see doc comment above.
+        if (!slotHashesContains(sh, table.meta.deactivation_slot)) return ResolveError.LookupTableAccountNotFound;
+    }
+
+    // 4. Active-range bound — Agave state.rs:184-189 get_active_addresses_len.
+    //    Anti-reorg: addresses appended via ExtendLookupTable in the tx's OWN
+    //    slot are invisible to lookups this same slot, until the extension
+    //    itself is finalized (Agave docs, "Versioned Transactions" —
+    //    "Lookup table re-initialization").
+    const active_len: usize = if (slot > table.meta.last_extended_slot)
+        table.addresses.len
+    else
+        table.meta.last_extended_slot_start_index;
+
+    return .{ .meta = table.meta, .active_addresses = table.addresses[0..active_len] };
+}
+
+/// SlotHashes membership test for `target_slot`. Wire format + binary-search
+/// pattern reused verbatim from `vote_state_serde.zig:1178-1200` (proven in
+/// production, closed a real carrier there): SH is sorted DESCENDING by slot
+/// ([count:u64][ (slot:u64, hash:[32]u8) x count ]); `mid_slot > target ->
+/// lo = mid+1`, else `hi = mid`. O(log 512), same complexity class as Agave's
+/// `SlotHashes::position`.
+fn slotHashesContains(sh_data: []const u8, target_slot: u64) bool {
+    if (sh_data.len < 8) return false;
+    const count = std.mem.readInt(u64, sh_data[0..8], .little);
+    const count_usize: usize = @intCast(count);
+    var lo: usize = 0;
+    var hi: usize = count_usize;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const off = 8 + mid * 40;
+        if (off + 8 > sh_data.len) return false;
+        const mid_slot = std.mem.readInt(u64, sh_data[off..][0..8], .little);
+        if (mid_slot == target_slot) return true;
+        if (mid_slot > target_slot) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BorrowedAccount — minimal mutable account view
 // (matches vote_v2.zig / nonce.zig style)
 // ─────────────────────────────────────────────────────────────────────────────

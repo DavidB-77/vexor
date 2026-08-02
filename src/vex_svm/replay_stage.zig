@@ -376,6 +376,161 @@ pub fn mergeWorkerWrites(bank: *Bank, ctxs: []const *WorkerCtx) !void {
     }
 }
 
+/// Bounded, best-effort queue for the RPC-vote fallback curl (Layer 2 of the
+/// 2026-07-30 VoteTooOld burst-amplifier fix).
+/// Deliberately small and NEVER grows unbounded: if it is full the caller
+/// (main.zig VoteSender.send) drops the fallback attempt and counts it
+/// (`rpc_fallback_dropped`) rather than block or resize. This queue is
+/// entirely separate from `VoteSendQueue` above -- it exists only to take the
+/// blocking `curl -m 5` subprocess (main.zig sendViaRpc) off of
+/// `voteSenderWorker`, which is the stall that produced the burst
+/// `drainAndCollapse` (Layer 1) now also absorbs. UDP+QUIC (main.zig
+/// VoteSender.send Path 1/2) already carry every vote; this fallback is
+/// insurance, so a dropped entry here is not a correctness concern.
+pub const RpcFallbackQueue = struct {
+    // Small on purpose (vs. VoteSendQueue's 256): a backlog here means curl
+    // itself is falling behind, not that a vote is at risk of not landing.
+    // Depth 8 smooths a brief hiccup without turning this into a second place
+    // for work to silently pile up.
+    const CAPACITY = 8;
+
+    buf: [CAPACITY]?[]u8 = [_]?[]u8{null} ** CAPACITY,
+    head: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    tail: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    allocator: std.mem.Allocator,
+
+    pub fn init(alloc: std.mem.Allocator) RpcFallbackQueue {
+        return .{ .allocator = alloc };
+    }
+
+    /// Returns true if enqueued, false if full (caller must not free `data`
+    /// on success; caller must free it itself on failure).
+    pub fn push(self: *RpcFallbackQueue, data: []u8) bool {
+        const h = self.head.load(.acquire);
+        const t = self.tail.load(.acquire);
+        if (h -% t >= CAPACITY) return false;
+        self.buf[h % CAPACITY] = data;
+        self.head.store(h +% 1, .release);
+        return true;
+    }
+
+    pub fn pop(self: *RpcFallbackQueue) ?[]u8 {
+        const t = self.tail.load(.acquire);
+        const h = self.head.load(.acquire);
+        if (t == h) return null;
+        const data = self.buf[t % CAPACITY];
+        self.buf[t % CAPACITY] = null;
+        self.tail.store(t +% 1, .release);
+        return data;
+    }
+};
+
+/// Worker thread for the RPC-vote fallback (Layer 2, 2026-07-30). Pops one
+/// payload at a time and calls `sendFn` (main.zig VoteSender.sendViaRpc, the
+/// existing blocking curl, UNCHANGED) -- blocking HERE is fine and
+/// intentional: this thread is fully decoupled from the vote-send hot path
+/// (voteSenderWorker / drainAndCollapse above), so a slow curl only delays a
+/// best-effort insurance send and never a vote transmission.
+///
+/// Pinning: same ops-lane pattern as voteSenderWorker, deliberately
+/// CO-RESIDENT on core 28 (txsend) rather than claiming a new dedicated core.
+/// vex_topo.zig's `LIVE` map is comptime-asserted collision-free across the
+/// 4 already-assigned ops-lane cores (txsend=28, sysvar=29, repair=30,
+/// watchdog=31/main.zig) -- adding a 5th formally-tracked tile was out of
+/// scope for this fix. This is safe because the actual curl child process
+/// re-pins itself to the FULL 28-31 range via its own `taskset -c 28-31`
+/// prefix (main.zig sendViaRpc argv), so co-locating this thread's own
+/// affinity with txsend does not change which core the curl work actually
+/// runs on -- it only needs to be off the replay cores (4-27), which core 28
+/// satisfies. The thread itself spends nearly all its time blocked in
+/// `waitpid` (no CPU consumed while blocked), not contending with
+/// voteSenderWorker's poll loop.
+pub fn rpcFallbackWorker(
+    queue: *RpcFallbackQueue,
+    sendFn: *const fn ([]const u8) void,
+    shutdown: *std.atomic.Value(bool),
+) void {
+    if (build_options.legacy_pins or std.posix.getenv("VEX_LEGACY_PINS") != null) {
+        pinToCore(28);
+    } else {
+        _ = vex_topo.pinTile(vex_topo.LIVE, .txsend, 0);
+    }
+    std.log.debug("[RPC-FALLBACK] Worker started on ops-lane core 28 (co-resident w/ txsend)\n", .{});
+
+    while (!shutdown.load(.acquire)) {
+        if (queue.pop()) |data| {
+            sendFn(data);
+            queue.allocator.free(data);
+        } else {
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+        }
+    }
+    while (queue.pop()) |data| {
+        sendFn(data);
+        queue.allocator.free(data);
+    }
+    std.log.debug("[RPC-FALLBACK] Worker stopped\n", .{});
+}
+
+/// Result of one `drainAndCollapse` pass: how many distinct payloads were sent
+/// (in original order) and how many `.tower_sync` entries were superseded and
+/// discarded without ever being sent.
+pub const CollapseResult = struct {
+    sent: u64 = 0,
+    collapsed: u64 = 0,
+};
+
+/// Drains every entry CURRENTLY available in `queue` (does not wait for more
+/// to arrive) and calls `sendFn` once per surviving entry, oldest-to-newest.
+///
+/// 2026-07-30 VoteTooOld burst-amplifier fix: the old
+/// pop-one-send-one loop meant that whenever `sendFn` stalled (blocking curl
+/// fallback, pre-Layer-2), several slots' worth of TowerSyncs piled up in the
+/// queue and then flushed as a burst landing in ONE cluster block — only the
+/// highest tower-top satisfies the vote program's monotonic newest-slot check
+/// (agave programs/vote/src/vote_state/mod.rs:68-77), so every other queued
+/// vote in that burst was auto-rejected VoteTooOld on-chain regardless of
+/// whether we sent it. Proven live: block 425096352 carried 9 of our
+/// TowerSyncs, 2 landed, 7 rejected Custom(0).
+///
+/// Draining the whole backlog and sending only the newest of each run of
+/// `.tower_sync` entries produces the IDENTICAL on-chain outcome (same vote
+/// lands) while skipping transmissions the cluster was always going to
+/// reject — see `VoteKind` doc comment for the full do_process_tower_sync /
+/// set_vote_account_state citation proving TowerSync fully replaces vote
+/// state rather than accumulating it. `.legacy_vote` entries are never proven
+/// safe to collapse and are always sent individually, acting as a run
+/// boundary (a `.tower_sync` immediately following one starts a fresh run).
+///
+/// Blocks on nothing and never contends with the producer: `queue.pop()` is
+/// the same lock-free SPSC op used everywhere else. If the queue is empty on
+/// entry, returns immediately with a zeroed result and calls `sendFn` zero
+/// times. Factored out of `voteSenderWorker` so it is unit-testable without
+/// threads or a real transport.
+pub fn drainAndCollapse(queue: *VoteSendQueue, sendFn: *const fn ([]const u8) void) CollapseResult {
+    var result = CollapseResult{};
+    var pending: VoteQueueEntry = queue.pop() orelse return result;
+    while (queue.pop()) |entry| {
+        if (entry.kind == .tower_sync and pending.kind == .tower_sync) {
+            // `pending` is superseded by `entry` (strictly newer TowerSync,
+            // proven full-replace semantics) -- discard without sending.
+            queue.allocator.free(pending.bytes);
+            result.collapsed += 1;
+            pending = entry;
+            continue;
+        }
+        // Boundary (either side is `.legacy_vote`): flush `pending` unchanged.
+        sendFn(pending.bytes);
+        queue.allocator.free(pending.bytes);
+        result.sent += 1;
+        pending = entry;
+    }
+    sendFn(pending.bytes);
+    queue.allocator.free(pending.bytes);
+    result.sent += 1;
+    return result;
+}
+
 /// Vote sender worker thread. Drains VoteSendQueue and sends via sendVoteFn.
 /// Runs on a dedicated OPS-LANE core to isolate network I/O from replay.
 ///
@@ -388,6 +543,11 @@ pub fn mergeWorkerWrites(bank: *Bank, ctxs: []const *WorkerCtx) !void {
 /// (which inherits this thread's affinity) run entirely off the replay cores.
 /// The core-pinning helper leaves this thread alone (its lifetime-avg CPU is below the
 /// 25% repin threshold), so the ops-lane pin sticks.
+///
+/// 2026-07-30: the curl child no longer forks FROM this thread at all (Layer 2
+/// moved it to rpcFallbackWorker above) -- this comment's throughput-fix now
+/// applies to drainAndCollapse's transport calls (UDP sendto + QUIC enqueue),
+/// which were already non-blocking before and remain so.
 pub fn voteSenderWorker(
     queue: *VoteSendQueue,
     sendFn: *const fn ([]const u8) void,
@@ -403,29 +563,34 @@ pub fn voteSenderWorker(
     std.log.debug("[VOTE-SENDER] Worker started on ops-lane core 28\n", .{});
 
     var sent: u64 = 0;
+    // Monotonic count of `.tower_sync` entries collapsed (never sent because a
+    // newer TowerSync in the same drain superseded them) -- the live signal
+    // that the 2026-07-30 fix is doing work. Surfaced in the periodic
+    // [VOTE-SENDER] line below (bumped debug->warn so soak can see it without
+    // VEX_LOG_INFO).
+    var votes_collapsed: u64 = 0;
     while (!shutdown.load(.acquire)) {
-        if (queue.pop()) |data| {
-            sendFn(data);
-            sent += 1;
-            queue.allocator.free(data);
-
-            if (sent <= 3 or sent % 200 == 0) {
-                std.log.debug("[VOTE-SENDER] Sent #{d}\n", .{sent});
-            }
-        } else {
+        const r = drainAndCollapse(queue, sendFn);
+        if (r.sent == 0) {
             // No votes pending -- sleep 10ms (votes arrive ~every 400ms)
             std.Thread.sleep(10 * std.time.ns_per_ms);
+            continue;
+        }
+        sent += r.sent;
+        votes_collapsed += r.collapsed;
+
+        if (sent <= 3 or sent % 200 == 0) {
+            std.log.warn("[VOTE-SENDER] Sent #{d} votes_collapsed={d}\n", .{ sent, votes_collapsed });
         }
     }
 
-    // Drain remaining on shutdown
-    while (queue.pop()) |data| {
-        sendFn(data);
-        queue.allocator.free(data);
-        sent += 1;
-    }
+    // Drain remaining on shutdown (collapsing here is fine too -- it changes
+    // nothing about which votes land, see drainAndCollapse doc comment).
+    const final = drainAndCollapse(queue, sendFn);
+    sent += final.sent;
+    votes_collapsed += final.collapsed;
 
-    std.log.debug("[VOTE-SENDER] Worker stopped after {d} votes\n", .{sent});
+    std.log.debug("[VOTE-SENDER] Worker stopped after {d} votes (collapsed {d})\n", .{ sent, votes_collapsed });
 }
 
 /// Replay stage statistics (thread-safe)
@@ -531,7 +696,43 @@ pub const SvmStats = struct {
     serial_fallbacks: u64 = 0,
 };
 
-/// Lock-free SPSC queue for serialized vote transaction bytes.
+/// Supersession class of a queued vote payload — determines whether
+/// `drainAndCollapse` (2026-07-30 VoteTooOld burst-amplifier fix, see
+/// voteSenderWorker doc comment) is allowed to discard an older queued entry in
+/// favor of a newer one.
+///
+/// `.tower_sync` is PROVEN safe to collapse: agave
+/// programs/vote/src/vote_state/mod.rs `process_tower_sync` ->
+/// `do_process_tower_sync` -> `process_new_vote_state` ->
+/// `set_vote_account_state` (mod.rs:1289-1338) REPLACES the vote account's
+/// entire lockout list with the newest proposal, not incrementally — landing
+/// only the newest queued TowerSync produces byte-identical on-chain state to
+/// landing all of them in order. And the older ones cannot land anyway: the
+/// vote program's own `check_and_filter_proposed_vote_state` (mod.rs:68-77)
+/// rejects a proposed TowerSync with `VoteTooOld` whenever its newest slot is
+/// <= the account's currently-recorded newest slot — the EXACT mechanism the
+/// 2026-07-30 diagnosis caught live (block 425096352: 9 of our TowerSyncs in
+/// one block, 2 landed, 7 rejected Custom(0)=VoteTooOld). So skipping a
+/// superseded TowerSync changes nothing about which vote ends up on-chain; it
+/// only stops us from paying tx fees and burning send-path time on entries the
+/// cluster was always going to reject.
+///
+/// `.legacy_vote` is the rare pre-tower fallback (submitVote's
+/// `tower_state == null` branch, effectively only the process's very first
+/// vote before any tower exists). It has NOT been proven to have the same
+/// full-replace property (legacy `Vote`/`VoteStateUpdate` processing predates
+/// TowerSync and this codebase does not carry a from-agave citation for its
+/// collapse-safety), so it is NEVER collapsed and always acts as a run
+/// boundary — see `drainAndCollapse`.
+pub const VoteKind = enum { tower_sync, legacy_vote };
+
+/// One serialized vote transaction plus its supersession class.
+pub const VoteQueueEntry = struct {
+    kind: VoteKind,
+    bytes: []u8,
+};
+
+/// Lock-free SPSC queue for serialized vote transactions (tagged by `VoteKind`).
 /// Producer: replay thread. Consumer: vote sender thread.
 pub const VoteSendQueue = struct {
     // throughput-fix (2026-06-11): 64→256. During a catch-up vote burst the
@@ -539,9 +740,14 @@ pub const VoteSendQueue = struct {
     // a deeper ring keeps votes flowing through the off-replay worker instead of
     // overflowing into the inline fallback path (submitVote:3499), which would
     // otherwise spawn the blocking curl ON the replay thread and stall replay.
+    // 2026-07-30: the same stall is now ALSO absorbed by drainAndCollapse
+    // (a deep burst collapses to one send instead of trickling out late), and
+    // the curl itself moved off this path entirely (Layer 2, main.zig
+    // VoteSender.rpc_fallback_queue) — CAPACITY stays 256 as a second line of
+    // defense, not the primary fix anymore.
     const CAPACITY = 256;
 
-    buf: [CAPACITY]?[]u8 = [_]?[]u8{null} ** CAPACITY,
+    buf: [CAPACITY]?VoteQueueEntry = [_]?VoteQueueEntry{null} ** CAPACITY,
     head: std.atomic.Value(u32) = std.atomic.Value(u32).init(0), // write position (producer)
     tail: std.atomic.Value(u32) = std.atomic.Value(u32).init(0), // read position (consumer)
     allocator: std.mem.Allocator,
@@ -550,27 +756,27 @@ pub const VoteSendQueue = struct {
         return .{ .allocator = alloc };
     }
 
-    /// Push serialized tx bytes. Returns true if enqueued, false if full.
-    /// Transfers ownership: caller must NOT free the bytes after a successful push.
-    pub fn push(self: *VoteSendQueue, data: []u8) bool {
+    /// Push a tagged vote entry. Returns true if enqueued, false if full.
+    /// Transfers ownership: caller must NOT free entry.bytes after a successful push.
+    pub fn push(self: *VoteSendQueue, entry: VoteQueueEntry) bool {
         const h = self.head.load(.acquire);
         const t = self.tail.load(.acquire);
         if (h -% t >= CAPACITY) return false; // full
-        self.buf[h % CAPACITY] = data;
+        self.buf[h % CAPACITY] = entry;
         self.head.store(h +% 1, .release);
         return true;
     }
 
-    /// Pop serialized tx bytes. Returns null if empty.
-    /// Caller owns the returned slice and MUST free it with self.allocator.
-    pub fn pop(self: *VoteSendQueue) ?[]u8 {
+    /// Pop a tagged vote entry. Returns null if empty.
+    /// Caller owns the returned entry and MUST free entry.bytes with self.allocator.
+    pub fn pop(self: *VoteSendQueue) ?VoteQueueEntry {
         const t = self.tail.load(.acquire);
         const h = self.head.load(.acquire);
         if (t == h) return null; // empty
-        const data = self.buf[t % CAPACITY];
+        const entry = self.buf[t % CAPACITY];
         self.buf[t % CAPACITY] = null;
         self.tail.store(t +% 1, .release);
-        return data;
+        return entry;
     }
 };
 
@@ -2045,6 +2251,16 @@ pub const ReplayStage = struct {
         0x6e, 0x2d, 0x00, 0x55, 0x20, 0x00, 0x00, 0x00,
     };
 
+    /// Clock sysvar pubkey. Local copy so the oracle's scratch bank reads the
+    /// parent's Clock the same fork-aware way replay's prologue does
+    /// (F441b, 2026-07-29).
+    const ORACLE_CLOCK_PUBKEY: [32]u8 = .{
+        0x06, 0xa7, 0xd5, 0x17, 0x18, 0xc7, 0x74, 0xc9,
+        0x28, 0x56, 0x63, 0x98, 0x69, 0x1d, 0x5e, 0xb6,
+        0x8b, 0x5e, 0xb8, 0xa3, 0x9b, 0x4b, 0x6d, 0x5c,
+        0x73, 0x55, 0x5b, 0x21, 0x00, 0x00, 0x00, 0x00,
+    };
+
     /// Rent-exempt minimum for `data_len` bytes: (data_len + 128) * 3480 * 2, the canonical Solana
     /// formula (runtime.RentParams.exemptMinBalance with default params; 0 -> 890_880).
     ///
@@ -2192,6 +2408,7 @@ pub const ReplayStage = struct {
         // can hand back a SIBLING FORK's SlotHashes, which is a recorded cause of sustained vote
         // rejection and replay divergence.
         const parent_sh = parent_bank.getSysvarFromPendingWrites(&ORACLE_SLOT_HASHES_PUBKEY);
+        const parent_clock = parent_bank.getSysvarFromPendingWrites(&ORACLE_CLOCK_PUBKEY);
 
         const pre = produce_admit.SlotPreconditions{
             // An unfrozen parent has bank_hash == Hash.default(), so the SlotHashes entry we prepend
@@ -2256,7 +2473,7 @@ pub const ReplayStage = struct {
         // newest-first BEFORE the db, and instruction_dispatch NEVER writes to AccountsDb itself — so
         // every state effect of everything the oracle executes is confined to scratch.pending_writes
         // and dies with the scratch bank.
-        scratch.updateClockSysvar() catch |e| {
+        scratch.updateClockSysvar(parent_clock) catch |e| {
             std.log.warn("[PRODUCE-ORACLE] slot={d} updateClockSysvar failed: {any} — producing empty block", .{ next_slot, e });
             scratch.deinit();
             return null;
@@ -5862,7 +6079,6 @@ pub const ReplayStage = struct {
                 adb.tickAccountsGc(adb.rooted_slot, @intCast(md_now));
             }
         }
-
         // Timing breakdown
         const total_ms = t3 - t0;
 
@@ -6655,37 +6871,38 @@ pub const ReplayStage = struct {
     }
 
     /// VOTE-THRESHOLD depth-8 gate mode (VEX_VOTE_THRESHOLD; incident 423083743
-    /// companion fix, 2026-07-19). The Agave/FD invariant "cluster signals gate
-    /// VOTING, own-tower depth gates ROOTING" — their depth-8 threshold check
-    /// runs with REAL observed stake, which is what structurally prevents their
-    /// towers from ever filling 31-deep on a fork the cluster abandoned. Vexor's
-    /// check (tower.zig shouldVote) existed but was called with (0,0) = dead.
-    ///   unset / "shadow" / unknown → .shadow (DEFAULT: compute real stakes +
-    ///                                log would-be verdict; vote decisions
-    ///                                byte-identical — (0,0) still passed)
-    ///   "1"/"armed"/"on"           → .armed  (pass real stakes — ENFORCING;
-    ///                                only after shadow-soak validation)
-    ///   "0"/"off"/""               → .off    (fully dormant, no computation)
-    /// Parsed once (cached); mirrors switchProofMode. Deliberately NOT in
-    /// bakeProdEnvDefaults — the shadow default lives here in code.
+    /// companion fix, 2026-07-19; ARMED BY DEFAULT 2026-07-29 — F348/F723,
+    /// no-shadow-modes hard cutover, not a soak). The Agave/FD invariant
+    /// "cluster signals gate VOTING, own-tower depth gates ROOTING" — their
+    /// depth-8 threshold check runs with REAL observed stake, which is what
+    /// structurally prevents their towers from ever filling 31-deep on a fork
+    /// the cluster abandoned. Vexor's check (tower.zig shouldVote) existed but
+    /// was called with (0,0) = dead; this wires it AND arms it in one shot.
+    ///   unset / "armed" / anything unrecognized → .armed (DEFAULT, enforcing:
+    ///                                real stakes always reach shouldVote)
+    ///   "off"                       → .off    (kill-switch: fully dormant, no
+    ///                                computation — emergency rollback ONLY,
+    ///                                logs nothing, byte-identical to pre-fix)
+    /// NAMED VALUES ONLY (house mandate) — no bare "0"/"1". Parsed once
+    /// (cached); mirrors switchProofMode's cache pattern. Logs the
+    /// [VOTE-THRESHOLD-ARMED] boot banner exactly once, on first parse, so a
+    /// live soak has direct proof-of-arming in the log.
     fn voteThresholdMode(self: *Self) @import("vex_consensus").tower.TowerBft.ThresholdMode {
         _ = self;
         const Mode = @import("vex_consensus").tower.TowerBft.ThresholdMode;
         const Cache = struct {
             var parsed = std.atomic.Value(u8).init(0);
-            var mode: Mode = .shadow;
+            var mode: Mode = .armed;
         };
         if (Cache.parsed.load(.monotonic) == 0) {
             if (std.posix.getenv("VEX_VOTE_THRESHOLD")) |s| {
-                if (s.len == 0 or std.mem.eql(u8, s, "0") or std.mem.eql(u8, s, "off")) {
-                    Cache.mode = .off;
-                } else if (std.mem.eql(u8, s, "1") or std.mem.eql(u8, s, "armed") or std.mem.eql(u8, s, "on")) {
-                    Cache.mode = .armed;
-                } else {
-                    Cache.mode = .shadow;
-                }
+                Cache.mode = if (std.mem.eql(u8, s, "off")) .off else .armed;
             }
             Cache.parsed.store(1, .monotonic);
+            std.log.warn(
+                "[VOTE-THRESHOLD-ARMED] depth-8 vote-stake threshold gate mode={s} (VEX_VOTE_THRESHOLD unset|\"armed\" => armed; \"off\" => kill-switch)",
+                .{if (Cache.mode == .armed) "armed" else "off"},
+            );
         }
         return Cache.mode;
     }
@@ -6724,8 +6941,9 @@ pub const ReplayStage = struct {
     /// Key resolution mirrors rootGuardInputs: prefer the node on the ANCHOR
     /// (candidate vote target) bank's ancestry — disambiguates equivocating
     /// same-slot siblings — falling back to any node at the slot; absent
-    /// (pruned/unknown) → 0 (in shadow that logs WOULD-REFUSE; never a crash).
-    /// pub for src/kat_vote_threshold_shadow.zig (drives the REAL fork-choice
+    /// (pruned/unknown) → 0 (which the armed gate reports as REFUSE; never a
+    /// crash).
+    /// pub for src/kat_vote_threshold_armed.zig (drives the REAL fork-choice
     /// walk against a constructed tree).
     pub fn clusterVotedStakeAtDepthSlot(self: *Self, depth_slot: Slot, anchor_slot: Slot, anchor_hash: Hash) u64 {
         const fc = if (self.fork_choice) |*p| p else return 0;
@@ -6747,6 +6965,74 @@ pub const ReplayStage = struct {
         if (key == null) key = fc.firstKeyAtSlot(depth_slot);
         const k = key orelse return 0;
         return fc.stakeVotedSubtree(k) orelse 0;
+    }
+
+    /// F348b REWORK (2026-07-29, adversarial audit finding): the bank-vote-
+    /// account stake source (`bankVoteStakeAtOrPastSlot`, since deleted) was
+    /// FORK-BLIND — `db.getAccountInSlot` at `(bank.slot, bank.ancestors())`
+    /// resolves each voter's CURRENT on-chain account regardless of which
+    /// fork that voter's `last_voted_slot`/`root_slot` actually landed on, so
+    /// an equivocating/partitioned voter's vote for a larger-numbered slot on
+    /// a DIFFERENT fork would get credited to OUR `depth_slot`, and the
+    /// `@max` composition propagated that overcount straight into the armed
+    /// gate — a fund-safety-direction bug, not a liveness one. Deleted along
+    /// with the `@max` composition and `getRootSlot` (now orphaned).
+    ///
+    /// Replacement: `depthSlotAlreadyRooted` below, a pure two-line predicate
+    /// with NO fork-blind counting anywhere — the call site now branches (a)
+    /// depth_slot already rooted ⇒ trivial-pass, (b) otherwise ⇒ the
+    /// existing fork-AWARE `clusterVotedStakeAtDepthSlot` alone (no bank
+    /// source, no `@max`).
+    ///
+    /// Agave citation for (a): `core/src/consensus.rs`
+    /// `Tower::adjust_lockouts_after_replay` (called once at boot, after
+    /// replay reaches `replayed_root`) → `self.adjust_lockouts_with_slot_history`
+    /// (drops/folds any vote-state lockouts at or below the new root) →
+    /// `self.initialize_root(replayed_root)`. The restored tower can THEREFORE
+    /// NEVER contain a lockout at or below the post-restart root once that
+    /// runs — `nth_recent_lockout(k)` (our `thresholdDepthSlot`) can never
+    /// again resolve to a rooted slot, so Agave's `check_vote_stake_threshold`
+    /// never has to answer "is a rooted slot's stake sufficient" at all; it
+    /// hits the `None` → `PassedThreshold` ("tower isn't that deep") branch
+    /// instead. This function reaches the SAME outcome at decision time
+    /// rather than by fixing up the tower at boot (Vexor does not carry an
+    /// `adjust_lockouts_after_replay` step), which is exactly why the
+    /// boot-restore specimen (depth8_slot=424854743, ~83k slots below the boot
+    /// root) wedged here but never would have in Agave.
+    ///
+    /// Why trivial-pass is SOUND, not a bypass: a rooted slot is already
+    /// irrevocably committed to our local AccountsDb — refusing THIS vote
+    /// cannot un-root it, so the depth-8 check has nothing left to protect by
+    /// gating on it. The vote actually being decided is for `bank.slot`, far
+    /// ahead of `root`; `depth_slot` is merely where the SIMULATED tower's
+    /// 9th-most-recent lockout happens to land, and once that lands at/below
+    /// root it is asking a question that has no live answer.
+    ///
+    /// ADVERSARIAL CHECK (could our own root be on a fork Agave would REFUSE,
+    /// making this trivial-pass unsound?): our root only ever advances via
+    /// `doRootAdvance`, gated by (1) the carrier-#7 LAYER-2 ancestry guard
+    /// (`db.isRootOnVotedAncestry` — root must lie on the just-voted bank's
+    /// TRUE parent chain, never a bare slot number), and (2) the G0/G1/G2
+    /// root guards (`evalRootGuards`/`rootGuardDecisionForAdvance`) — G0
+    /// requires a POSITIVE cluster-attested bank_hash match before the very
+    /// first post-boot root is allowed at all, and G1/G2 refuse an advance
+    /// onto a fork-choice-flagged invalid-ancestor or non-duplicate-confirmed
+    /// candidate on every advance after. A rooted slot has therefore already
+    /// passed guards specifically designed to keep our root off a cluster-
+    /// rejected fork — this trivial-pass does not skip a check Agave performs
+    /// that we don't; it relies on the SAME root-advance safety Vexor already
+    /// enforces independently of the depth-8 gate. Residual case: during a
+    /// network partition, G1/G2's invalid-ancestor/duplicate-confirmed data
+    /// depends on gossip from OTHER validators, so it can go silent (no
+    /// refusal signal, not a false one) while we keep rooting on our own
+    /// isolated fork — but this is not a NEW hole: an individual node's root
+    /// is a LOCAL lockout-expiry property in Agave too (root advance is never
+    /// itself cluster-stake-gated there either), which is precisely why the
+    /// depth-8 check exists as an ADDITIONAL safety layer for slots ABOVE
+    /// root — exactly the `depth_slot > root` branch this rework leaves
+    /// untouched, still fully fork-aware via `clusterVotedStakeAtDepthSlot`.
+    pub fn depthSlotAlreadyRooted(depth_slot: Slot, root: Slot) bool {
+        return depth_slot <= root;
     }
 
     /// TASK #3 ARMED canonical vote-selection (VEX_CANONICAL_VOTE). @prov:vote.select-reset
@@ -6805,7 +7091,8 @@ pub const ReplayStage = struct {
         const serialized = builder.signAndSerialize(&tx) catch return;
 
         var enqueued = false;
-        if (self.vote_send_queue) |q| enqueued = q.push(serialized);
+        // Always TowerSync (built via buildTowerSync above) -- collapse-safe.
+        if (self.vote_send_queue) |q| enqueued = q.push(.{ .kind = .tower_sync, .bytes = serialized });
         if (!enqueued) {
             defer self.allocator.free(serialized);
             if (self.sendVoteFn) |sendFn| sendFn(serialized);
@@ -7233,6 +7520,10 @@ pub const ReplayStage = struct {
     }
 
     fn submitVote(self: *Self, bank_in: *Bank) !void {
+        // ── DECIDE PHASE ATTRIBUTION (2026-07-31) ───────────────────────────────────────
+        // After VEX_FC_REROOT bounded the fork-choice tree, freeze->submit fell 270ms ->
+        // 23.3ms p50, and the remainder is NOT where the last probe was looking:
+        //   flush 524us (2%) · prevote 1,789us (8%) · decide 21,738us (90%) · send 0us
         const vex_consensus = @import("vex_consensus");
         const secret = self.identity_secret orelse return;
         const vote_acct = self.vote_account orelse return;
@@ -8030,7 +8321,9 @@ pub const ReplayStage = struct {
             else
                 true; // No GHOST data yet — assume same fork (bootstrap)
 
-            // ── VOTE-THRESHOLD depth-8 stake wiring (incident 423083743 companion fix) ──
+            // ── VOTE-THRESHOLD depth-8 stake wiring (incident 423083743 companion
+            // fix; ARMED BY DEFAULT 2026-07-29 — F348/F723, no-shadow-modes hard
+            // cutover) ──
             // The threshold check inside shouldVote was structurally DEAD: both live
             // call sites passed (0,0) and tower.zig skips the check when total_stake==0.
             // That hollow gate is how the 2026-07-19 boot voted 32× onto cluster-SKIPPED
@@ -8041,48 +8334,81 @@ pub const ReplayStage = struct {
             // maintained replay-thread aggregates (fork-choice stake_voted_subtree fed
             // by buildVoteAccountBatchFresh in onSlotCompleted + per-epoch total cache)
             // — no new cross-thread sync. thresholdStakesForMode is the single seam
-            // deciding what reaches shouldVote: SHADOW (default) forwards (0,0) so vote
-            // decisions stay byte-identical while [VOTE-THRESHOLD-SHADOW] logs the
-            // would-be verdict; VEX_VOTE_THRESHOLD=1 arms enforcement (after soak).
+            // deciding what reaches shouldVote: ARMED (default) forwards the real pair
+            // unconditionally; VEX_VOTE_THRESHOLD=off is the kill-switch (emergency
+            // rollback only — there is no observe-only leg any more).
             const thr_mode = self.voteThresholdMode();
             var thr_voted: u64 = 0;
             var thr_total: u64 = 0;
             if (thr_mode != .off) {
                 if (t.vote_state.thresholdDepthSlot(bank.slot)) |d8| {
-                    thr_voted = self.clusterVotedStakeAtDepthSlot(d8, bank.slot, bank.bank_hash);
-                    thr_total = self.epochTotalStake(bank);
+                    // F348b REWORK (2026-07-29, adversarial audit): rule (a) —
+                    // depth_slot already rooted ⇒ (0,0) trivial-pass, the same
+                    // "not-deep-enough-data" sentinel used below (Agave's
+                    // adjust_lockouts_after_replay analog — see
+                    // depthSlotAlreadyRooted's doc comment for the full
+                    // citation + adversarial reasoning on root-advance safety).
+                    // Fixes the boot-restore wedge (depth8_slot=424854743, ~83k
+                    // slots below the boot root) WITHOUT any fork-blind
+                    // counting: the deleted bank-vote-account source resolved
+                    // each voter's CURRENT account irrespective of which fork
+                    // its last-voted/root slot actually landed on, so an
+                    // equivocating/partitioned voter's vote on a DIFFERENT
+                    // fork could get credited to OUR depth_slot.
+                    //
+                    // Rule (b) — depth_slot > root: unchanged, the sole
+                    // source is the fork-AWARE subtree stake (walks OUR
+                    // ancestry via fork_choice; a vote on a different fork
+                    // can never be credited).
+                    const root: Slot = if (self.accounts_db) |db| db.rooted_slot else 0;
+                    if (!depthSlotAlreadyRooted(d8, root)) {
+                        thr_voted = self.clusterVotedStakeAtDepthSlot(d8, bank.slot, bank.bank_hash);
+                        thr_total = self.epochTotalStake(bank);
+                    }
                 }
-                // Simulated tower shallower than depth 8 → (0,0) stays: the check is
-                // skipped, matching Agave's trivial-pass for a not-deep-enough tower.
+                // Simulated tower shallower than depth 8, no epoch-stake data yet,
+                // or depth_slot already rooted → (0,0) stays: thresholdPasses()
+                // trivial-passes on total==0, matching Agave's not-deep-enough-data
+                // trivial-pass. This is the ONLY legitimate way (0,0) still reaches
+                // shouldVote while armed — never a hardcoded bypass any more.
             }
             const thr = vex_consensus.tower.TowerBft.thresholdStakesForMode(thr_mode, thr_voted, thr_total);
 
             // Full vote decision: lockout (slot + fork-aware) + threshold + fork safety.
-            // shouldVote is side-effect-free (canVote + isLockedOut + threshold +
-            // the conservative cross-fork stub), so it is safe to evaluate twice.
             const legacy_ok = t.shouldVote(bank.slot, is_same_fork, ancestors, thr.voted, thr.total);
             var allow_vote = legacy_ok;
 
-            // SHADOW: would the REAL-stake verdict differ from the (0,0) verdict the
-            // vote decision actually used? Only the threshold clause can differ (the
-            // other gates saw identical inputs), and it only ever REFUSES — so a
-            // difference is exactly "legacy passed, real stake would refuse".
-            if (thr_mode == .shadow and thr_total > 0) {
-                const ThrDbg = struct {
-                    var evals: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+            // PROOF-OF-ARMING (replaces the removed shadow-diff log leg): decision
+            // counters so a live soak has direct evidence the depth-8 gate is actually
+            // deciding, not merely wired. Uses the SAME thresholdPasses() predicate
+            // that gated the vote above (tower.zig, single source of truth for the
+            // u128-widened ratio math) — never a re-derived verdict that could drift
+            // from what was actually enforced. Every REFUSE logs immediately (rare,
+            // consensus-relevant, never rate-limited); PASSes sample (first + every
+            // 512th) to avoid flooding the hot path.
+            if (thr_mode == .armed and thr.total > 0) {
+                const ThrStats = struct {
+                    var refused: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
+                    var passed: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
                 };
-                const n = ThrDbg.evals.fetchAdd(1, .monotonic) + 1;
-                const real_ok = t.shouldVote(bank.slot, is_same_fork, ancestors, thr_voted, thr_total);
-                if (real_ok != legacy_ok) {
+                if (!vex_consensus.tower.TowerBft.thresholdPasses(thr.voted, thr.total)) {
+                    const n = ThrStats.refused.fetchAdd(1, .monotonic) + 1;
+                    // F207: thresholdPasses is an exact rational comparison
+                    // (voted*3 > total*2), not the integer THRESHOLD_PCT=67 constant
+                    // — log the exact ratio basis so this line can't imply a floored
+                    // percentage gate that no longer exists.
                     std.log.warn(
-                        "[VOTE-THRESHOLD-SHADOW] slot={d} depth=8 depth8_slot={?d} voted_stake={d} total={d} verdict=WOULD-REFUSE — cluster stake at depth-8 below {d}% (OBSERVE ONLY, vote unchanged)",
-                        .{ bank.slot, t.vote_state.thresholdDepthSlot(bank.slot), thr_voted, thr_total, vex_consensus.tower.TowerBft.THRESHOLD_PCT },
+                        "[VOTE-THRESHOLD-ARMED] REFUSE slot={d} depth=8 depth8_slot={?d} voted_stake={d} total={d} threshold=2/3(exact) (refusal #{d})",
+                        .{ bank.slot, t.vote_state.thresholdDepthSlot(bank.slot), thr.voted, thr.total, n },
                     );
-                } else if (n == 1 or n % 512 == 0) {
-                    std.log.info(
-                        "[VOTE-THRESHOLD-SHADOW] slot={d} depth=8 voted_stake={d} total={d} verdict=PASS (sample #{d})",
-                        .{ bank.slot, thr_voted, thr_total, n },
-                    );
+                } else {
+                    const n = ThrStats.passed.fetchAdd(1, .monotonic) + 1;
+                    if (n == 1 or n % 512 == 0) {
+                        std.log.info(
+                            "[VOTE-THRESHOLD-ARMED] PASS slot={d} depth=8 voted_stake={d} total={d} (sample #{d})",
+                            .{ bank.slot, thr.voted, thr.total, n },
+                        );
+                    }
                 }
             }
 
@@ -8100,19 +8426,14 @@ pub const ReplayStage = struct {
                 // Confirm the ONLY failing gate was the cross-fork stub: re-run
                 // shouldVote forcing is_same_fork=true. If that is ALSO false, the
                 // refusal was for a real reason (lockout/threshold) — never override.
-                // VOTE-THRESHOLD wiring (423083743 companion fix): same `thr` seam as
-                // the main call site above — (0,0) in shadow/off (byte-identical),
-                // real stakes when armed (a threshold-failing tower then correctly
-                // blocks the switch-proof liveness override too).
+                // VOTE-THRESHOLD wiring (423083743 companion fix, ARMED BY DEFAULT
+                // 2026-07-29): same `thr` seam as the main call site above — real
+                // stakes reach this shouldVote call unconditionally (armed) or (0,0)
+                // under the VEX_VOTE_THRESHOLD=off kill-switch. A threshold-failing
+                // tower correctly blocks the switch-proof liveness override too; the
+                // main call site's [VOTE-THRESHOLD-ARMED] counters already cover this
+                // predicate, so no separate diagnostic leg here.
                 if (!t.shouldVote(bank.slot, true, ancestors, thr.voted, thr.total)) break :switch_proof;
-                if (thr_mode == .shadow and thr_total > 0 and
-                    !t.shouldVote(bank.slot, true, ancestors, thr_voted, thr_total))
-                {
-                    std.log.warn(
-                        "[VOTE-THRESHOLD-SHADOW] site=switch-proof slot={d} depth=8 voted_stake={d} total={d} verdict=WOULD-REFUSE — armed mode would block the switch-proof path here (OBSERVE ONLY)",
-                        .{ bank.slot, thr_voted, thr_total },
-                    );
-                }
                 const fc = if (self.fork_choice) |*p| p else break :switch_proof;
                 const db = self.accounts_db orelse break :switch_proof;
                 const last_voted = t.vote_state.lastVotedSlot() orelse {
@@ -8382,12 +8703,15 @@ pub const ReplayStage = struct {
         defer tx.deinit();
 
         const serialized = try builder.signAndSerialize(&tx);
+        // Tag for drainAndCollapse (2026-07-30): TowerSync is proven collapse-safe
+        // (VoteKind doc comment); the tower_state==null legacy fallback above is not.
+        const entry_kind: VoteKind = if (tower_state != null) .tower_sync else .legacy_vote;
 
         // Enqueue for async send if vote sender thread is wired.
         // Ownership transfers to queue -- sender thread frees after send.
         var enqueued = false;
         if (self.vote_send_queue) |q| {
-            enqueued = q.push(serialized);
+            enqueued = q.push(.{ .kind = entry_kind, .bytes = serialized });
         }
 
         if (!enqueued) {
@@ -9545,6 +9869,23 @@ pub const ReplayStage = struct {
                     ser_map.deinit();
                     // pending_writes now holds the SERIAL (canonical) result → bank stays exact.
                 } else {
+                    // [WAVE-WIRE-ORDER] fix/wave-drain-wire-order-2026-07-29: one small
+                    // arena array per multi-item wave (NOT per tx, NOT per write — sized by
+                    // `eligible.items.len`, which fix #1's own profiling found is >1 for only
+                    // ~4% of waves), so `waveCb` can record exactly where each item's writes
+                    // landed. `eligible.items` is already in wire order (tx_dispatcher's
+                    // ReadyQueue breaks ties on `block_seq`, which is assigned in Phase-1
+                    // addTxn call order = wire order — see readyEntryLessThan); the merge
+                    // below walks it in that order regardless of which worker ran which item
+                    // or which order workers finished in.
+                    const item_ranges = arena.alloc(ItemRange, eligible.items.len) catch @panic("OOM: runWaveDrain item_ranges — cannot drop wire-order tracking");
+                    // [WAVE-WIRE-ORDER audit hardening] arena.alloc returns UNDEFINED memory —
+                    // zero it so a range `waveCb` somehow never fills (it always should; this
+                    // is a belt-and-suspenders guard, not an expected path) reads as an
+                    // all-zero (worker=0,start=0,end=0) empty range instead of garbage that
+                    // could alias into another worker's buffer.
+                    @memset(item_ranges, ItemRange{});
+                    ctx.item_ranges = item_ranges;
                     if (measure_timing) {
                         var wt_timer = std.time.Timer.start() catch unreachable;
                         wp.dispatchWave(@ptrCast(&ctx), eligible.items.len, waveCb);
@@ -9553,8 +9894,7 @@ pub const ReplayStage = struct {
                     } else {
                         wp.dispatchWave(@ptrCast(&ctx), eligible.items.len, waveCb);
                     }
-                    // BARRIER returned (full happens-before from every worker). Merge each
-                    // worker's buffer into pending_writes in worker-index order, then clear it.
+                    // BARRIER returned (full happens-before from every worker).
 
                     // [WAVE-CONFLICT] D2 (gated VEX_WAVE_CONFLICT_DETECT): did the SAME pubkey land in two
                     // DIFFERENT worker buffers this wave? That means two txs actually WROTE the same account
@@ -9578,11 +9918,38 @@ pub const ReplayStage = struct {
                         }
                     }
 
-                    for (self.wave_bufs) |*buf| {
-                        if (buf.items.len == 0) continue;
-                        bank.pending_writes.appendSlice(bank.allocator, buf.items) catch @panic("OOM: runWaveDrain merge worker buffer — cannot drop a committed write");
-                        buf.clearRetainingCapacity();
+                    // [WAVE-WIRE-ORDER audit hardening] Cheap post-dispatch consistency check,
+                    // BEFORE the merge trusts `item_ranges` to slice into `self.wave_bufs`. This
+                    // is exactly the class where a silent inconsistency = a silent reorder =
+                    // consensus corruption (a wrong-but-plausible-looking pending_writes array),
+                    // so any mismatch PANICS loud rather than merging a partial/aliased result.
+                    // Three checks, each a few adds over the ≤4%-of-waves multi-eligible path:
+                    //   (1) every range's worker index is in bounds,
+                    //   (2) every range's end is within that worker's ACTUAL buffer length,
+                    //   (3) the ranges account for every write in every worker buffer (no tx's
+                    //       writes silently dropped, none double-counted) — sum(end-start) across
+                    //       all ranges must equal sum(buf.items.len) across all worker buffers.
+                    var ranges_total: usize = 0;
+                    for (item_ranges) |r| {
+                        if (@as(usize, r.worker) >= self.wave_bufs.len) {
+                            std.debug.panic("[WAVE-WIRE-ORDER] slot={d} range worker={d} out of bounds (n_bufs={d}) — refusing to merge a possibly-corrupt wave", .{ bank.slot, r.worker, self.wave_bufs.len });
+                        }
+                        const buf_len: u32 = @intCast(self.wave_bufs[r.worker].items.len);
+                        if (r.end > buf_len or r.start > r.end) {
+                            std.debug.panic("[WAVE-WIRE-ORDER] slot={d} range worker={d} start={d} end={d} exceeds its buffer len={d} — refusing to merge a possibly-corrupt wave", .{ bank.slot, r.worker, r.start, r.end, buf_len });
+                        }
+                        ranges_total += @as(usize, r.end - r.start);
                     }
+                    var bufs_total: usize = 0;
+                    for (self.wave_bufs) |*buf| bufs_total += buf.items.len;
+                    if (ranges_total != bufs_total) {
+                        std.debug.panic("[WAVE-WIRE-ORDER] slot={d} item_ranges account for {d} writes but worker buffers hold {d} — a write was dropped or double-counted; refusing to merge (silent reorder here = consensus corruption)", .{ bank.slot, ranges_total, bufs_total });
+                    }
+
+                    // Merge in WIRE order (eligible[i] for i=0..len), not worker-index order.
+                    mergeWaveBuffersWireOrder(&bank.pending_writes, bank.allocator, self.wave_bufs, item_ranges) catch @panic("OOM: runWaveDrain merge worker buffer — cannot drop a committed write");
+                    for (self.wave_bufs) |*buf| buf.clearRetainingCapacity();
+                    ctx.item_ranges = &.{};
                 }
             }
 
@@ -9706,7 +10073,22 @@ pub const ReplayStage = struct {
             const pb = self.banks.get(ps) orelse break :blk null;
             break :blk pb.getSysvarFromPendingWrites(&SH_PUBKEY_BYTES);
         };
-        try bank.updateClockSysvar();
+        // F441b (2026-07-29, slot 424942916): Clock now takes the SAME
+        // fork-aware parent-pending-writes source SlotHashes already used —
+        // see updateClockSysvar's doc comment for the eviction-immunity
+        // rationale.
+        const CLOCK_PUBKEY_BYTES: [32]u8 = .{
+            0x06, 0xa7, 0xd5, 0x17, 0x18, 0xc7, 0x74, 0xc9,
+            0x28, 0x56, 0x63, 0x98, 0x69, 0x1d, 0x5e, 0xb6,
+            0x8b, 0x5e, 0xb8, 0xa3, 0x9b, 0x4b, 0x6d, 0x5c,
+            0x73, 0x55, 0x5b, 0x21, 0x00, 0x00, 0x00, 0x00,
+        };
+        const parent_clock_sysvar: ?Bank.SysvarFromParent = blk: {
+            const ps = bank.parent_slot orelse break :blk null;
+            const pb = self.banks.get(ps) orelse break :blk null;
+            break :blk pb.getSysvarFromPendingWrites(&CLOCK_PUBKEY_BYTES);
+        };
+        try bank.updateClockSysvar(parent_clock_sysvar);
         try bank.updateSlotHashesSysvar(parent_sh_sysvar);
         // r35-fix: r35-A [SYSVAR-WRITES] probe
         // confirmed LastRestartSlot was never being written (0/10 slots).
@@ -12531,6 +12913,101 @@ test "slot queue push pop" {
     try std.testing.expect(q.pop() == null);
 }
 
+// drainAndCollapse KATs (2026-07-30 VoteTooOld burst-amplifier fix).
+// Mock sendFn: `*const fn ([]const u8) void` can't close over test-local state in
+// Zig, so record calls into module-level static state (same pattern as
+// VoteDbgSubmit/RefreshDbg elsewhere in this file), reset at the top of each test.
+const DrainCollapseMock = struct {
+    var call_count: u32 = 0;
+    var last_byte: u8 = 0; // each test's mock payloads are single distinguishing bytes
+
+    fn reset() void {
+        call_count = 0;
+        last_byte = 0;
+    }
+
+    fn send(bytes: []const u8) void {
+        call_count += 1;
+        last_byte = bytes[0];
+    }
+};
+
+test "drainAndCollapse: N tower_sync entries collapse to exactly 1 send (the newest) + collapsed=N-1" {
+    DrainCollapseMock.reset();
+    const alloc = std.testing.allocator;
+    var q = VoteSendQueue.init(alloc);
+    const n: u8 = 5;
+    var i: u8 = 0;
+    while (i < n) : (i += 1) {
+        const bytes = try alloc.dupe(u8, &[_]u8{i}); // payload i is "vote i"; i=4 is newest
+        try std.testing.expect(q.push(.{ .kind = .tower_sync, .bytes = bytes }));
+    }
+    const r = drainAndCollapse(&q, &DrainCollapseMock.send);
+    try std.testing.expectEqual(@as(u64, 1), r.sent);
+    try std.testing.expectEqual(@as(u64, n - 1), r.collapsed);
+    try std.testing.expectEqual(@as(u32, 1), DrainCollapseMock.call_count);
+    try std.testing.expectEqual(@as(u8, n - 1), DrainCollapseMock.last_byte); // sent the NEWEST (last-pushed)
+    try std.testing.expect(q.pop() == null); // queue fully drained
+}
+
+test "drainAndCollapse: a single entry is sent unchanged, collapsed=0" {
+    DrainCollapseMock.reset();
+    const alloc = std.testing.allocator;
+    var q = VoteSendQueue.init(alloc);
+    const bytes = try alloc.dupe(u8, &[_]u8{7});
+    try std.testing.expect(q.push(.{ .kind = .tower_sync, .bytes = bytes }));
+    const r = drainAndCollapse(&q, &DrainCollapseMock.send);
+    try std.testing.expectEqual(@as(u64, 1), r.sent);
+    try std.testing.expectEqual(@as(u64, 0), r.collapsed);
+    try std.testing.expectEqual(@as(u32, 1), DrainCollapseMock.call_count);
+    try std.testing.expectEqual(@as(u8, 7), DrainCollapseMock.last_byte);
+}
+
+test "drainAndCollapse: empty queue sends nothing" {
+    DrainCollapseMock.reset();
+    const alloc = std.testing.allocator;
+    var q = VoteSendQueue.init(alloc);
+    const r = drainAndCollapse(&q, &DrainCollapseMock.send);
+    try std.testing.expectEqual(@as(u64, 0), r.sent);
+    try std.testing.expectEqual(@as(u64, 0), r.collapsed);
+    try std.testing.expectEqual(@as(u32, 0), DrainCollapseMock.call_count);
+}
+
+test "drainAndCollapse: legacy_vote entries are never collapsed and bound tower_sync runs" {
+    // Sequence: tower_sync(1), legacy_vote(2), tower_sync(3), tower_sync(4)
+    // Expected surviving sends in order: 1, 2, 4 (3 is superseded by 4; 1 and 2
+    // are each a run boundary and always sent). sent=3, collapsed=1.
+    DrainCollapseMock.reset();
+    const alloc = std.testing.allocator;
+    var q = VoteSendQueue.init(alloc);
+    const Entry = struct { kind: VoteKind, byte: u8 };
+    const seq = [_]Entry{
+        .{ .kind = .tower_sync, .byte = 1 },
+        .{ .kind = .legacy_vote, .byte = 2 },
+        .{ .kind = .tower_sync, .byte = 3 },
+        .{ .kind = .tower_sync, .byte = 4 },
+    };
+    for (seq) |e| {
+        const bytes = try alloc.dupe(u8, &[_]u8{e.byte});
+        try std.testing.expect(q.push(.{ .kind = e.kind, .bytes = bytes }));
+    }
+    var seen = std.ArrayListUnmanaged(u8){};
+    defer seen.deinit(alloc);
+    const RecordMock = struct {
+        var sink: *std.ArrayListUnmanaged(u8) = undefined;
+        var alloc_ref: std.mem.Allocator = undefined;
+        fn send(bytes: []const u8) void {
+            sink.append(alloc_ref, bytes[0]) catch unreachable;
+        }
+    };
+    RecordMock.sink = &seen;
+    RecordMock.alloc_ref = alloc;
+    const r = drainAndCollapse(&q, &RecordMock.send);
+    try std.testing.expectEqual(@as(u64, 3), r.sent);
+    try std.testing.expectEqual(@as(u64, 1), r.collapsed);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 1, 2, 4 }, seen.items);
+}
+
 // fix/cu-parity-batch2 (2026-07-12): loader-entry CU cost KAT.
 // @prov:replay.loader-entry-cu-cost — direct invocation of one of
 // the three native loaders themselves (not merely a program owned by one)
@@ -13163,7 +13640,116 @@ const WaveCtx = struct {
     dag_tx_infos: []const DagTxInfo,
     eligible: []const u32,
     bufs: []std.ArrayListUnmanaged(bank_mod.AccountWrite),
+    /// [WAVE-WIRE-ORDER] fix/wave-drain-wire-order-2026-07-29 — one slot per `eligible[]`
+    /// item, filled in by `waveCb` on whichever worker actually ran that item. Lets the
+    /// merge step (runWaveDrain) walk items in WIRE order (eligible[] is already
+    /// block_seq/FIFO-ordered — see tx_dispatcher.readyEntryLessThan) and pull each item's
+    /// own write-range out of whichever worker buffer it landed in, instead of
+    /// concatenating whole worker buffers in worker-index order. The only production
+    /// caller (runWaveDrain) always sizes this to `eligible.items.len` before dispatching;
+    /// left `&.{}` only as the pre-dispatch/default value (`waveCb` guards `item_idx <
+    /// item_ranges.len` so an unrelated caller that never populates it just skips recording,
+    /// it does not crash — but `mergeWaveBuffersWireOrder` itself trusts its `item_ranges`
+    /// argument to cover every write in `bufs`, so passing a short/empty one there WOULD
+    /// silently drop writes; runWaveDrain never does this).
+    item_ranges: []ItemRange = &.{},
 };
+
+/// See `WaveCtx.item_ranges`. One eligible item's write-range within its worker's buffer.
+const ItemRange = struct {
+    worker: u32 = 0,
+    start: u32 = 0,
+    end: u32 = 0,
+};
+
+/// [WAVE-WIRE-ORDER] fix/wave-drain-wire-order-2026-07-29 — merge per-worker wave-write
+/// buffers into `pending_writes` in WIRE (tx_idx) order rather than worker-index order.
+/// `item_ranges[i]` names exactly which worker buffer + byte-range item `i` (in the SAME
+/// order as the wave's `eligible[]`, which is wire-ordered — tx_dispatcher's ReadyQueue
+/// breaks ties on `block_seq` = Phase-1 addTxn insertion order) landed in; walking
+/// `item_ranges` in order and copying each item's own slice therefore reproduces exactly
+/// what a single-threaded SERIAL drain of the same wave would have appended, regardless of
+/// which worker ran which item or which order workers finished in. Pulled out of
+/// `runWaveDrain` so it is unit-testable without a Bank/AccountsDb/WavePool (see the paired
+/// KAT-C test below). Cost: no per-tx or per-write allocation here — `item_ranges` is the
+/// one small per-wave array the caller already allocated from the entry's arena before
+/// dispatch (sized to `eligible.items.len`, which fix #1's own profiling found is >1 for
+/// only ~4% of waves); this function itself allocates nothing.
+fn mergeWaveBuffersWireOrder(
+    pending_writes: *std.ArrayListUnmanaged(bank_mod.AccountWrite),
+    allocator: std.mem.Allocator,
+    bufs: []std.ArrayListUnmanaged(bank_mod.AccountWrite),
+    item_ranges: []const ItemRange,
+) !void {
+    for (item_ranges) |r| {
+        if (r.end <= r.start) continue;
+        const buf = &bufs[r.worker];
+        try pending_writes.appendSlice(allocator, buf.items[r.start..r.end]);
+    }
+}
+
+test "KAT-C fix/wave-drain-wire-order-2026-07-29: mergeWaveBuffersWireOrder restores wire order across INTERLEAVED workers" {
+    // Simulates the exact hazard the RCA named: a wave with 5 mutually-independent
+    // eligible items (0..4, wire order) whose worker-completion pattern round-robins
+    // across 2 workers — worker 0 grabs items 0,2,4 off the shared ready queue, worker 1
+    // grabs items 1,3 (the pattern a work-stealing pool produces when worker 1 is briefly
+    // slower). The OLD code (concatenate wave_bufs[0] then wave_bufs[1] — see the
+    // "vex-048c" test above, which documents exactly that old semantics as "orderly")
+    // would emit 0,2,4,1,3 here — NOT wire order. This asserts the NEW merge emits 0,1,2,3,4
+    // regardless of the worker interleaving.
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    const mkWrite = struct {
+        fn call(tag: u8) bank_mod.AccountWrite {
+            return .{
+                .pubkey = .{ .data = [_]u8{tag} ** 32 },
+                .lamports = @as(u64, tag),
+                .owner = .{ .data = [_]u8{0} ** 32 },
+                .executable = false,
+                .rent_epoch = 0,
+                .data = &[_]u8{},
+            };
+        }
+    }.call;
+
+    var bufs: [2]std.ArrayListUnmanaged(bank_mod.AccountWrite) = .{ .{}, .{} };
+    defer for (&bufs) |*b| b.deinit(alloc);
+
+    try bufs[0].append(alloc, mkWrite(0)); // item0
+    try bufs[1].append(alloc, mkWrite(1)); // item1
+    try bufs[0].append(alloc, mkWrite(2)); // item2
+    try bufs[1].append(alloc, mkWrite(3)); // item3
+    try bufs[0].append(alloc, mkWrite(4)); // item4
+
+    const item_ranges = [_]ItemRange{
+        .{ .worker = 0, .start = 0, .end = 1 }, // item0 -> worker0 slot 0 (tag 0)
+        .{ .worker = 1, .start = 0, .end = 1 }, // item1 -> worker1 slot 0 (tag 1)
+        .{ .worker = 0, .start = 1, .end = 2 }, // item2 -> worker0 slot 1 (tag 2)
+        .{ .worker = 1, .start = 1, .end = 2 }, // item3 -> worker1 slot 1 (tag 3)
+        .{ .worker = 0, .start = 2, .end = 3 }, // item4 -> worker0 slot 2 (tag 4)
+    };
+
+    var pending: std.ArrayListUnmanaged(bank_mod.AccountWrite) = .{};
+    defer pending.deinit(alloc);
+
+    try mergeWaveBuffersWireOrder(&pending, alloc, &bufs, &item_ranges);
+
+    // Sanity: naive worker-order concatenation (the pre-fix behavior) would have been
+    // 0,2,4,1,3 — assert we did NOT reproduce that.
+    try testing.expectEqual(@as(usize, 5), pending.items.len);
+    const naive_worker_order = [_]u64{ 0, 2, 4, 1, 3 };
+    var matches_naive = true;
+    for (0..5) |i| {
+        if (pending.items[i].lamports != naive_worker_order[i]) matches_naive = false;
+    }
+    try testing.expect(!matches_naive);
+
+    // The actual assertion: wire order, exactly.
+    for (0..5) |i| {
+        try testing.expectEqual(@as(u64, @intCast(i)), pending.items[i].lamports);
+    }
+}
 
 /// Stage B B2c — wave worker callback (wave_pool.WorkFn). Runs ONE eligible tx on a worker:
 /// redirects collectWrite into this worker's buffer, executes, restores. The DAG's W→R
@@ -13174,8 +13760,13 @@ fn waveCb(ctx_ptr: *anyopaque, worker_idx: usize, arena: std.mem.Allocator, item
     const ctx: *WaveCtx = @ptrCast(@alignCast(ctx_ptr));
     const info_idx = ctx.eligible[item_idx];
     const ptx = ctx.dag_tx_infos[info_idx].parsed.?; // local copy on the worker stack (read-only slices into batch_arena)
+    const buf = &ctx.bufs[worker_idx];
+    // [WAVE-WIRE-ORDER] snapshot this worker's buffer length BEFORE the write, on the
+    // worker's own stack — no cross-worker access, `item_idx` is this call's exclusive
+    // slot in `ctx.item_ranges`, so no data race with sibling workers writing their own.
+    const write_start: u32 = @intCast(buf.items.len);
     const prior = bank_mod.worker_writes_override;
-    bank_mod.worker_writes_override = &ctx.bufs[worker_idx];
+    bank_mod.worker_writes_override = buf;
     defer bank_mod.worker_writes_override = prior;
     if (bank_mod.TvTrace.on()) _ = ctx.bank.tvt2_dag_from_wave.fetchAdd(1, .monotonic); // [TOPVOTES-TRACE] TEMPORARY
     if (WaveTiming.on()) {
@@ -13184,6 +13775,9 @@ fn waveCb(ctx_ptr: *anyopaque, worker_idx: usize, arena: std.mem.Allocator, item
         _ = WaveTiming.eligible_ns.fetchAdd(wt_timer.read(), .monotonic);
     } else {
         ctx.self.executeDagTx(ctx.bank, ctx.db, arena, ctx.ancestor_slots, &ptx, info_idx, &ctx.dag_tx_infos[info_idx]);
+    }
+    if (item_idx < ctx.item_ranges.len) {
+        ctx.item_ranges[item_idx] = .{ .worker = @intCast(worker_idx), .start = write_start, .end = @intCast(buf.items.len) };
     }
 }
 
@@ -13247,10 +13841,20 @@ fn parseTxFromBytes(tx_data: []const u8, alloc: std.mem.Allocator, accounts_db: 
     const blockhash: *const [32]u8 = @ptrCast(tx_data[pos..][0..32]);
     pos += 32;
 
-    // 6. Instructions — d27ll: @prov:replay.txn-instructions-max-255
-    // See replay_stage.zig:6762 sibling site for full rationale. Carrier slot 407,787,569.
+    // 6. Instructions
+    // F242/F062 (2026-07-29): @prov:replay.txn-instructions-max-64 — REVERTS the d27ll
+    // 2026-05-11 64→255 change (same misdiagnosis as the sibling site). SIMD-160's
+    // top-level instruction cap is unconditional in Agave 4.1+ and confirmed active
+    // on testnet since slot 385,868,256 — see the full writeup on the sibling check
+    // at measureTransaction(), replay_stage.zig:15421 (NOT :6762 — that pointer was
+    // stale). This call site (parseTxFromBytes) is the highest-blast-radius of the
+    // two: its caller producedOracleExecute-family leader block-packing path has no
+    // measureTransaction pre-gate upstream, unlike the two other parseTxFromBytes
+    // call sites which are pre-gated. Carrier slot 407,787,569 (d27ll's original
+    // motivation) is UNRESOLVED — do not assume this revert fixes it; see the
+    // measureTransaction comment for the full chain of reasoning.
     const num_instructions = readCompactU16(tx_data, &pos) catch return error.TooShort;
-    if (num_instructions > 255) return error.TooShort;
+    if (num_instructions > SIMD_160_MAX_TOP_LEVEL_INSTRUCTIONS) return error.TooShort;
     const instructions = try alloc.alloc(ParsedInstruction, num_instructions);
 
     for (instructions, 0..) |*ix, idx| {
@@ -13319,6 +13923,24 @@ fn parseTxFromBytes(tx_data: []const u8, alloc: std.mem.Allocator, accounts_db: 
         var w_cursor: usize = num_accounts;
         var r_cursor: usize = num_accounts + total_writable;
 
+        // F008: SlotHashes is fetched LAZILY — only if a referenced table
+        // actually turns out to be deactivated (resolveLookupTable's
+        // DEACTIVATION_SLOT_NONE short-circuit), matching the Agave-side
+        // cost-avoidance `status()` takes (state.rs:102-104). `getSlotHashesData()`
+        // (bank.zig:1981) reverse-scans `pending_writes`, so paying it on
+        // every ALT-bearing tx would be needless O(pending_writes) cost on
+        // the common never-deactivated path. Once fetched it is cached here
+        // and reused for every remaining table lookup in this tx, mirroring
+        // Agave's own once-per-tx `Arc<SlotHashes>` fetch
+        // (address_lookup_table.rs:44-46) — same overlay-aware
+        // (pending_writes-first, then accounts_db) reader
+        // `executeVoteInstruction` already uses for this exact sysvar
+        // (bank.zig:1975-2005); the fresh per-slot write from
+        // `updateSlotHashesSysvar` (called before any tx executes this slot)
+        // is guaranteed visible whenever it is fetched.
+        var sh_data: ?[]const u8 = null;
+        var sh_fetched = false;
+
         for (raw_lookups[0..num_lookups]) |rl| {
             const table_pk = core.Pubkey{ .data = rl.table_key };
             const acct_view = if (bank) |b|
@@ -13326,21 +13948,47 @@ fn parseTxFromBytes(tx_data: []const u8, alloc: std.mem.Allocator, accounts_db: 
             else
                 db._getRooted(&table_pk) orelse return error.TooShort;
 
-            // ALT layout: 56-byte header + packed [32]u8 addresses
-            if (acct_view.data.len < address_lookup_table.LOOKUP_TABLE_META_SIZE) return error.TooShort;
-            const addr_bytes = acct_view.data[address_lookup_table.LOOKUP_TABLE_META_SIZE..];
-            if (addr_bytes.len % 32 != 0) return error.TooShort;
-            const addr_count = addr_bytes.len / 32;
-            const addresses: [*]const [32]u8 = @ptrCast(@alignCast(addr_bytes.ptr));
+            // F008: full Agave-equivalent ALT resolution — owner check,
+            // the ALT program's own deserialize() parser (replaces the old
+            // raw 56-byte-offset byte-slice), and deactivation/active-range
+            // gating. See address_lookup_table.resolveLookupTable's doc
+            // comment for the exact Agave citations + error mapping.
+            // deserialize() needs a mutable slice; acct_view.data is a
+            // zero-copy `[]const u8` view (vex_store/appendvec.zig
+            // AccountView) — dupe through the per-slot arena (bounded by the
+            // table account's size, same allocator as `combined` above).
+            const table_data = try alloc.dupe(u8, acct_view.data);
+            const resolved = address_lookup_table.resolveLookupTable(
+                table_data,
+                acct_view.owner.data,
+                if (bank) |b| b.slot else null,
+                sh_data,
+            ) catch |err| retry: {
+                // Lazy-fetch retry: only a deactivated-and-not-yet-checked
+                // table hits this — fetch SlotHashes once, cache it for the
+                // rest of this tx's lookups, and re-resolve this one table.
+                if (err == error.SlotHashesSysvarNotFound and !sh_fetched) {
+                    sh_fetched = true;
+                    sh_data = if (bank) |b| b.getSlotHashesData() else null;
+                    break :retry address_lookup_table.resolveLookupTable(
+                        table_data,
+                        acct_view.owner.data,
+                        if (bank) |b| b.slot else null,
+                        sh_data,
+                    ) catch return error.TooShort;
+                }
+                return error.TooShort; // Agave: InvalidAccountOwner / InvalidAccountData / LookupTableAccountNotFound / SlotHashesSysvarNotFound — folded into this function's existing all-TooShort reject style (see FIX-SCOPE-F008-F012.md Risk Notes).
+            };
+            const addr_count = resolved.active_addresses.len;
 
             for (rl.writable_indexes) |idx| {
-                if (@as(usize, idx) >= addr_count) return error.TooShort;
-                combined[w_cursor] = addresses[idx];
+                if (@as(usize, idx) >= addr_count) return error.TooShort; // Agave: InvalidLookupIndex
+                combined[w_cursor] = resolved.active_addresses[idx];
                 w_cursor += 1;
             }
             for (rl.readonly_indexes) |idx| {
-                if (@as(usize, idx) >= addr_count) return error.TooShort;
-                combined[r_cursor] = addresses[idx];
+                if (@as(usize, idx) >= addr_count) return error.TooShort; // Agave: InvalidLookupIndex
+                combined[r_cursor] = resolved.active_addresses[idx];
                 r_cursor += 1;
             }
         }
@@ -14545,6 +15193,13 @@ fn verifyTxPrecompiles(
 // dropping ALL remaining txs in the entry. A single mis-cap can cascade into
 // many missing txs per slot. Counters are non-atomic globals (matches VoteDbg
 // pattern) — race-induced undercount is acceptable for a diagnostic.
+// F242/F062 (2026-07-29): SIMD-160 top-level instruction cap, unconditional in Agave
+// 4.1+ (transaction-view/src/sanitize.rs:134-142, runtime/src/bank.rs:5019-5024) and
+// confirmed active on testnet since slot 385,868,256. Matches Agave's
+// MAX_INSTRUCTION_TRACE_LENGTH (transaction-context/src/lib.rs:26). See the d27ll-vs-
+// F242 comment above measureTransaction()'s instruction-count check for full history.
+pub const SIMD_160_MAX_TOP_LEVEL_INSTRUCTIONS: u16 = 64;
+
 pub const ParseRejStats = struct {
     pub var total_calls: u64 = 0;
     pub var total_ok: u64 = 0;
@@ -14561,7 +15216,7 @@ pub const ParseRejStats = struct {
     pub var accounts_oob: u64 = 0; // accts_end > data.len
     pub var rbh_short: u64 = 0; // pos + 32 > data.len for recent_blockhash
     pub var ix_count_short: u64 = 0; // compact-u16 read fail for num_instructions
-    pub var ix_count_over_255: u64 = 0; // num_instructions > 255 (SIMD-160 cap)
+    pub var ix_count_over_64: u64 = 0; // num_instructions > 64 (SIMD-160 cap, F242 revert of 05-11 64->255 change)
     pub var ix_pid_short: u64 = 0; // pos >= data.len for program_id_index
     pub var ix_accts_count_short: u64 = 0; // compact-u16 read fail for num_ix_accounts
     pub var ix_accts_oob: u64 = 0; // pos + num_ix_accounts > data.len
@@ -14668,19 +15323,39 @@ pub fn measureTransaction(data: []const u8, start: usize) error{TooShort}!usize 
     pos += 32;
 
     // 6. Instructions
-    // d27ll (2026-05-11): @prov:replay.txn-instructions-max-255
-    // The 64-cap that was here is `MAX_INSTRUCTION_TRACE_LENGTH` from
-    // transaction-context/src/lib.rs:26 — a trace-buffer SIZE constant, NOT a wire-
-    // parse limit. Misusing it as a parse cap rejected real txs with 65-255 ixs;
-    // caller's `entry_complete=false; break :batch_loop` then silently dropped all
-    // remaining txs in the slot. Same class as d27dd num_sigs 19→127 fix.
-    // Carrier slot: 407,787,569 (Δ=-425 vote txs, -425 system txs = -850 accounts).
+    // F242/F062 (2026-07-29): @prov:replay.txn-instructions-max-64 — REVERTS the d27ll
+    // 2026-05-11 64→255 change below (kept verbatim for history, now WRONG).
+    // Audit-confirmed (parity-sweep AUDITS.md F062/F242, N1 CONSENSUS-NOW): SIMD-160
+    // (`static_instruction_limit`, feature 64ixypL1HPu8WtJhNSMb9mSgfFaJvsANuRkTbHyuLfnx)
+    // is UNCONDITIONAL in Agave from 4.1 onward (agave-4.1.0-rc.1-full through
+    // agave-4.3.0-alpha.1-src: `enable_static_instruction_limit` param removed
+    // entirely — checked at transaction-view/src/sanitize.rs:134-142 and, a second,
+    // independent time, at runtime/src/bank.rs:5019-5024 BEFORE sig verification).
+    // Neither Agave call site guards this branch behind feature_set the way adjacent
+    // checks in the same function are guarded. Confirmed LIVE on testnet: the feature
+    // account activated at slot 385,868,256 and testnet's reported version
+    // (4.2.0-beta.2) is unconditional-cap code regardless. `MAX_INSTRUCTION_TRACE_LENGTH
+    // = 64` (transaction-context/src/lib.rs:26) IS the correct wire-parse cap, not
+    // merely a trace-buffer size constant as d27ll's comment claimed — d27ll's own
+    // diagnosis of the constant's meaning was the misdiagnosis, not the constant's use.
+    //
+    // Retained history (d27ll, 2026-05-11, @prov:replay.txn-instructions-max-255,
+    // now overturned): raised 64→255 to explain carrier slot 407,787,569 (Δ=-425 vote
+    // txs, -425 system txs = -850 accounts), reasoning that Agave legitimately accepted
+    // 65-255-ix txs Vexor's 64-cap wrongly rejected. That premise cannot hold: carrier
+    // slot 407,787,569 postdates SIMD-160 activation (385,868,256), so no conforming
+    // Agave validator could have produced a >64-ix tx at carrier time either — the
+    // actual root cause of 407,787,569 is UNRESOLVED and must be re-diagnosed
+    // separately (audit explicitly declined to re-derive it; do not assume this revert
+    // is the fix for that carrier — ordinary vote/system txs essentially never carry
+    // 65+ top-level instructions, so a different bug likely correlated with instruction
+    // count that day).
     const num_instructions = readCompactU16(data, &pos) catch {
         ParseRejStats.ix_count_short += 1;
         return error.TooShort;
     };
-    if (num_instructions > 255) {
-        ParseRejStats.ix_count_over_255 += 1;
+    if (num_instructions > SIMD_160_MAX_TOP_LEVEL_INSTRUCTIONS) {
+        ParseRejStats.ix_count_over_64 += 1;
         return error.TooShort;
     }
     for (0..num_instructions) |_| {
@@ -15071,4 +15746,65 @@ test "produce_admit arm filter and Vexor's native-eligibility predicate agree on
     try std.testing.expectEqualSlices(u8, &BPF_LOADER_UPGRADEABLE, &pa.BPF_LOADER_UPGRADEABLE_ID);
     try std.testing.expectEqualSlices(u8, &BPF_LOADER_V2, &pa.BPF_LOADER_V2_ID);
     try std.testing.expectEqualSlices(u8, &BPF_LOADER_DEPRECATED, &pa.BPF_LOADER_DEPRECATED_ID);
+}
+
+/// Builds a minimal non-versioned tx (1 sig, 1 account) with `num_instructions`
+/// empty instructions (program_id_index=0, 0 accounts, 0 data bytes — 3 bytes
+/// each). `num_instructions` must be < 128 so its compact-u16 encoding is a
+/// single byte, matching the fixed-offset minimal-tx layout. Returns the tx
+/// slice, length `134 + 3*num_instructions`.
+fn kat_buildTxWithInstructions(out: []u8, num_instructions: u8) []const u8 {
+    std.debug.assert(num_instructions < 128);
+    const len = 134 + @as(usize, num_instructions) * 3;
+    std.debug.assert(out.len >= len);
+    @memset(out[0..len], 0);
+    out[0] = 1; // num_sigs
+    out[65] = 1; // num_required_signatures (high bit clear: NOT versioned)
+    out[68] = 1; // num_accounts
+    out[133] = num_instructions; // num_instructions (compact-u16, 1 byte)
+    // Instruction bodies (program_id_index=0, num_ix_accounts=0, ix_data_len=0)
+    // are already all-zero from the memset above — nothing further to write.
+    return out[0..len];
+}
+
+// F242/F062 (2026-07-29): KATs for the SIMD-160 top-level instruction cap
+// revert (64, unconditional — see the F242 comment on measureTransaction()'s
+// instruction-count check). Agave enforces this cap unconditionally as of
+// 4.1+ (no feature-gate branch guards it), confirmed live-active on testnet
+// since slot 385,868,256 — so there is no gate-off variant to test on the
+// Agave side, and Vexor carries no feature-gate of its own here either.
+test "measureTransaction: F242 accepts exactly 64 top-level instructions (SIMD-160 boundary)" {
+    var tx_buf: [134 + 3 * 64]u8 = undefined;
+    const tx = kat_buildTxWithInstructions(&tx_buf, 64);
+    const end = try measureTransaction(tx, 0);
+    try std.testing.expectEqual(tx.len, end);
+}
+
+test "measureTransaction: F242 rejects 65 top-level instructions (SIMD-160 cap; was wrongly accepted 65-255 under the reverted 05-11 fix)" {
+    var tx_buf: [134 + 3 * 65]u8 = undefined;
+    const tx = kat_buildTxWithInstructions(&tx_buf, 65);
+    try std.testing.expectError(error.TooShort, measureTransaction(tx, 0));
+}
+
+// F242/F062 (2026-07-29): parseTxFromBytes carries its OWN independent
+// instruction-count check (not shared code with measureTransaction), and is
+// the higher-blast-radius site — its producedOracleExecute-family leader
+// block-packing caller has no measureTransaction pre-gate upstream, unlike
+// the other two call sites. Pinned separately so a future edit to either
+// site can't silently regress the other.
+test "parseTxFromBytes: F242 accepts exactly 64 top-level instructions (SIMD-160 boundary)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tx_buf: [134 + 3 * 64]u8 = undefined;
+    const tx = kat_buildTxWithInstructions(&tx_buf, 64);
+    const parsed = try parseTxFromBytes(tx, arena.allocator(), null, null);
+    try std.testing.expectEqual(@as(u16, 64), parsed.num_instructions);
+}
+
+test "parseTxFromBytes: F242 rejects 65 top-level instructions (SIMD-160 cap; was wrongly accepted 65-255 under the reverted 05-11 fix)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var tx_buf: [134 + 3 * 65]u8 = undefined;
+    const tx = kat_buildTxWithInstructions(&tx_buf, 65);
+    try std.testing.expectError(error.TooShort, parseTxFromBytes(tx, arena.allocator(), null, null));
 }
