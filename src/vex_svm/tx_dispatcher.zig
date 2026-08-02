@@ -1177,6 +1177,49 @@ test "addTxn: W-W chain creates dependency" {
     try std.testing.expectEqual(@as(u32, 2), d.completed_count);
 }
 
+test "KAT-C fix/wave-drain-wire-order-2026-07-29: N same-account writers (TowerSync shape) are a strict serial chain, never co-ready" {
+    // Root-cause investigation for the 424942916 divergence (8 same-account TowerSyncs,
+    // Vexor accepted 2 stale votes canonical rejected) asked: does the DAG's W-W edge
+    // actually force same-account same-wave txs into ONE chain? This is the direct answer:
+    // with N=8 txs all writing the SAME account (the vote-account shape), getNextReady()
+    // must yield them ONE AT A TIME, in insertion (wire) order, with in_degree>0 for every
+    // successor until its predecessor completeTxn()s — i.e. two same-account writers can
+    // NEVER be simultaneously "ready" (and therefore never simultaneously dispatched to two
+    // different wave workers). If this test passes, a genuine same-account co-occurrence
+    // within one wave is not reachable through this chain — the true seam (if any) is
+    // elsewhere (e.g. the wave-buffer→pending_writes MERGE order once dispatched, which is
+    // what mergeWaveBuffersWireOrder / the paired replay_stage.zig KAT addresses).
+    var d = try TxnDispatcher.init(std.testing.allocator, 64);
+    defer d.deinit();
+    d.beginBlock();
+
+    const acctA = makeKey(1);
+    const accounts = [_][32]u8{acctA};
+    const writable = [_]bool{true};
+
+    const N: u32 = 8;
+    var txs: [N]u32 = undefined;
+    for (0..N) |i| txs[i] = try d.addTxn(&accounts, &writable);
+
+    // Only the FIRST (wire-earliest) tx is ready; every successor is blocked.
+    try std.testing.expectEqual(txs[0], d.getNextReady().?);
+    try std.testing.expect(d.getNextReady() == null);
+    for (1..N) |i| try std.testing.expectEqual(@as(u32, 1), d.pool[txs[i]].in_degree);
+
+    // Completing them one at a time releases exactly the NEXT one, in wire order —
+    // never two at once, never out of order.
+    for (0..N) |i| {
+        d.completeTxn(txs[i]);
+        if (i + 1 < N) {
+            try std.testing.expectEqual(txs[i + 1], d.getNextReady().?);
+            try std.testing.expect(d.getNextReady() == null);
+        } else {
+            try std.testing.expect(d.getNextReady() == null);
+        }
+    }
+    try std.testing.expectEqual(N, d.completed_count);
+}
+
 test "addTxn: R-R no dependency (parallel readers)" {
     var d = try TxnDispatcher.init(std.testing.allocator, 64);
     defer d.deinit();

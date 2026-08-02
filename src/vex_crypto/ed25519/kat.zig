@@ -21,9 +21,13 @@ const wycheproof = @import("wycheproof.zig");
 
 const Ed25519 = std.crypto.sign.Ed25519;
 
-/// Consensus-path predicate under test: the EXACT verifier Vexor's
-/// `vex_crypto/ed25519.zig verify()` delegates to (std.crypto). Kept here so
-/// the 3-way matrix compares the real three predicates.
+/// STALE NAME AS OF 2026-07-26: this is NOT the verifier `vex_crypto/ed25519.zig
+/// verify()` delegates to — that function calls predicate #3 (`verifyStrict`),
+/// not this bare `std.crypto` cofactored predicate (see `ed25519.zig verify()`'s
+/// 2026-07-26 CORRECTION comment and `root.zig`'s SEMANTIC MATRIX item #1).
+/// Kept here, disconnected, only as the historical/comparison predicate for the
+/// 3-way divergence matrix below — do not treat it as ground truth for what
+/// live Agave or live Vexor's real `verify()` actually does today.
 fn verifyConsensusStdlib(sig: *const [64]u8, pubkey: *const [32]u8, message: []const u8) bool {
     const signature = Ed25519.Signature.fromBytes(sig.*);
     const public_key = Ed25519.PublicKey.fromBytes(pubkey.*) catch return false;

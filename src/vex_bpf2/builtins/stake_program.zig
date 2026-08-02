@@ -940,9 +940,11 @@ fn executeDeactivate(ctx: *InvokeContext) Error!void {
 // MODULE-BOUNDARY NOTE: vex_bpf2 cannot @import vex_svm. This block is a VERBATIM
 // port of Bank.getStakeActivationStatus + lookupHistory + warmupCooldownRate
 // (vex_svm/bank.zig:2015-2255), proven v5-correct (carrier #16). The float math
-// (warmup @intFromFloat, cooldown lossyCast, @max(_,1), saturating sub, base =
+// (warmup + cooldown lossyCast, @max(_,1), saturating sub, base =
 // e.effective only) is preserved EXACTLY — any drift here is a silent bank_hash
-// carrier. `history` is typed as the bpf2 SysvarCache StakeHistoryEntry (extern
+// carrier. 2026-07-28: BOTH copies' warmup arms moved @intFromFloat → lossyCast
+// in the same patch (UB guard armed by the SlotHistory decoder fix); if you
+// change one, change the other. `history` is typed as the bpf2 SysvarCache StakeHistoryEntry (extern
 // struct with the same {epoch,effective,activating,deactivating} u64 fields in
 // the same order — confirmed sysvar_cache.zig:226), so no second struct/copy.
 //
@@ -1007,7 +1009,24 @@ fn getStakeActivationStatus(
                 const weight: f64 = @as(f64, @floatFromInt(remaining)) /
                     @as(f64, @floatFromInt(e.activating));
                 const newly_effective_cluster: f64 = @as(f64, @floatFromInt(e.effective)) * warmupCooldownRate(epoch + 1, new_rate_activation_epoch);
-                const newly_effective: u64 = @max(@as(u64, @intFromFloat(weight * newly_effective_cluster)), 1);
+                // 2026-07-28 (agave-behavior-extractor verdict, VEX_STAKE_BPF
+                // merge divergence): this arm was DEAD from the moment
+                // decodeSlotHistory started rejecting the real on-chain
+                // SlotHistory layout — populateFromBank aborted before
+                // decodeStakeHistory ever ran, so `history` here was always
+                // empty and the warmup while-loop never executed a second
+                // iteration. Fixing the decoder (sysvar_cache.zig) ARMS this
+                // line for the first time. `@intFromFloat` is illegal
+                // behaviour (not a checked trap) on a value outside u64's
+                // range in ReleaseFast — ReleaseFast strips the UBSan-style
+                // trap that Debug/ReleaseSafe would use to catch it, so an
+                // out-of-range float here would silently produce garbage
+                // instead of failing loudly. `std.math.lossyCast` saturates
+                // instead, matching the cooldown arm's existing pattern
+                // immediately below (originally line ~1059, pre-existing —
+                // this warmup arm was simply never brought into line with it
+                // while unreachable). Same `@max(..., 1)` floor semantics.
+                const newly_effective: u64 = @max(1, std.math.lossyCast(u64, weight * newly_effective_cluster));
                 current_effective += newly_effective;
                 if (current_effective >= stake) {
                     current_effective = stake;
@@ -1075,6 +1094,23 @@ fn getStakeActivationStatus(
 /// sysvar is absent (mirrors native's `catch &[_]...{}`). In production the
 /// bpf2 SysvarCache is populated via bank_sysvar_adapter.getStakeHistoryBytes,
 /// which returns the real on-chain StakeHistory account bytes.
+///
+/// ⚠ FOOTGUN (2026-07-28, agave-behavior-extractor verdict, VEX_STAKE_BPF
+/// merge divergence): this `catch return &.{}` is exactly the swallow that
+/// hid the SlotHistory decoder bug for as long as it went unnoticed. When
+/// `error.SysvarNotPopulated` fires — as it did on EVERY slot while
+/// decodeSlotHistory rejected the real on-chain layout and aborted
+/// populateFromBank before decodeStakeHistory ran — this turns a plumbing
+/// failure into a wrong-but-successful merge: getMergeKind() sees an empty
+/// `history`, so any warming/cooling delegation misclassifies as
+/// FullyActive (see getStakeActivationStatus — an empty history makes the
+/// warmup/cooldown while-loop a single-iteration `entry == null` fallthrough
+/// that jumps straight to the fully-warmed/fully-cooled state). NOT changed
+/// in this patch — the decoder fix (sysvar_cache.zig) is what actually
+/// arms StakeHistory again; this comment is a marker only. Tier-2 will make
+/// `SysvarNotPopulated` a hard error here instead of a silent empty-history
+/// fallback, so a FUTURE plumbing regression fails loudly instead of quietly
+/// misclassifying transient stake as active.
 fn stakeHistory(ctx: *InvokeContext) []const StakeHistoryEntry {
     const sh = ctx.sysvar_cache.getStakeHistory() catch return &.{};
     return sh.entries;
@@ -1658,6 +1694,15 @@ fn executeWithdraw(ctx: *InvokeContext, ix_data: []const u8) Error!void {
 //           checked over the FULL instruction signer set (Init/Stake); for an
 //           Uninitialized source the source account's own pubkey must sign.
 // ix data = u32 tag(3) + u64 lamports = 12 bytes.
+//
+// ⚠ FOOTGUN (2026-08-02): despite the @prov line below, THIS Split still carries the
+// LEGACY pre-SIMD-0196 native algorithm on the inactive-source path — it lacks canonical
+// branch B (!is_active_or_activating, program@v5.0.0 processor.rs:621-655) where the
+// SOURCE's data is NEVER re-serialized. That gap was the confirmed bank_hash carrier of
+// slot 425636293 in the native handler (fixed there 2026-08-02, vex_svm/native/
+// stake_program.zig handleSplit). Flipping VEX_STAKE_BPF=1 without porting that branch
+// here REINTRODUCES the carrier on this path. See the 2026-08-01 divergence at
+// slot 425636293.
 //
 // @prov:stake-builtin.split — byte-faithful to Agave solana-program/stake@program@v5.0.0
 // commit 6ed2c60c (the rc.0 .so Firedancer runs). SIMD-0490 ACTIVE ⇒ min_delegation =
@@ -2276,6 +2321,11 @@ fn executeDelegate(ctx: *InvokeContext, ix_data: []const u8) Error!void {
             std.mem.writeInt(u64, stake.data[STAKE_OFF_DELEGATION_STAKE..][0..8], stake_amount, .little);
             std.mem.writeInt(u64, stake.data[STAKE_OFF_ACTIVATION_EPOCH..][0..8], clock.epoch, .little);
             std.mem.writeInt(u64, stake.data[STAKE_OFF_DEACTIVATION_EPOCH..][0..8], std.math.maxInt(u64), .little);
+            // ⚠ FOOTGUN (2026-08-02): 0.25 is correct ONLY while upgrade_bpf_stake_program_to_v5_1
+            // (s51VGwCAgebo2745DSUris72RavoLkXGUmVJosESCXr) is INACTIVE. v5.1 makes this field
+            // _reserved = 8 ZERO bytes on fresh delegations. The NATIVE handler gates this via
+            // bank.isStakeProgramV51Active(); if VEX_STAKE_BPF is ever re-enabled, port that
+            // gate here FIRST or the first post-activation DelegateStake diverges bank_hash.
             std.mem.writeInt(u64, stake.data[STAKE_OFF_WARMUP_RATE..][0..8], STAKE_WARMUP_RATE_DEFAULT_BITS, .little); // 0.25 ← CRITICAL
             std.mem.writeInt(u64, stake.data[STAKE_OFF_CREDITS_OBSERVED..][0..8], credits, .little);
             stake.data[STAKE_OFF_STAKE_FLAGS] = 0; // StakeFlags::EMPTY
@@ -5682,4 +5732,57 @@ test "M9 stake: GetMinimumDelegation ignores trailing ix bytes + needs no signer
     try execute(h.ctx, &ix);
     try t.expectEqual(@as(usize, 8), h.ctx.tx.return_data.data.items.len);
     try t.expectEqual(@as(u64, 1_000_000_000), std.mem.readInt(u64, h.ctx.tx.return_data.data.items[0..8], .little));
+}
+
+// ── KATs (b)/(c) — 2026-07-28 agave-behavior-extractor verdict, VEX_STAKE_BPF
+// merge divergence: the SlotHistory decoder bug (sysvar_cache.zig) aborted
+// populateFromBank() BEFORE decodeStakeHistory ran, so getMergeKind() always
+// saw an EMPTY StakeHistory and misclassified warming/cooling stake as
+// FullyActive. These two KATs pin BOTH sides of that bug directly against
+// getMergeKind/getStakeActivationStatus (no dispatch/harness plumbing
+// needed — both are file-private and reachable from same-file tests):
+//   (b) the REAL epoch-995 StakeHistory entry classifies the source as
+//       TRANSIENT (0xFF), with the exact warmup-curve split the extractor
+//       verified (effective=646367975603 / activating=353629741517).
+//   (c) the SAME source against an EMPTY history — i.e. the bug's actual
+//       runtime behavior before this fix — returns FullyActive(2) instead.
+//       This arm is a PINNED REGRESSION SENTINEL documenting the bug's
+//       mechanism, not a spec: Tier-2 turns SysvarCache.getStakeHistory()'s
+//       SysvarNotPopulated into a hard error (see the footgun comment on
+//       `stakeHistory()` above), at which point an empty-history classify
+//       should no longer be reachable in production at all.
+test "M9 stake: getMergeKind epoch-995 StakeHistory — TRANSIENT via real warmup curve (KAT b)" {
+    const t = std.testing;
+    var data: [200]u8 = std.mem.zeroes([200]u8);
+    std.mem.writeInt(u32, data[0..4], STAKE_DISC_STAKE, .little);
+    std.mem.writeInt(u64, data[STAKE_OFF_DELEGATION_STAKE..][0..8], 999997717120, .little);
+    std.mem.writeInt(u64, data[STAKE_OFF_ACTIVATION_EPOCH..][0..8], 995, .little);
+    std.mem.writeInt(u64, data[STAKE_OFF_DEACTIVATION_EPOCH..][0..8], MAXU64, .little); // deactivation: NEVER
+
+    const history = [_]StakeHistoryEntry{
+        .{ .epoch = 995, .effective = 348688654818649499, .activating = 48551148071777235, .deactivating = 1286667967422554 },
+    };
+
+    // Pin the exact curve split before checking the classification derived from it.
+    const status = getStakeActivationStatus(995, MAXU64, 999997717120, 996, &history, 0);
+    try t.expectEqual(@as(u64, 646367975603), status.effective);
+    try t.expectEqual(@as(u64, 353629741517), status.activating);
+    try t.expectEqual(@as(u64, 0), status.deactivating);
+    try t.expectEqual(@as(u64, 999997717120), status.effective + status.activating); // conservation
+
+    try t.expectEqual(@as(u8, 0xFF), getMergeKind(&data, 996, &history));
+}
+
+test "M9 stake: getMergeKind SAME source vs EMPTY StakeHistory — FullyActive (KAT c, bug sentinel)" {
+    const t = std.testing;
+    var data: [200]u8 = std.mem.zeroes([200]u8);
+    std.mem.writeInt(u32, data[0..4], STAKE_DISC_STAKE, .little);
+    std.mem.writeInt(u64, data[STAKE_OFF_DELEGATION_STAKE..][0..8], 999997717120, .little);
+    std.mem.writeInt(u64, data[STAKE_OFF_ACTIVATION_EPOCH..][0..8], 995, .little);
+    std.mem.writeInt(u64, data[STAKE_OFF_DEACTIVATION_EPOCH..][0..8], MAXU64, .little);
+
+    // Empty history == what `stakeHistory()`'s `catch return &.{}` produced on
+    // every slot while the SlotHistory decoder aborted populateFromBank early.
+    const empty_history: []const StakeHistoryEntry = &.{};
+    try t.expectEqual(@as(u8, 2), getMergeKind(&data, 996, empty_history)); // FullyActive — WRONG, but was the observed behavior
 }

@@ -79,11 +79,17 @@ fn buildBank(alloc: std.mem.Allocator) !MockBank {
     @memset(sh[56..88], 0xBB);
     b.slot_hashes = sh;
 
-    // SlotHistory: 2048 blocks of zeros + next_slot=42.
-    const sh2 = try alloc.alloc(u8, 8 + 2048 * 8 + 8);
-    std.mem.writeInt(u64, sh2[0..8], 2048, .little);
-    @memset(sh2[8 .. 8 + 2048 * 8], 0);
-    std.mem.writeInt(u64, sh2[8 + 2048 * 8 ..][0..8], 42, .little);
+    // SlotHistory: REAL on-chain layout (2026-07-28 fix) — bincode Option
+    // tag(1=Some) + u64 block_count(16384) + 16384 × u64 blocks(zeros) +
+    // u64 num_bits + u64 next_slot=42. Total = sc.SLOT_HISTORY_SIZE (131,097).
+    // The prior mock (2048 blocks, no tag) ENCODED the bug this fix removes.
+    const sh2 = try alloc.alloc(u8, sc.SLOT_HISTORY_SIZE);
+    sh2[0] = 1; // Option tag: Some
+    std.mem.writeInt(u64, sh2[1..9], sc.SLOT_HISTORY_BITVEC_BLOCKS, .little);
+    const blocks_end = 9 + sc.SLOT_HISTORY_BITVEC_BLOCKS * 8;
+    @memset(sh2[9..blocks_end], 0);
+    std.mem.writeInt(u64, sh2[blocks_end..][0..8], sc.SLOT_HISTORY_BITVEC_BLOCKS * 64, .little); // num_bits
+    std.mem.writeInt(u64, sh2[blocks_end + 8 ..][0..8], 42, .little); // next_slot
     b.slot_history = sh2;
 
     // StakeHistory: 1 entry.
@@ -223,8 +229,47 @@ test "populated SlotHistory decodes blocks + next_slot" {
     try cache.populateFromBank(&bank);
 
     const hist = try cache.getSlotHistory();
-    try std.testing.expectEqual(@as(usize, 2048), hist.bits.len);
+    try std.testing.expectEqual(@as(usize, sc.SLOT_HISTORY_BITVEC_BLOCKS), hist.blockCount());
     try std.testing.expectEqual(@as(u64, 42), hist.next_slot);
+}
+
+// KAT (a) — 2026-07-28 agave-behavior-extractor verdict: decodeSlotHistory
+// must accept the REAL on-chain layout: tag(1) + block_count(16384) +
+// 16384×u64 blocks + num_bits + next_slot, total 131,097 bytes. Pinned
+// regression sentinel for the SLOT_HISTORY_BITVEC_BLOCKS=2048/no-tag bug
+// that made every populateFromBank() call fail before decodeStakeHistory ran.
+test "decodeSlotHistory KAT: synthetic REAL-layout 131,097-byte buffer decodes bits.len==16384 + next_slot" {
+    const alloc = std.testing.allocator;
+    const buf = try alloc.alloc(u8, sc.SLOT_HISTORY_SIZE);
+    defer alloc.free(buf);
+    try std.testing.expectEqual(@as(usize, 131_097), buf.len);
+
+    buf[0] = 1; // bincode Option tag: Some
+    std.mem.writeInt(u64, buf[1..9], sc.SLOT_HISTORY_BITVEC_BLOCKS, .little);
+    const blocks_end = 9 + sc.SLOT_HISTORY_BITVEC_BLOCKS * 8;
+    @memset(buf[9..blocks_end], 0);
+    // Mark a couple of blocks non-zero so this isn't a degenerate all-zero KAT.
+    std.mem.writeInt(u64, buf[9..][0..8], 0xDEAD_BEEF, .little);
+    std.mem.writeInt(u64, buf[9 + 100 * 8 ..][0..8], 0x1234, .little);
+    std.mem.writeInt(u64, buf[blocks_end..][0..8], sc.SLOT_HISTORY_BITVEC_BLOCKS * 64, .little); // num_bits
+    std.mem.writeInt(u64, buf[blocks_end + 8 ..][0..8], 424748881, .little); // next_slot
+
+    var bank: struct {
+        history: []const u8,
+        pub fn getSlotHistoryBytes(self: *const @This()) ?[]const u8 {
+            return self.history;
+        }
+    } = .{ .history = buf };
+
+    var cache = sc.SysvarCache.init(alloc);
+    defer cache.deinit();
+    try cache.populateFromBank(&bank);
+
+    const hist = try cache.getSlotHistory();
+    try std.testing.expectEqual(@as(usize, 16384), hist.blockCount());
+    try std.testing.expectEqual(@as(u64, 0xDEAD_BEEF), hist.block(0));
+    try std.testing.expectEqual(@as(u64, 0x1234), hist.block(100));
+    try std.testing.expectEqual(@as(u64, 424748881), hist.next_slot);
 }
 
 test "populated StakeHistory decodes one entry" {

@@ -73,12 +73,58 @@ test "zerohash: hashes_per_tick<=1 -> NO reject even with a zero-hash tick" {
     try std.testing.expectEqual(vt.Verdict.ok, run(.zerohash, 1, 99, 100, entries));
 }
 
-test "zerohash: does NOT enforce tick COUNT (full-only) — short block passes" {
-    // zerohash never marks dead on too-few/too-many ticks; only the zero-hash
-    // tick triggers. A 60-tick block (would be TOO_FEW in full) passes here.
+test "zerohash: does NOT enforce too-FEW ticks (full-only, unchanged by F002) — short block passes" {
+    // F002 promotes too_many_ticks to zerohash but deliberately leaves
+    // too_few_ticks full-only — that gap has its own independent fallback
+    // (replay_stage.zig's flat pre-freeze `tick_count_seen < EXPECTED_TICKS_PER_SLOT`
+    // gate, exercised separately below in the flat-gate section), so
+    // double-enforcing it here would be redundant, not a fix. A 60-tick block
+    // (would be TOO_FEW in full) still passes the canonical Verifier at zerohash.
     var buf: [60]Entry = undefined;
     const entries = wellFormed(&buf, 60, HPT);
     try std.testing.expectEqual(vt.Verdict.ok, run(.zerohash, HPT, 99, 100, entries));
+}
+
+test "zerohash: TOO_MANY_TICKS (65 ticks, gap=1 expects 64) -> dead [F002]" {
+    // F002: too_many_ticks now runs at zerohash (the live-hardcoded level), not
+    // just full — this is the consensus-relevant case AUDIT F002 confirmed had
+    // NO fallback anywhere (unlike too_few_ticks). Mirrors the existing "full:
+    // TOO_MANY_TICKS" case above, at zerohash instead.
+    var buf: [65]Entry = undefined;
+    const entries = wellFormed(&buf, 65, HPT);
+    const verdict = run(.zerohash, HPT, 99, 100, entries);
+    try std.testing.expectEqual(vt.Verdict.too_many_ticks, verdict);
+}
+
+test "zerohash: exact canonical tick count (64, gap=1) -> pass [F002 no-regression]" {
+    // No-regression check: a well-formed block at the exact canonical count
+    // must NOT be rejected by the newly-promoted too_many_ticks check.
+    var buf: [64]Entry = undefined;
+    const entries = wellFormed(&buf, 64, HPT);
+    const verdict = run(.zerohash, HPT, 99, 100, entries);
+    try std.testing.expectEqual(vt.Verdict.ok, verdict);
+}
+
+test "zerohash: post-skip gap=3, exact 192-tick count -> pass [F002 skip-window]" {
+    // The too_many_ticks arithmetic (tickHeight/maxTickHeight deltas across
+    // skipped parent slots) has never executed in production before (dead code
+    // at zerohash pre-F002) — this is the multi-skip case the scope doc flags
+    // as needing explicit coverage, not just the straight-line (gap=1) case.
+    // parent 97, slot 100 => (100-97)*64 = 192 ticks expected; exactly that many
+    // must pass (no false TooManyTicks from the skip-window math).
+    var buf: [192]Entry = undefined;
+    const entries = wellFormed(&buf, 192, HPT);
+    const verdict = run(.zerohash, HPT, 97, 100, entries);
+    try std.testing.expectEqual(vt.Verdict.ok, verdict);
+}
+
+test "zerohash: post-skip gap=3, 193 ticks (one over) -> TOO_MANY dead [F002 skip-window]" {
+    // Same skip window as above, one tick over budget: must still reject, not
+    // silently accept because the parent gap widened the allowance.
+    var buf: [193]Entry = undefined;
+    const entries = wellFormed(&buf, 193, HPT);
+    const verdict = run(.zerohash, HPT, 97, 100, entries);
+    try std.testing.expectEqual(vt.Verdict.too_many_ticks, verdict);
 }
 
 // ════════════════════════════════ full ════════════════════════════════

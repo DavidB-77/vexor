@@ -1,7 +1,9 @@
 //! Canonical block CostTracker — admission control for block production (and replay cost checks).
 //!
-//! STAGED / MODULAR: not wired to the live path. Gated behind -Dleader_mode at the call site
-//! (block_producer). std-only so the KAT (`zig build test-cost-tracker`) is self-contained.
+//! LIVE-WIRED (corrected 2026-07-29, F363): this IS consulted on the live path, via
+//! `block_produce.zig`'s `produceSlotBytes` (4 confirmed call sites) — NOT via the
+//! dead `block_producer.zig` (see that file's header, F362). std-only so the KAT
+//! (`zig build test-cost-tracker`) is self-contained.
 //!
 //! @prov:cost-tracker.would-fit — admission ordering (4 checks, no vote sub-limit),
 //! re-verified 2026-07-12 against Agave 4.2.0-beta.0. Full citation trail + grep-verification

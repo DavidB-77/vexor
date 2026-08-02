@@ -140,13 +140,40 @@ pub const RENT_SIZE: usize = 17; // u64 + f64 + u8
 pub const EPOCH_SCHEDULE_SIZE: usize = 33; // u64×4 + bool(1) — bincode form
 pub const EPOCH_REWARDS_SIZE: usize = 81; // STORAGE_SIZE, @prov:sysvar.wire-sizes
 pub const LAST_RESTART_SLOT_SIZE: usize = 8;
+
+// F084 fix (2026-07-29): CU-accounting sizes, distinct from the wire sizes
+// above. Agave's syscalls/src/sysvar.rs get_sysvar<T> charges
+// `size_of::<T>()` — the Rust ABI-PADDED in-memory size — not the wire
+// size. Vexor's sysvarGetGeneric() was charging the wire size for Rent/
+// EpochRewards, undercounting CU by exactly the alignment-padding tail.
+// CU-accounting leg ONLY: these sizes feed the cost formula in
+// syscalls.zig's sysvarGetGeneric(); the actual translateMutSlice/memcpy
+// write width still uses RENT_SIZE/EPOCH_REWARDS_SIZE above (unchanged —
+// widening the write to zero-fill the padding tail is a separate,
+// deferred leg per AUDITS.md's F084 section: it carries an unverified OOB
+// risk if a destination is placed such that only the unpadded width is
+// validly mapped VM memory).
+pub const RENT_PADDED_SIZE: usize = 24; // size_of::<Rent>(): 17 wire + 7 align(8) tail
+pub const EPOCH_REWARDS_PADDED_SIZE: usize = 96; // size_of::<EpochRewards>(): 81 wire + 15 align(16) tail
 pub const FEES_SIZE: usize = 8;
 pub const SLOT_HASHES_MAX_ENTRIES: usize = 512;
 // SlotHashes: u64 length-prefix + N × (u64 slot + 32-byte hash)
 pub const SLOT_HASHES_MAX_SIZE: usize = 8 + SLOT_HASHES_MAX_ENTRIES * 40;
-// SlotHistory: u64 hash_len + 2048 × u64 + u64 next_slot. @prov:sysvar.wire-sizes
-pub const SLOT_HISTORY_BITVEC_BLOCKS: usize = 2048; // 131072 bits / 64
-pub const SLOT_HISTORY_SIZE: usize = 8 + SLOT_HISTORY_BITVEC_BLOCKS * 8 + 8;
+// SlotHistory: bincode Option<Vec<u64>> tag(1 byte, must be 1=Some for a
+// populated on-chain sysvar) + u64 vec-len (block_count) + block_count × u64
+// bitvec blocks + u64 num_bits (BitVec.len, the struct's OWN len field, not
+// part of the Option<Vec>) + u64 next_slot. Confirmed against the gold
+// standard (sig reference: shared/runtime/sysvar/slot_history.zig:24-26,
+// STORAGE_SIZE=131_097, MAX_ENTRIES=1024*1024) and the BitVecConfig encoder
+// (sig reference: shared/bloom/bit_vec.zig: `bits: ?[]T` serializes as an
+// Option<Vec<T>>, i.e. tag + len-prefix + elements, followed by the struct's
+// own `len: u64`). 2026-07-28 agave-behavior-extractor verdict: the prior
+// 2048/no-tag layout rejected the REAL on-chain 131,097-byte account, so
+// decodeSlotHistory always failed and populateFromBank aborted BEFORE
+// decodeStakeHistory (all-or-nothing chain) — StakeHistory was silently
+// empty every slot. @prov:sysvar.wire-sizes
+pub const SLOT_HISTORY_BITVEC_BLOCKS: usize = 16384; // 1_048_576 bits / 64 — Agave MAX_ENTRIES
+pub const SLOT_HISTORY_SIZE: usize = 1 + 8 + SLOT_HISTORY_BITVEC_BLOCKS * 8 + 8 + 8;
 // StakeHistory: u64 length-prefix + up to 512 × (u64 epoch + u64×3 entry) = 8 + 512*32
 pub const STAKE_HISTORY_MAX_ENTRIES: usize = 512;
 pub const STAKE_HISTORY_MAX_SIZE: usize = 8 + STAKE_HISTORY_MAX_ENTRIES * 32;
@@ -219,10 +246,25 @@ pub const SlotHashes = struct {
 };
 
 pub const SlotHistory = struct {
-    /// Bitvec packed into u64 blocks; block i bit j tracks slot (i*64+j) seen.
-    bits: []const u64,
+    /// Bitvec bytes, little-endian u64 blocks back to back; block i bit j
+    /// tracks slot (i*64+j) seen. Zero-copy: a sub-slice of the cache's
+    /// owned `slot_history_bytes` — offset 9 in the wire format is not
+    /// u64-aligned, so this is read word-by-word via `block()`
+    /// (`std.mem.readInt` has no alignment requirement) rather than
+    /// materialised into a separate `[]const u64` allocation.
+    blocks: []const u8,
     /// Next slot to record (highest seen + 1).
     next_slot: u64,
+
+    pub fn blockCount(self: SlotHistory) usize {
+        return self.blocks.len / 8;
+    }
+
+    /// Read bitvec block `i` (u64, little-endian). Caller must keep
+    /// `i < blockCount()`, same contract as indexing any other slice.
+    pub fn block(self: SlotHistory, i: usize) u64 {
+        return std.mem.readInt(u64, self.blocks[i * 8 ..][0..8], .little);
+    }
 };
 
 pub const StakeHistoryEntry = extern struct {
@@ -285,10 +327,15 @@ pub const SysvarCache = struct {
     epoch_schedule_view: ?EpochSchedule = null,
     epoch_rewards_view: ?EpochRewards = null,
     last_restart_slot_view: ?LastRestartSlot = null,
-    // SlotHashes/SlotHistory/StakeHistory hold view slices into the *_bytes.
+    // SlotHashes/StakeHistory/SlotHistory all hold view slices into the
+    // *_bytes fields — no separate allocation, nothing extra to free in
+    // deinit(). SlotHistory's `.blocks` is read word-by-word via
+    // `std.mem.readInt` (see SlotHistory.block() above) rather than
+    // pointer-cast into a `[]const u64`, because offset 9 in the wire format
+    // is not u64-aligned and a `@ptrCast(@alignCast(...))` view there would
+    // be misaligned UB.
     slot_hashes_entries: ?[]const SlotHashEntry = null,
-    slot_history_bits: ?[]const u64 = null,
-    slot_history_next: u64 = 0,
+    slot_history_view: ?SlotHistory = null,
     stake_history_entries: ?[]const StakeHistoryEntry = null,
 
     pub fn init(alloc: std.mem.Allocator) SysvarCache {
@@ -403,9 +450,7 @@ pub const SysvarCache = struct {
             self.slot_hashes_entries = ents;
         }
         if (self.slot_history_bytes) |b| {
-            const sh = try decodeSlotHistory(b);
-            self.slot_history_bits = sh.bits;
-            self.slot_history_next = sh.next_slot;
+            self.slot_history_view = try decodeSlotHistory(b);
         }
         if (self.stake_history_bytes) |b| {
             const ents = try decodeStakeHistory(self.allocator, b);
@@ -462,8 +507,7 @@ pub const SysvarCache = struct {
         return self.slot_hashes_bytes orelse error.SysvarNotPopulated;
     }
     pub fn getSlotHistory(self: *const SysvarCache) error{SysvarNotPopulated}!SlotHistory {
-        const b = self.slot_history_bits orelse return error.SysvarNotPopulated;
-        return .{ .bits = b, .next_slot = self.slot_history_next };
+        return self.slot_history_view orelse error.SysvarNotPopulated;
     }
     pub fn getSlotHistoryBytes(self: *const SysvarCache) error{SysvarNotPopulated}![]const u8 {
         return self.slot_history_bytes orelse error.SysvarNotPopulated;
@@ -587,19 +631,44 @@ fn decodeSlotHashes(alloc: std.mem.Allocator, b: []const u8) SysvarError![]const
     return out;
 }
 
-fn decodeSlotHistory(b: []const u8) error{InvalidLayout}!struct { bits: []const u64, next_slot: u64 } {
-    // @prov:sysvar.wire-sizes — u64 bitvec_block_count + N × u64 bits + u64 next_slot.
-    if (b.len < 8) return error.InvalidLayout;
-    const block_count = std.mem.readInt(u64, b[0..8], .little);
+fn decodeSlotHistory(b: []const u8) error{InvalidLayout}!SlotHistory {
+    // @prov:sysvar.wire-sizes — bincode Option<Vec<u64>> tag(1) + u64 vec-len
+    // (block_count) + block_count × u64 bitvec blocks + u64 num_bits
+    // (BitVec.len) + u64 next_slot. 2026-07-28 fix: the prior version omitted
+    // the Option tag and pinned block_count==2048, so it rejected the REAL
+    // 131,097-byte on-chain layout (tag + 16384 blocks + num_bits + next_slot)
+    // outright — every populateFromBank() call aborted here, BEFORE
+    // decodeStakeHistory ran, leaving StakeHistory permanently empty.
+    if (b.len < 1) return error.InvalidLayout;
+    if (b[0] != 1) return error.InvalidLayout; // bincode Option tag: 1 = Some
+    if (b.len < 9) return error.InvalidLayout;
+    const block_count = std.mem.readInt(u64, b[1..9], .little);
     if (block_count != SLOT_HISTORY_BITVEC_BLOCKS) return error.InvalidLayout;
     const bits_bytes = block_count * 8;
-    if (b.len < 8 + bits_bytes + 8) return error.InvalidLayout;
-    // SAFETY: bytes are aligned at the source-of-truth layer and copied via dupe();
-    // we re-interpret as u64 little-endian. Use ptrCast on the duplicated buffer.
-    const bits_ptr: [*]const u64 = @ptrCast(@alignCast(b.ptr + 8));
-    const bits = bits_ptr[0..@intCast(block_count)];
-    const next_slot = std.mem.readInt(u64, b[8 + bits_bytes ..][0..8], .little);
-    return .{ .bits = bits, .next_slot = next_slot };
+    const blocks_end = 9 + bits_bytes; // start of the trailing num_bits field
+    // block_count is pinned to the fixed constant SLOT_HISTORY_BITVEC_BLOCKS
+    // above, so (unlike decodeSlotHashes/decodeStakeHistory, which are
+    // legitimately variable-length) the total wire size here is fully
+    // deterministic: exactly SLOT_HISTORY_SIZE (131,097) bytes. An exact
+    // check rejects oversized buffers, not just truncated ones — a
+    // lower-bound-only `<` would silently accept trailing garbage past the
+    // real payload.
+    if (b.len != blocks_end + 8 + 8) return error.InvalidLayout;
+
+    // Zero-copy: `.blocks` is a sub-slice of the caller's buffer (itself a
+    // sub-slice of SysvarCache's owned slot_history_bytes — see
+    // populateFromBank), not a separate allocation. Offset 9 (1-byte Option
+    // tag + 8-byte len prefix) is NOT u64-aligned, so `SlotHistory.block()`
+    // reads each word via `std.mem.readInt` rather than a pointer-cast view,
+    // which would be misaligned UB the moment the backing allocation isn't
+    // 8-byte-aligned at that offset.
+    const blocks = b[9..blocks_end];
+    // num_bits (the SlotHistory struct's own BitVec `len` field, i.e. the
+    // logical bit count — MAX_ENTRIES for a fully-initialised sysvar) is part
+    // of the wire format and validated by length above; it is not otherwise
+    // consumed here — callers use the decoded bit slice directly.
+    const next_slot = std.mem.readInt(u64, b[blocks_end + 8 ..][0..8], .little);
+    return .{ .blocks = blocks, .next_slot = next_slot };
 }
 
 fn decodeStakeHistory(alloc: std.mem.Allocator, b: []const u8) SysvarError![]const StakeHistoryEntry {

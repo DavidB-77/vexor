@@ -34,7 +34,23 @@ pub const snapshot_manifest = struct {
         vote_pubkey: [32]u8,
         stake: u64,
     };
+
+    /// F441b (2026-07-29): comptime-only mirror of the real
+    /// snapshot_manifest.EpochStakesEntry (`epoch: u64, vote_account_stakes:
+    /// []VoteAccountStake`). See AccountsDb.epoch_stakes above for why this
+    /// exists — never populated/read at runtime in these tests.
+    pub const EpochStakesEntry = struct {
+        epoch: u64,
+        vote_account_stakes: []VoteAccountStake,
+    };
 };
+
+/// Mirrors accounts_db.zig's `ClockEpochAnchor` (`slot: u64, unix_ts: i64`).
+/// Needed once bank.zig's `updateClockSysvar`/`computeStakeWeightedClockEstimate`
+/// are reachable from a test-bank test (F441b, 2026-07-29) — even with
+/// `accounts_db = null` at runtime, Zig still type-checks the `if
+/// (self.accounts_db) |db| { db.clock_epoch_anchor = ... }` branch at comptime.
+pub const ClockEpochAnchor = struct { slot: u64, unix_ts: i64 };
 
 pub const accounts = struct {
     pub const AccountsDb = struct {
@@ -43,6 +59,19 @@ pub const accounts = struct {
         /// mixin (getHashData). Empty in unit tests ⇒ no mixin ⇒ byte-identical
         /// hash, matching the live testnet path (parent_slot ≥ fork_slot).
         hard_forks: []const snapshot_manifest.HardFork = &[_]snapshot_manifest.HardFork{},
+
+        /// F441b (2026-07-29): comptime-only fields for
+        /// updateClockSysvar/computeStakeWeightedClockEstimate. Never read at
+        /// runtime by the bank.zig tests that exercise updateClockSysvar with
+        /// `accounts_db = null` — these three fields only need to exist and
+        /// type-match the real accounts_db.zig shapes (`epoch_stakes: []const
+        /// EpochStakesEntry`, `vote_account_stakes: []const VoteAccountStake`,
+        /// `clock_epoch_anchor: ?ClockEpochAnchor`) so the branch that reads
+        /// them (guarded by `if (self.accounts_db) |db|`, never taken when
+        /// accounts_db is null) still compiles.
+        epoch_stakes: []const snapshot_manifest.EpochStakesEntry = &[_]snapshot_manifest.EpochStakesEntry{},
+        vote_account_stakes: []const snapshot_manifest.VoteAccountStake = &[_]snapshot_manifest.VoteAccountStake{},
+        clock_epoch_anchor: ?ClockEpochAnchor = null,
 
         /// Never called in pure-math tests — AccountsDb is always null.
         pub fn getAccount(self: *@This(), pubkey: *const core.Pubkey) ?AccountView {

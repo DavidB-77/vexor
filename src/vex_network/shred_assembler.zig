@@ -2641,7 +2641,11 @@ fn buildTestDataShred(buf: []u8, slot_val: u64, idx: u32, fec_set_index: u32) vo
     std.mem.writeInt(u32, buf[73..77], idx, .little);
     std.mem.writeInt(u16, buf[77..79], 0, .little); // version
     std.mem.writeInt(u32, buf[79..83], fec_set_index, .little);
-    std.mem.writeInt(u16, buf[83..85], 0, .little); // parent_offset
+    // F327 (c): parseShred now rejects parent_offset==0 at a non-zero slot
+    // (Agave traits.rs parent() -- InvalidParentOffset). This fixture's slot_val
+    // is always non-zero, so parent_offset must be non-zero too; the checksum-race
+    // test this feeds does not care about the actual parent value.
+    std.mem.writeInt(u16, buf[83..85], 1, .little); // parent_offset
 }
 
 test "FIX 2026-07-07 (carrier 420258409): insertFrameWithFec DROPS a zero-copy frame on checksum mismatch, never inserts it" {

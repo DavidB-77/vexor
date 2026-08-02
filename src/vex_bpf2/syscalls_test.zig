@@ -569,6 +569,39 @@ test "M6: sysvar getter propagates SysvarNotPopulated (vex-058)" {
     );
 }
 
+// F084 fix (2026-07-29): sol_get_rent_sysvar / sol_get_epoch_rewards_sysvar
+// must charge CU keyed to Agave's Rust-padded size_of::<T>() (24/96), not
+// the unpadded wire size (17/81) — a 7/15 CU undercount previously. Cost is
+// consumed in sysvarGetGeneric() BEFORE the SysvarNotPopulated check, so an
+// empty cache still lets us observe the exact charge via compute_remaining.
+test "F084: sol_get_rent_sysvar charges padded size_of::<Rent>()=24, not wire=17" {
+    const h = try Harness.init(testing.allocator, 10_000);
+    defer h.deinit();
+    var reg = try SyscallRegistry.init(testing.allocator, {}, {});
+    defer reg.deinit();
+
+    try testing.expectError(
+        error.M6_SysvarNotPopulated,
+        reg.invoke(&h.ic, syscalls.nameHash("sol_get_rent_sysvar"), memory.MM_HEAP_START, 0, 0, 0, 0),
+    );
+    // sysvar_base_cost(100) + RENT_PADDED_SIZE(24) = 124, NOT 100+17=117.
+    try testing.expectEqual(@as(u64, 10_000 - 124), h.ic.compute_remaining);
+}
+
+test "F084: sol_get_epoch_rewards_sysvar charges padded size_of::<EpochRewards>()=96, not wire=81" {
+    const h = try Harness.init(testing.allocator, 10_000);
+    defer h.deinit();
+    var reg = try SyscallRegistry.init(testing.allocator, {}, {});
+    defer reg.deinit();
+
+    try testing.expectError(
+        error.M6_SysvarNotPopulated,
+        reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_rewards_sysvar"), memory.MM_HEAP_START, 0, 0, 0, 0),
+    );
+    // sysvar_base_cost(100) + EPOCH_REWARDS_PADDED_SIZE(96) = 196, NOT 100+81=181.
+    try testing.expectEqual(@as(u64, 10_000 - 196), h.ic.compute_remaining);
+}
+
 test "M6: sol_set_return_data + sol_get_return_data round-trip" {
     const h = try Harness.init(testing.allocator, 10_000);
     defer h.deinit();
@@ -653,6 +686,121 @@ test "FIX4: sol_get_epoch_stake — non-null addr charges 110 (was 100, 10 CU sh
 
     _ = try reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_stake"), memory.MM_HEAP_START, 0, 0, 0, 0);
     try testing.expectEqual(@as(u64, 10_000 - 110), h.ic.compute_remaining);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// F763 (SIMD-0133, 2026-07-29) — sol_get_epoch_stake wired to the bank's
+// epoch_stakes table via the opaque (ctx, fn) hook pair on InvokeContext.
+// Both branches previously hardcoded `return 0`; these KATs cover the
+// total-stake query, a known/absent vote-account query, and the unwired
+// (no bank / pre-fix-equivalent) state. F140/F744 (epoch_stakes staleness)
+// is a separate, already-filed gap — not exercised here.
+// ──────────────────────────────────────────────────────────────────────────────
+
+const F763StakeTable = struct {
+    fn lookup(ctx: *const anyopaque, vote_pubkey: [32]u8) u64 {
+        const table: *const [2]struct { pk: [32]u8, stake: u64 } = @ptrCast(@alignCast(ctx));
+        for (table.*) |entry| {
+            if (std.mem.eql(u8, &entry.pk, &vote_pubkey)) return entry.stake;
+        }
+        return 0;
+    }
+};
+
+// PERF reshape (auditor-required, 2026-07-29): the total-stake reduction
+// must be LAZY (only summed on the syscall's first actual invocation) and
+// then CACHED on the InvokeContext for the rest of the dispatch. This hook
+// counts its own calls so the KAT below can assert both properties.
+const F763TotalHook = struct {
+    var call_count: u32 = 0;
+    fn total(ctx: *const anyopaque) u64 {
+        call_count += 1;
+        const val: *const u64 = @ptrCast(@alignCast(ctx));
+        return val.*;
+    }
+};
+
+test "F763: sol_get_epoch_stake — null addr lazily sums via hook on first call, caches thereafter" {
+    const h = try Harness.init(testing.allocator, 10_000);
+    defer h.deinit();
+    var reg = try SyscallRegistry.init(testing.allocator, {}, {});
+    defer reg.deinit();
+
+    F763TotalHook.call_count = 0;
+    const total_value: u64 = 424_242;
+    h.ic.epoch_vote_stake_ctx = @ptrCast(&total_value);
+    h.ic.epoch_total_stake_fn = &F763TotalHook.total;
+
+    const r1 = try reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_stake"), 0, 0, 0, 0, 0);
+    try testing.expectEqual(@as(u64, 424_242), r1);
+    try testing.expectEqual(@as(u64, 10_000 - 100), h.ic.compute_remaining);
+    try testing.expectEqual(@as(u32, 1), F763TotalHook.call_count);
+
+    // Second call this dispatch: must return the CACHED value, not call the
+    // reduction hook again (call_count stays 1) -- this is the property the
+    // audit's required reshape hinges on.
+    h.refillCu(10_000);
+    const r2 = try reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_stake"), 0, 0, 0, 0, 0);
+    try testing.expectEqual(@as(u64, 424_242), r2);
+    try testing.expectEqual(@as(u32, 1), F763TotalHook.call_count);
+}
+
+test "F763: sol_get_epoch_stake — known vote account returns its current-epoch stake" {
+    const h = try Harness.init(testing.allocator, 10_000);
+    defer h.deinit();
+    var reg = try SyscallRegistry.init(testing.allocator, {}, {});
+    defer reg.deinit();
+
+    const known_pk = [_]u8{7} ** 32;
+    const table = [2]struct { pk: [32]u8, stake: u64 }{
+        .{ .pk = known_pk, .stake = 1_500_000 },
+        .{ .pk = [_]u8{9} ** 32, .stake = 999 },
+    };
+    h.ic.epoch_vote_stake_ctx = @ptrCast(&table);
+    h.ic.epoch_vote_stake_fn = &F763StakeTable.lookup;
+    @memcpy(h.heap_buf[0..32], &known_pk);
+
+    const r = try reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_stake"), memory.MM_HEAP_START, 0, 0, 0, 0);
+    try testing.expectEqual(@as(u64, 1_500_000), r);
+    try testing.expectEqual(@as(u64, 10_000 - 110), h.ic.compute_remaining);
+}
+
+test "F763: sol_get_epoch_stake — absent vote account returns 0 (legitimate answer, not a stub)" {
+    const h = try Harness.init(testing.allocator, 10_000);
+    defer h.deinit();
+    var reg = try SyscallRegistry.init(testing.allocator, {}, {});
+    defer reg.deinit();
+
+    const table = [2]struct { pk: [32]u8, stake: u64 }{
+        .{ .pk = [_]u8{7} ** 32, .stake = 1_500_000 },
+        .{ .pk = [_]u8{9} ** 32, .stake = 999 },
+    };
+    h.ic.epoch_vote_stake_ctx = @ptrCast(&table);
+    h.ic.epoch_vote_stake_fn = &F763StakeTable.lookup;
+    const unstaked_pk = [_]u8{42} ** 32; // not in table
+    @memcpy(h.heap_buf[0..32], &unstaked_pk);
+
+    const r = try reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_stake"), memory.MM_HEAP_START, 0, 0, 0, 0);
+    try testing.expectEqual(@as(u64, 0), r);
+}
+
+test "F763: sol_get_epoch_stake — unwired InvokeContext (no bank / pre-fix-equivalent) both branches 0" {
+    const h = try Harness.init(testing.allocator, 10_000);
+    defer h.deinit();
+    var reg = try SyscallRegistry.init(testing.allocator, {}, {});
+    defer reg.deinit();
+    // Harness.init leaves epoch_total_stake/epoch_total_stake_fn/
+    // epoch_vote_stake_fn at their InvokeContext field defaults (null) --
+    // the same state every v2_dispatch.zig caller with no bank/AccountsDb
+    // (test harnesses, pre-boot) passes. Byte-identical to the pre-fix
+    // always-0 stub.
+    const total = try reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_stake"), 0, 0, 0, 0, 0);
+    try testing.expectEqual(@as(u64, 0), total);
+
+    h.refillCu(10_000);
+    @memset(h.heap_buf[0..32], 0xAB);
+    const per_acct = try reg.invoke(&h.ic, syscalls.nameHash("sol_get_epoch_stake"), memory.MM_HEAP_START, 0, 0, 0, 0);
+    try testing.expectEqual(@as(u64, 0), per_acct);
 }
 
 test "M6: sol_get_stack_height returns >=1" {

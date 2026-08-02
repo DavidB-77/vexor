@@ -12,6 +12,31 @@
 // KAT test targets only. No executable is buildable yet.
 const std = @import("std");
 
+// ── TOOLCHAIN GATE ───────────────────────────────────────────────────────────
+// Line 1 of this file has said "REQUIRES Zig 0.15.2" since it was written, and the tree
+// still got built with 0.14.1 repeatedly. A comment is prose; prose gets skipped. This is
+// the same rule as a gate now, so it fails closed.
+//
+// The failure this prevents is not a loud one. Zig 0.14 cannot parse this tree's 0.15
+// asm-clobber syntax, so the build dies deep inside an unrelated source file
+// ("gf_simd.zig:299: expected ')', found '.'") AND LEAVES THE PREVIOUS BINARY in
+// zig-out/bin/, which a deploy then ships as if it were the new code.
+//
+// This guard lives in the TREE on purpose. A shell-level check only sees `zig build`
+// typed into a terminal — it cannot see inside a wrapper script, a CI job or a cron
+// entry. Anything that compiles this tree must pass through here, on any machine.
+comptime {
+    const v = @import("builtin").zig_version;
+    if (v.major != 0 or v.minor != 15) {
+        @compileError(std.fmt.comptimePrint(
+            "Vexor requires Zig 0.15.x (canonical pin: 0.15.2), but this build is running " ++
+                "Zig {d}.{d}.{d}. Do NOT work around this by editing the guard — build with " ++
+                "the pinned toolchain instead.",
+            .{ v.major, v.minor, v.patch },
+        ));
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     // ReleaseFast is the canonical production mode — it is what runs on the cluster.
@@ -215,6 +240,24 @@ pub fn build(b: *std.Build) void {
     const test_vex_ed25519_step = b.step("test-vex-ed25519", "Run the pure-Zig ed25519 core KATs (wycheproof + ACCEPT + 3-way semantic matrix)");
     test_vex_ed25519_step.dependOn(&run_test_vex_ed25519.step);
     test_migrated_step.dependOn(&run_test_vex_ed25519.step);
+
+    // ── LtHash hello-world KAT (F103, 2026-07-29) ────────────────────────────
+    // Roots src/vex_crypto/lthash.zig directly (same pattern as test-vex-ed25519
+    // above) so the Agave lt_hash.rs test_hello_world port actually runs under
+    // normal build invocations — previously lthash.zig had no dedicated step and
+    // its tests were never pulled into any existing test binary's graph.
+    const test_lthash = b.addTest(.{
+        .name = "test-lthash",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/vex_crypto/lthash.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_test_lthash = b.addRunArtifact(test_lthash);
+    const test_lthash_step = b.step("test-lthash", "Run the LtHash hello-world KAT (Agave lattice-hash/src/lt_hash.rs test_hello_world port)");
+    test_lthash_step.dependOn(&run_test_lthash.step);
+    test_migrated_step.dependOn(&run_test_lthash.step);
 
     // ── PURE-ZIG bn254 (alt_bn128 + poseidon) CORRECTNESS GATE (Phase 2) ─────
     // THE correctness gate for the pure-Zig BN254 leaf. Unlike ed25519, bn254
@@ -1212,6 +1255,26 @@ pub fn build(b: *std.Build) void {
     const test_verify_ticks_step = b.step("test-verify-ticks", "Canonical verify_ticks (FD/Agave) tick-validity KAT");
     test_verify_ticks_step.dependOn(&run_test_verify_ticks.step);
     test_migrated_step.dependOn(&run_test_verify_ticks.step);
+
+    // F008: v0 ALT (Address Lookup Table) message resolution KAT — exercises
+    // `address_lookup_table.resolveLookupTable`, the pure owner/deserialize/
+    // deactivation/active-range decision function `replay_stage.zig`'s
+    // `parseTxFromBytes` now calls at its v0 ALT-lookup call site. Std-only
+    // root (kat_alt_resolve.zig imports std + the std-only
+    // native/address_lookup_table.zig sibling) — no new build.zig module
+    // wiring needed, same shape as test-verify-ticks/test-native-alt above.
+    const test_alt_resolve = b.addTest(.{
+        .name = "test-alt-resolve",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/vex_svm/kat_alt_resolve.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_test_alt_resolve = b.addRunArtifact(test_alt_resolve);
+    const test_alt_resolve_step = b.step("test-alt-resolve", "F008: v0 ALT message resolution KAT (owner/deserialize/deactivation/active-range)");
+    test_alt_resolve_step.dependOn(&run_test_alt_resolve.step);
+    test_migrated_step.dependOn(&run_test_alt_resolve.step);
 
     // ── test-cost-tracker — module 17 — origin-tree build.zig:1104-1115 verbatim ─
     // Block CostTracker (BP staging step 2): would_fit admission ordering +
@@ -4201,16 +4264,20 @@ pub fn build(b: *std.Build) void {
     test_frl_step.dependOn(&run_frl.step);
     test_migrated_step.dependOn(&run_frl.step);
 
-    // test-vote-threshold-shadow (VOTE-THRESHOLD depth-8 stake wiring, incident
-    // 423083743 companion fix — 2026-07-19) — proves the simulated-tower depth-8
-    // slot selection (thresholdDepthSlot), the mode seam (thresholdStakesForMode:
-    // shadow can never alter the vote decision by construction), the shouldVote
-    // verdicts (stake present ⇒ PASS / absent ⇒ WOULD-REFUSE / (0,0) ⇒ legacy
-    // skip), and the REAL fork-choice glue clusterVotedStakeAtDepthSlot against
-    // a constructed tree fed through the real addVotes path.
+    // test-vote-threshold-armed (VOTE-THRESHOLD depth-8 stake wiring, incident
+    // 423083743 companion fix — 2026-07-19; ARMED BY DEFAULT 2026-07-29, F348/
+    // F723, no-shadow-modes hard cutover) — proves the simulated-tower depth-8
+    // slot selection (thresholdDepthSlot), the mode seam
+    // (thresholdStakesForMode: only {off, armed} exist — no third/shadow
+    // variant), the shared ratio predicate (thresholdPasses: the (0,0)
+    // arithmetic edge — total==0 trivial-passes, voted==0/total>0 always
+    // refuses), the shouldVote verdicts under the live armed default (stake
+    // present ⇒ PASS / absent ⇒ REFUSE), and the REAL fork-choice glue
+    // clusterVotedStakeAtDepthSlot against a constructed tree fed through the
+    // real addVotes path.
     const test_vts = b.addTest(.{
-        .name = "test-vote-threshold-shadow",
-        .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_vote_threshold_shadow.zig"), .target = target, .optimize = optimize }),
+        .name = "test-vote-threshold-armed",
+        .root_module = b.createModule(.{ .root_source_file = b.path("src/kat_vote_threshold_armed.zig"), .target = target, .optimize = optimize }),
     });
     test_vts.root_module.addImport("vex_svm", net_vex_svm);
     test_vts.root_module.addImport("vex_store", net_vex_store);
@@ -4226,7 +4293,7 @@ pub fn build(b: *std.Build) void {
         } else |_| {}
     }
     const run_vts = b.addRunArtifact(test_vts);
-    const test_vts_step = b.step("test-vote-threshold-shadow", "VOTE-THRESHOLD depth-8 stake wiring (423083743 companion): shadow-never-alters + verdict + real fork-choice glue KATs");
+    const test_vts_step = b.step("test-vote-threshold-armed", "VOTE-THRESHOLD depth-8 stake wiring (423083743 companion), ARMED BY DEFAULT: mode/predicate + verdict + real fork-choice glue KATs");
     test_vts_step.dependOn(&run_vts.step);
     test_migrated_step.dependOn(&run_vts.step);
 

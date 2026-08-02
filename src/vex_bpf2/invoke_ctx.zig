@@ -396,6 +396,52 @@ pub const InvokeContext = struct {
     disable_zk_elgamal_proof_program_active: bool = false,
     reenable_zk_elgamal_proof_program_active: bool = false,
 
+    /// F763 fix (SIMD-0133 sol_get_epoch_stake, 2026-07-29): current-epoch
+    /// stake data, threaded from AccountsDb.epoch_stakes (vex_store/
+    /// snapshot_manifest.zig EpochStakesEntry) for the bank's CURRENT
+    /// epoch ONLY — mirrors Agave's Bank::get_current_epoch_total_stake /
+    /// get_current_epoch_vote_accounts (runtime/src/bank.rs:6146-6156),
+    /// which read the frozen epoch-boundary-computed table for
+    /// `bank.epoch()`, never a live/mutating view. Read by
+    /// vex_bpf2/syscalls.zig's `solGetEpochStake`.
+    ///
+    /// PERF (auditor-required reshape, 2026-07-29): the total-stake
+    /// reduction over the epoch's vote-account table is O(vote-account-
+    /// count) — too expensive to run unconditionally on every top-level
+    /// BPF instruction dispatch (the original shape did this eagerly in
+    /// instruction_dispatch.zig regardless of whether the program ever
+    /// calls this syscall). So `epoch_total_stake` is a LAZY CACHE
+    /// (`null` = not yet computed this dispatch): `solGetEpochStake`'s
+    /// addr==0 branch calls `epoch_total_stake_fn` on first invocation
+    /// only, caches the result here, and every subsequent call (this
+    /// dispatch, any CPI depth — same tx-wide-const pattern as `heap_size`
+    /// above) returns the cached value with no re-summation.
+    /// `epoch_total_stake_fn`/`epoch_vote_stake_fn`/`epoch_vote_stake_ctx`
+    /// are an opaque hook pair (`*anyopaque` + free fns, same idiom as
+    /// `mm`/`cpi_*` below) rather than a typed slice, so invoke_ctx does
+    /// not need to import vex_store's `VoteAccountStake` type (this file
+    /// stays a zero-named-module leaf — see build.zig's
+    /// `test-vex-bpf2-invoke-ctx` step: "relative, zero named modules.
+    /// First of the un-frozen vex_bpf2 core cluster."). Mirrors the
+    /// existing (vex_bpf, legacy-module) `FullSyscallContext.epoch_stake_fn`
+    /// hook shape (vm_syscalls.zig:206) — re-declared here because
+    /// vex_bpf2's InvokeContext is a distinct context type from vex_bpf's
+    /// SyscallContext. `epoch_vote_stake_fn` (per-vote-account lookup,
+    /// UNCHANGED by this reshape — auditor accepted its linear-scan-on-
+    /// actual-invocation cost as the same class as the existing switch-
+    /// proof code) returns 0 for an absent/never-staked vote account — a
+    /// legitimate Agave-matching answer, not a stub; both hooks null
+    /// (outside a wired dispatch, e.g. the M1 test harness) also resolves
+    /// to 0, byte-identical to the pre-fix always-0 stub for that case.
+    /// F140/F744 interaction: the source table is populated at snapshot
+    /// boot only and is NOT refreshed at epoch boundaries thereafter (a
+    /// separate, already-filed gap) — the hooks read it exactly as
+    /// stored; they do not attempt to refresh it.
+    epoch_total_stake: ?u64 = null,
+    epoch_vote_stake_ctx: ?*const anyopaque = null,
+    epoch_vote_stake_fn: ?*const fn (ctx: *const anyopaque, vote_pubkey: [32]u8) u64 = null,
+    epoch_total_stake_fn: ?*const fn (ctx: *const anyopaque) u64 = null,
+
     /// (M6 RFC `RFC-invoke-ctx-syscall-bindings.md`) Active memory map for
     /// syscall pointer translation. `*anyopaque` to break the otherwise
     /// circular dep `invoke_ctx ⇄ memory`. Bound by the interpreter

@@ -1,5 +1,10 @@
 //! Vexor Block Producer
 //!
+//! DEAD SCAFFOLDING — `BlockProducer`'s `processPending`/`finishSlot` have zero
+//! call sites in the live tree. The real per-batch execution driver is
+//! `block_produce.zig`, not this file — do not treat a fix landed only here as
+//! reaching production (see F362/F363, parity-sweep AUDITS.md).
+//!
 //! Produces blocks when we are the scheduled leader.
 //!
 //! Pipeline:

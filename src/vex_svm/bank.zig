@@ -12,6 +12,7 @@
 //!   @prov:bank.lthash-delta    → Bank.applyLtHashDelta()
 
 const std = @import("std");
+const builtin = @import("builtin");
 const vex_crypto = @import("vex_crypto");
 const build_options = @import("build_options");
 const recorder = @import("vex_store").recorder;
@@ -530,6 +531,19 @@ pub const Bank = struct {
 
     /// Whether this bank has been frozen (hash committed).
     is_frozen: bool,
+    /// Monotonic ns at which freeze() completed, or 0 if not yet frozen.
+    ///
+    /// 2026-07-26: added to make VOTE LATENCY measurable. Timely-vote-credits pays
+    /// progressively less the later a vote lands, so freeze->vote is the single
+    /// metric closest to validator earnings -- and it was entirely uninstrumented:
+    /// every performance number we had (replay_ms, freeze_ms) is a proxy for it.
+    /// One store per slot at 2.5 slots/sec, so the cost is unmeasurable.
+    frozen_at_ns: i128 = 0,
+    /// Phase stamps splitting freeze -> vote-submit, so that interval is attributable
+    /// rather than aggregate. flushed_at_ns: post-freeze sysvar write-back done.
+    /// prevote_at_ns: reached the vote-submission block. Both 0 if not reached.
+    flushed_at_ns: i128 = 0,
+    prevote_at_ns: i128 = 0,
 
     /// PR-5av Phase 1 (2026-05-22): chain-confirmation status.
     /// True once this bank's `block_id` has been verified to chain to a
@@ -1514,7 +1528,22 @@ pub const Bank = struct {
         });
     }
 
-    pub fn updateClockSysvar(self: *Self) !void {
+    /// F441b (2026-07-29, slot 424942916): `parent_clock_sysvar` mirrors the
+    /// fork-aware pattern `updateSlotHashesSysvar` already uses (bank.zig:2062)
+    /// — read the PARENT BANK's in-memory `pending_writes` first (an existing,
+    /// eviction-immune source: it lives on the `Bank` object in `self.banks`,
+    /// not in AccountsDb's evictable read cache), and fall back to the
+    /// AccountsDb read only for genesis/test paths where no parent bank
+    /// object exists. Before this fix Clock ONLY read via
+    /// `db.getAccountInSlot`, so an evicted cache entry produced a silent
+    /// read-miss with no fallback — root cause of the 424942916 incident
+    /// (Clock.epoch_start_timestamp=unix_timestamp=0): F441's unbounded
+    /// evictOldest (accounts_db.zig evictOldest) could evict the just-written
+    /// Clock cache entry AND the ~470 vote-account entries the stake-weighted
+    /// fallback needs, so both the direct read and the fallback estimate
+    /// missed in the same slot and the zero-initialized locals below went
+    /// straight to consensus state.
+    pub fn updateClockSysvar(self: *Self, parent_clock_sysvar: ?SysvarFromParent) !void {
         // SysvarC1ock11111111111111111111111111111111
         const CLOCK_PUBKEY = Pubkey{ .data = .{
             0x06, 0xa7, 0xd5, 0x17, 0x18, 0xc7, 0x74, 0xc9,
@@ -1525,7 +1554,9 @@ pub const Bank = struct {
         // Sysvar1111111111111111111111111111111111111 (owner for all sysvars)
         const SYSVAR_OWNER_BYTES = SYSVAR_OWNER;
 
-        // Read existing Clock from AccountsDb (parent's Clock state)
+        // Read existing Clock — fork-aware parent pending_writes FIRST, then
+        // AccountsDb fallback (genesis / test paths / parent bank pruned from
+        // self.banks already). Same shape as updateSlotHashesSysvar.
         var existing_lamports: u64 = 1_169_280;
         var existing_rent_epoch: u64 = std.math.maxInt(u64);
         var epoch_start_ts: i64 = 0;
@@ -1533,9 +1564,28 @@ pub const Bank = struct {
         var parent_epoch: u64 = 0;
         var old_lt_data: ?[]const u8 = null;
         var old_lt_owner: [32]u8 = SYSVAR_OWNER_BYTES;
-        var adb_hit_clock: bool = false; // SYSVAR-PROBE 2026-05-26
+        var psv_hit_clock: bool = false; // SYSVAR-PROBE: fork-aware parent-pending-writes hit
+        var adb_hit_clock: bool = false; // SYSVAR-PROBE 2026-05-26: legacy accounts_db hit
 
-        if (self.accounts_db) |db| {
+        // Only accept the parent-pending-writes path when it carries a
+        // full 40-byte Clock blob. A present-but-short/malformed `psv` (should
+        // never happen for a real Clock write, but must not be trusted blindly)
+        // falls through to the accounts_db path below instead of silently
+        // locking in zero epoch_start_ts/unix_ts — the exact failure mode this
+        // fix exists to close. Reviewed 2026-07-29: an earlier version of this
+        // patch took the psv branch on ANY non-null psv, which reproduced the
+        // incident for a short psv.
+        if (parent_clock_sysvar != null and parent_clock_sysvar.?.data.len >= 40) {
+            const psv = parent_clock_sysvar.?;
+            psv_hit_clock = true;
+            existing_lamports = psv.lamports;
+            existing_rent_epoch = psv.rent_epoch;
+            old_lt_owner = psv.owner;
+            old_lt_data = self.allocator.dupe(u8, psv.data) catch null;
+            epoch_start_ts = @bitCast(std.mem.readInt(u64, psv.data[8..16], .little));
+            unix_ts = @bitCast(std.mem.readInt(u64, psv.data[32..40], .little));
+            parent_epoch = std.mem.readInt(u64, psv.data[16..24], .little);
+        } else if (self.accounts_db) |db| {
             const core_pk = @as(*const @import("core").Pubkey, @ptrCast(&CLOCK_PUBKEY));
             if (db.getAccountInSlot(core_pk, self.slot, self.ancestors())) |existing| {
                 adb_hit_clock = true; // SYSVAR-PROBE 2026-05-26
@@ -1557,6 +1607,39 @@ pub const Bank = struct {
                     unix_ts = @bitCast(std.mem.readInt(u64, existing.data[32..40], .little));
                     parent_epoch = std.mem.readInt(u64, existing.data[16..24], .little);
                 }
+            }
+        }
+
+        // F441b: a Clock read-miss on a non-genesis slot must NEVER silently
+        // fall through to the zero-initialized locals above — that is
+        // exactly the 424942916 mechanism. Both sources structurally missing
+        // past slot 0 means the parent bank object was already pruned from
+        // `self.banks` AND its AccountsDb-flushed copy was evicted/unavailable
+        // — an anomaly worth a loud, grep-able signal even though there is no
+        // further in-memory source left to fall back to.
+        if (!psv_hit_clock and !adb_hit_clock and self.slot != 0) {
+            // Severity switch (2026-07-29 audit finding): `.err` in the LIVE
+            // binary — this tag must be as loud as [ROOT-GUARD] (same
+            // severity class elsewhere in this file). Zig's default
+            // `test_runner.zig` treats ANY executed `std.log.err` call as a
+            // whole-binary test failure regardless of that test's own
+            // pass/fail outcome (`log_err_count` incremented unconditionally
+            // in its `log()` override, independent of scope/testing.log_level
+            // — see lib/compiler/test_runner.zig:279), so a KAT that
+            // deliberately exercises this branch (proving the loud-fail
+            // fires) would otherwise turn `zig build test-bank` red for a
+            // reason unrelated to correctness. `.warn` under `builtin.is_test`
+            // keeps the KAT green while leaving production severity
+            // unchanged — same shape as shred_assembler.zig:2168's
+            // "keep it out of the same severity bucket... log-level-based
+            // test harnesses" precedent, applied here for the test-harness
+            // reason specifically (not a "this isn't really an error" reason
+            // — in production this unambiguously is one).
+            const fmt = "[CLOCK-READ-MISS] slot={d} parent_slot={?d} psv_hit=false adb_hit=false — no in-memory or AccountsDb Clock source; epoch_start_ts/unix_ts held at parent-inherited defaults (0/0 only if this is truly the first non-genesis miss on this fork)\n";
+            if (builtin.is_test) {
+                std.log.warn(fmt, .{ self.slot, self.parent_slot });
+            } else {
+                std.log.err(fmt, .{ self.slot, self.parent_slot });
             }
         }
 
@@ -2566,30 +2649,68 @@ pub const Bank = struct {
     /// sent there are burned by zeroing its balance in the LtHash. This reduces
     /// the total supply (capitalization) and must be reflected in the LtHash.
     fn runIncinerator(self: *Self) !void {
-        // Find incinerator in pending_writes (someone sent lamports to it this slot)
-        for (self.pending_writes.items, 0..) |w, i| {
-            if (std.mem.eql(u8, &w.pubkey.data, &INCINERATOR)) {
-                if (w.lamports == 0) return; // Already burned
+        // F760 leg 2: scan REVERSE — last write per pubkey wins (matches
+        // freeze()'s Pass A LtHash dedup at getOrPut/last_new_lt and
+        // flushPendingWritesToDb's reverse-walk commit dedup; same
+        // convention settleFees() above uses to find the collector's
+        // in-slot state). A forward-scan-mutate-first-match was a complete
+        // no-op whenever the incinerator received 2+ writes in one slot:
+        // both dedup passes keep the LAST (untouched, non-zero) entry and
+        // discard this function's zeroed FIRST entry entirely.
+        var i: usize = self.pending_writes.items.len;
+        while (i > 0) {
+            i -= 1;
+            // Copy by value: collectWrite() below may append and reallocate
+            // pending_writes, which would invalidate a pointer into items[i].
+            const w = self.pending_writes.items[i];
+            if (!std.mem.eql(u8, &w.pubkey.data, &INCINERATOR)) continue;
+            if (w.lamports == 0) return; // Already burned
 
-                // Compute LtHash delta: remove old (non-zero) incinerator, add new (zero)
-                const old_lt = accountLtHash(
-                    &INCINERATOR,
-                    &w.owner.data,
-                    w.lamports,
-                    w.executable,
-                    w.data,
-                );
-                // New state: lamports = 0 → accountLtHash returns zero (excluded)
-                const new_lt = LtHash.init();
+            // Compute LtHash delta: remove old (non-zero) incinerator, add new (zero)
+            const old_lt = accountLtHash(
+                &INCINERATOR,
+                &w.owner.data,
+                w.lamports,
+                w.executable,
+                w.data,
+            );
+            // New state: lamports = 0 → accountLtHash returns zero (excluded)
+            const new_lt = LtHash.init();
+            const burned = w.lamports;
 
-                // Replace the write with the zeroed version
-                self.pending_writes.items[i].lamports = 0;
-                self.pending_writes.items[i].old_lt = old_lt;
-                self.pending_writes.items[i].new_lt = new_lt;
+            // Append the zeroed final state as a NEW write (settleFees()'s
+            // append-final-state convention) instead of mutating in place —
+            // this makes it the LAST pending_writes entry for INCINERATOR,
+            // so it wins both the freeze() Pass A dedup and
+            // flushPendingWritesToDb's reverse-walk commit dedup.
+            //
+            // Agave's run_incinerator() stores AccountSharedData::default()
+            // (owner = system program, data empty, rent_epoch 0), not the
+            // old owner/data/rent_epoch with lamports zeroed — match that
+            // exact default-account shape so committed AccountsDb state ends
+            // byte-identical to Agave, not merely LtHash-identical.
+            try self.collectWrite(.{
+                .pubkey = w.pubkey,
+                .lamports = 0,
+                .owner = Pubkey{ .data = SYSTEM_PROGRAM },
+                .executable = false,
+                .rent_epoch = 0,
+                .data = &[_]u8{},
+                .old_lt = old_lt,
+                .new_lt = new_lt,
+            });
 
-                std.log.info("[INCINERATOR] Slot {d}: burned {d} lamports", .{ self.slot, w.lamports });
-                return;
-            }
+            // F760 leg 1: Agave's run_incinerator() (bank.rs:4074-4081) does
+            // self.capitalization.fetch_sub(account.lamports(), Relaxed) —
+            // burned lamports leave total supply. Vexor never decremented
+            // this, permanently inflating capitalization, which feeds the
+            // epoch-boundary reward-pool calc
+            // (calculatePreviousEpochInflationRewards, :3280-3282) on every
+            // subsequent epoch boundary.
+            self.capitalization -= burned;
+
+            std.log.info("[INCINERATOR] Slot {d}: burned {d} lamports", .{ self.slot, burned });
+            return;
         }
     }
 
@@ -2762,7 +2883,11 @@ pub const Bank = struct {
                     // CRITICAL: base is e.effective ONLY. Rate evaluated at current_epoch =
                     // epoch+1 (reference loop's prev_epoch+1). @prov:bank.stake-activation-status
                     const newly_effective_cluster: f64 = @as(f64, @floatFromInt(e.effective)) * warmupCooldownRate(epoch + 1, new_rate_activation_epoch);
-                    const newly_effective: u64 = @max(@as(u64, @intFromFloat(weight * newly_effective_cluster)), 1);
+                    // 2026-07-28: lossyCast, NOT @intFromFloat — an out-of-range f64 is
+                    // illegal behaviour (unchecked in ReleaseFast); lossyCast saturates.
+                    // Identical result for every in-range value. Kept in sync with the
+                    // VERBATIM twin in vex_bpf2/builtins/stake_program.zig (warmup arm).
+                    const newly_effective: u64 = @max(1, std.math.lossyCast(u64, weight * newly_effective_cluster));
                     current_effective += newly_effective;
                     if (current_effective >= stake) {
                         current_effective = stake;
@@ -3059,6 +3184,30 @@ pub const Bank = struct {
         const aslot = std.mem.readInt(u64, acct.data[1..9], .little);
         if (aslot > self.slot) return 0;
         return self.epoch_schedule.getEpoch(aslot);
+    }
+
+    /// upgrade_bpf_stake_program_to_v5_1 activation check (same fork-aware feature-account
+    /// read shape as getNewRateActivationEpoch above). v5.1 replaces
+    /// Delegation.warmup_cooldown_rate (f64 0.25, data offset 180) with _reserved: [u8;8]
+    /// = zeros on FRESH delegations only — existing accounts' bytes round-trip. Consumers:
+    /// the fresh-delegate write sites in vex_svm/native/stake_program.zig and
+    /// vex_bpf2/builtins/stake_program.zig. INACTIVE on testnet as of 2026-08-02.
+    /// ⚠ SCOPE (2026-08-02 audit): this gate covers the _reserved field write ONLY.
+    /// v5.1 ALSO swaps every effective-stake computation to fixed-point bps math
+    /// (stake_activating_and_deactivating_v2 / stake_v2, +569 lines:
+    /// warmup_cooldown_allowance.rs + ulp.rs) — including process_split's own
+    /// is_active_or_activating input. That math is NOT ported: on activation Vexor
+    /// still diverges for every warming/cooling delegation. Open gap on record
+    /// (parity-sweep F780-84; the 2026-08-01 divergence at slot 425636293).
+    pub fn isStakeProgramV51Active(self: *Self) bool {
+        const ftr = @import("features.zig");
+        const db2 = self.accounts_db orelse return false;
+        var pk = ftr.UPGRADE_BPF_STAKE_PROGRAM_TO_V5_1;
+        const core_pk = @as(*const @import("core").Pubkey, @ptrCast(&pk));
+        const acct = db2.getAccountInSlot(core_pk, self.slot, self.ancestors()) orelse return false;
+        if (acct.data.len < 9 or acct.data[0] != 1) return false;
+        const aslot = std.mem.readInt(u64, acct.data[1..9], .little);
+        return aslot <= self.slot;
     }
 
     /// @prov:bank.inflation-start-slot
@@ -5070,6 +5219,7 @@ pub const Bank = struct {
         }
 
         self.is_frozen = true;
+        self.frozen_at_ns = std.time.nanoTimestamp();
 
         std.log.debug(
             "[BANK] Slot {d}: frozen OK, bank_hash={x:0>8}..{x:0>8} sigs={d} writes={d}",
@@ -5571,6 +5721,194 @@ test "capitalization: tracks field correctly" {
     const reward: u64 = 1_000_000_000; // 1 SOL reward
     bank.capitalization += reward;
     try std.testing.expectEqual(@as(u64, 500_000_001_000_000_000), bank.capitalization);
+}
+
+test "F760: runIncinerator single write burns lamports and decrements capitalization" {
+    const alloc = std.testing.allocator;
+    var bank = try Bank.init(alloc, 432_000, 431_999, Hash.default(), LtHash.init(), Hash.default());
+    defer bank.deinit();
+
+    bank.capitalization = 1_000_000_000;
+    try bank.pending_writes.append(bank.allocator, .{
+        .pubkey = Pubkey{ .data = INCINERATOR },
+        .lamports = 42_000,
+        .owner = Pubkey{ .data = SYSTEM_PROGRAM },
+        .executable = false,
+        .rent_epoch = 0,
+        .data = &[_]u8{},
+    });
+
+    try bank.runIncinerator();
+
+    try std.testing.expectEqual(@as(u64, 1_000_000_000 - 42_000), bank.capitalization);
+    // Last (only) pending_writes entry for INCINERATOR must be the zeroed burn,
+    // stored as Agave's AccountSharedData::default() shape (owner = system
+    // program, data empty, rent_epoch 0) — not just lamports zeroed with the
+    // old owner/data/rent_epoch carried over — so committed AccountsDb state
+    // ends byte-identical to Agave, not merely LtHash-identical.
+    try std.testing.expectEqual(@as(usize, 2), bank.pending_writes.items.len);
+    const last = bank.pending_writes.items[bank.pending_writes.items.len - 1];
+    try std.testing.expect(std.mem.eql(u8, &last.pubkey.data, &INCINERATOR));
+    try std.testing.expectEqual(@as(u64, 0), last.lamports);
+    try std.testing.expect(std.mem.eql(u8, &last.owner.data, &SYSTEM_PROGRAM));
+    try std.testing.expectEqual(@as(usize, 0), last.data.len);
+    try std.testing.expectEqual(@as(u64, 0), last.rent_epoch);
+    try std.testing.expectEqual(false, last.executable);
+}
+
+test "F760: runIncinerator multi-write-same-slot burns the FINAL state (was a no-op)" {
+    const alloc = std.testing.allocator;
+    var bank = try Bank.init(alloc, 432_000, 431_999, Hash.default(), LtHash.init(), Hash.default());
+    defer bank.deinit();
+
+    bank.capitalization = 1_000_000_000;
+    // Two writes to INCINERATOR in one slot: entry A (older), entry B (final,
+    // higher-index — this is what freeze() Pass A and
+    // flushPendingWritesToDb's reverse-walk dedup treat as the account's
+    // actual end-of-slot state).
+    try bank.pending_writes.append(bank.allocator, .{
+        .pubkey = Pubkey{ .data = INCINERATOR },
+        .lamports = 10_000,
+        .owner = Pubkey{ .data = SYSTEM_PROGRAM },
+        .executable = false,
+        .rent_epoch = 0,
+        .data = &[_]u8{},
+    });
+    try bank.pending_writes.append(bank.allocator, .{
+        .pubkey = Pubkey{ .data = INCINERATOR },
+        .lamports = 25_000,
+        .owner = Pubkey{ .data = SYSTEM_PROGRAM },
+        .executable = false,
+        .rent_epoch = 0,
+        .data = &[_]u8{},
+    });
+
+    try bank.runIncinerator();
+
+    // Pre-fix: forward-scan mutated entry A (index 0) and returned, leaving
+    // entry B's 25_000 as the last-wins state for BOTH the LtHash dedup and
+    // flushPendingWritesToDb's commit — a complete no-op burn, and
+    // capitalization was never touched at all.
+    try std.testing.expectEqual(@as(u64, 1_000_000_000 - 25_000), bank.capitalization);
+    try std.testing.expectEqual(@as(usize, 3), bank.pending_writes.items.len);
+    const last = bank.pending_writes.items[bank.pending_writes.items.len - 1];
+    try std.testing.expect(std.mem.eql(u8, &last.pubkey.data, &INCINERATOR));
+    try std.testing.expectEqual(@as(u64, 0), last.lamports);
+}
+
+test "F760: runIncinerator no-op when incinerator untouched this slot" {
+    const alloc = std.testing.allocator;
+    var bank = try Bank.init(alloc, 432_000, 431_999, Hash.default(), LtHash.init(), Hash.default());
+    defer bank.deinit();
+
+    bank.capitalization = 1_000_000_000;
+    try bank.pending_writes.append(bank.allocator, .{
+        .pubkey = Pubkey{ .data = SYSTEM_PROGRAM }, // unrelated account
+        .lamports = 5_000,
+        .owner = Pubkey{ .data = SYSTEM_PROGRAM },
+        .executable = false,
+        .rent_epoch = 0,
+        .data = &[_]u8{},
+    });
+
+    try bank.runIncinerator();
+
+    try std.testing.expectEqual(@as(u64, 1_000_000_000), bank.capitalization);
+    try std.testing.expectEqual(@as(usize, 1), bank.pending_writes.items.len);
+}
+
+// F441b (2026-07-29, slot 424942916) differential KAT. Both banks below have
+// `accounts_db = null` (Bank.init's default), modeling the incident's shared
+// precondition: the direct Clock read AND the stake-weighted vote-account
+// fallback both structurally miss (whatever the reason upstream). Slots
+// 600_000/600_001 are deliberately deep in the same non-warmup epoch (14,
+// per EpochSchedule.DEFAULT: first_normal_slot=524256, slots_per_epoch=432000)
+// so `epoch != parent_epoch` never fires and masks the assertion.
+test "F441b differential KAT: OLD accounts_db-only Clock path zeros on a read-miss" {
+    const alloc = std.testing.allocator;
+    var bank = try Bank.init(alloc, 600_001, 600_000, Hash.default(), LtHash.init(), Hash.default());
+    defer bank.deinit();
+
+    // Pre-fix `updateClockSysvar` took no parent argument — byte-identical to
+    // calling today's signature with `parent_clock_sysvar = null` while
+    // accounts_db is also unavailable. This is the incident's exact mechanism:
+    // both read paths miss, so the zero-initialized locals in updateClockSysvar
+    // go straight into the Clock sysvar bytes.
+    try bank.updateClockSysvar(null);
+
+    const w = bank.pending_writes.items[bank.pending_writes.items.len - 1];
+    defer alloc.free(w.data); // bank.deinit() frees the ArrayList, not each write's owned data
+    try std.testing.expectEqual(@as(usize, 40), w.data.len);
+    const epoch_start_ts: i64 = @bitCast(std.mem.readInt(u64, w.data[8..16], .little));
+    const unix_ts: i64 = @bitCast(std.mem.readInt(u64, w.data[32..40], .little));
+    // These are the incident's actual bytes: epoch_start_timestamp=0, unix_timestamp=0.
+    try std.testing.expectEqual(@as(i64, 0), epoch_start_ts);
+    try std.testing.expectEqual(@as(i64, 0), unix_ts);
+}
+
+test "F441b differential KAT: NEW parent-pending-writes Clock path survives the identical read-miss" {
+    const alloc = std.testing.allocator;
+    var bank = try Bank.init(alloc, 600_001, 600_000, Hash.default(), LtHash.init(), Hash.default());
+    defer bank.deinit();
+
+    // Identical precondition (accounts_db absent — direct read AND
+    // stake-weighted fallback both miss), but the parent bank's own Clock
+    // write reaches this bank via the eviction-immune `pending_writes`
+    // channel replay_stage.zig now plumbs from `self.banks.get(parent_slot)`.
+    var parent_clock_buf: [40]u8 = undefined;
+    std.mem.writeInt(u64, parent_clock_buf[0..8], 600_000, .little); // parent slot
+    std.mem.writeInt(i64, parent_clock_buf[8..16], 1_785_319_600, .little); // epoch_start_ts
+    std.mem.writeInt(u64, parent_clock_buf[16..24], 14, .little); // epoch
+    std.mem.writeInt(u64, parent_clock_buf[24..32], 15, .little); // leader_schedule_epoch
+    std.mem.writeInt(i64, parent_clock_buf[32..40], 1_785_319_640, .little); // unix_ts
+
+    const psv = Bank.SysvarFromParent{
+        .data = &parent_clock_buf,
+        .lamports = 1_169_280,
+        .owner = SYSVAR_OWNER,
+        .rent_epoch = std.math.maxInt(u64),
+    };
+    try bank.updateClockSysvar(psv);
+
+    const w = bank.pending_writes.items[bank.pending_writes.items.len - 1];
+    defer alloc.free(w.data);
+    try std.testing.expectEqual(@as(usize, 40), w.data.len);
+    const epoch_start_ts: i64 = @bitCast(std.mem.readInt(u64, w.data[8..16], .little));
+    const unix_ts: i64 = @bitCast(std.mem.readInt(u64, w.data[32..40], .little));
+    // Same epoch as parent (14 == 14) -> inherited unchanged, NOT the
+    // incident's zero.
+    try std.testing.expectEqual(@as(i64, 1_785_319_600), epoch_start_ts);
+    try std.testing.expectEqual(@as(i64, 1_785_319_640), unix_ts);
+}
+
+test "F441b: malformed/short parent_clock_sysvar falls through to accounts_db path instead of locking in zero" {
+    const alloc = std.testing.allocator;
+    var bank = try Bank.init(alloc, 600_001, 600_000, Hash.default(), LtHash.init(), Hash.default());
+    defer bank.deinit();
+
+    // A present-but-short psv (data.len < 40) must NOT be trusted — regression
+    // guard for the review finding on this patch (an earlier draft's `else if`
+    // let a short psv take the parent-write branch, decode nothing, and leave
+    // epoch_start_ts/unix_ts at 0 — the exact bug being fixed).
+    var short_buf: [8]u8 = .{ 0, 0, 0, 0, 0, 0, 0, 0 };
+    const short_psv = Bank.SysvarFromParent{
+        .data = &short_buf,
+        .lamports = 1_169_280,
+        .owner = SYSVAR_OWNER,
+        .rent_epoch = std.math.maxInt(u64),
+    };
+    // accounts_db is also null here, so this should fall through ALL sources
+    // and hit the [CLOCK-READ-MISS] loud-log branch — zero is the honest
+    // answer when NO source has data, but it must be reached via the miss
+    // branch, not by blindly trusting a malformed psv.
+    try bank.updateClockSysvar(short_psv);
+    const w = bank.pending_writes.items[bank.pending_writes.items.len - 1];
+    defer alloc.free(w.data);
+    try std.testing.expectEqual(@as(usize, 40), w.data.len);
+    const epoch_start_ts: i64 = @bitCast(std.mem.readInt(u64, w.data[8..16], .little));
+    const unix_ts: i64 = @bitCast(std.mem.readInt(u64, w.data[32..40], .little));
+    try std.testing.expectEqual(@as(i64, 0), epoch_start_ts);
+    try std.testing.expectEqual(@as(i64, 0), unix_ts);
 }
 
 test "EpochSchedule: skipped slot boundary still detected at next slot (no-warmup fixture)" {

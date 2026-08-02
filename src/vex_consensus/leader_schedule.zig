@@ -17,6 +17,13 @@ const Slot = core.Slot;
 const Epoch = core.Epoch;
 
 /// Stake weight entry
+// Highest epoch_stakes-covered slot seen across ALL populateAgaveCanonical calls. Exists only so
+// the EPOCH-STAKES-CLIFF diagnostic reports the NEWEST cached epoch's end rather than whichever
+// epoch happened to be populating — the per-epoch reading emitted two lines that looked like a
+// contradiction (996 -> ~3.1h "EXHAUSTED", 997 -> ~48h "remain") and cost real operator time.
+// Diagnostic-only: written and read solely by that log block, never by consensus. (2026-07-30)
+var max_covered_slot: u64 = 0;
+
 pub const StakeWeight = struct {
     pubkey: Pubkey,
     stake: u64,
@@ -455,21 +462,43 @@ pub const LeaderScheduleCache = struct {
         // runs out. Deliberately not gated behind an env var: a warning that must be switched on
         // is a warning nobody sees.
         {
-            const cliff_slot = first_slot + slot_leaders_pk.len - 1;
-            // `current_slot` is a parameter of populateAgaveCanonical — the slot we are populating
-            // for. Using it (rather than inventing a field) keeps this purely local.
+            // 🔴 READ THIS BEFORE TRUSTING ANY SINGLE CLIFF LINE (fixed 2026-07-30).
+            // `first_slot + len - 1` is the last slot of THE EPOCH JUST POPULATED — NOT the end of
+            // epoch_stakes coverage. populateAgaveCanonical runs once per cached epoch, so at boot
+            // this block ran twice and emitted two lines that read as a contradiction:
+            //   epoch 996 -> "🔴 ~3.1h until slot 425180255 ... EXHAUSTED"
+            //   epoch 997 -> "~48.0h of coverage remain (exhausted after slot 425612255)"
+            // Both were arithmetically correct for their own epoch; NEITHER said which epoch it
+            // meant, and the first one is a FALSE ALARM the moment a later epoch is also cached.
+            // Real coverage = the end of the NEWEST cached epoch. The fact that an epoch-997
+            // schedule builds at all PROVES epoch_stakes covers 997, since it cannot be built
+            // without it — so the 996 line was describing a cliff that does not exist.
+            // Cost of the ambiguity: an operator hour on 2026-07-30, and I reported the wrong
+            // cliff twice in the same session, in both directions.
+            // Fix: name the epoch, track the running maximum, and SUPERSEDE explicitly.
+            // Still purely diagnostic — logs only, no branch, no state read by consensus.
+            const epoch_last_slot = first_slot + slot_leaders_pk.len - 1;
             const now_slot = current_slot;
-            if (cliff_slot > now_slot) {
-                const remaining = cliff_slot - now_slot;
+
+            const prev_max = @atomicRmw(u64, &max_covered_slot, .Max, epoch_last_slot, .monotonic);
+            const effective_cliff = @max(prev_max, epoch_last_slot);
+
+            if (epoch_last_slot > prev_max and prev_max != 0) {
+                const ext_h = (@as(f64, @floatFromInt(epoch_last_slot - prev_max)) * 0.4) / 3600.0;
+                std.log.warn("[EPOCH-STAKES-CLIFF] coverage EXTENDED by epoch {d} to slot {d} (+{d} slots, ~{d:.1}h) — SUPERSEDES any earlier EPOCH-STAKES-CLIFF line naming slot {d}.", .{ current_epoch, epoch_last_slot, epoch_last_slot - prev_max, ext_h, prev_max });
+            }
+
+            if (effective_cliff > now_slot) {
+                const remaining = effective_cliff - now_slot;
                 // 400ms/slot nominal — the same figure the produce budget is derived from.
                 const hours = (@as(f64, @floatFromInt(remaining)) * 0.4) / 3600.0;
                 if (hours < 12.0) {
-                    std.log.err("[EPOCH-STAKES-CLIFF] 🔴 {d} slots (~{d:.1}h) until slot {d}, past which epoch_stakes is EXHAUSTED: Clock estimate -> null (bank_hash input), leader schedule -> RPC fallback, fork choice -> silent 0. Re-bootstrap before this.", .{ remaining, hours, cliff_slot });
+                    std.log.err("[EPOCH-STAKES-CLIFF] 🔴 {d} slots (~{d:.1}h) until slot {d} (newest cached epoch {d} ends there), past which epoch_stakes is EXHAUSTED: Clock estimate -> null (bank_hash input), leader schedule -> RPC fallback, fork choice -> silent 0. Re-bootstrap before this. NOTE: if a later epoch is cached after this line, a 'coverage EXTENDED' line supersedes it.", .{ remaining, hours, effective_cliff, current_epoch });
                 } else {
-                    std.log.warn("[EPOCH-STAKES-CLIFF] {d} slots (~{d:.1}h) of epoch_stakes coverage remain (exhausted after slot {d}).", .{ remaining, hours, cliff_slot });
+                    std.log.warn("[EPOCH-STAKES-CLIFF] {d} slots (~{d:.1}h) of epoch_stakes coverage remain (newest cached epoch {d}, exhausted after slot {d}).", .{ remaining, hours, current_epoch, effective_cliff });
                 }
             } else {
-                std.log.err("[EPOCH-STAKES-CLIFF] 🔴 PAST THE CLIFF: slot {d} > last covered {d}. epoch_stakes is EXHAUSTED — Clock estimate, leader schedule and fork-choice weights are now unreliable. Re-bootstrap.", .{ now_slot, cliff_slot });
+                std.log.err("[EPOCH-STAKES-CLIFF] 🔴 PAST THE CLIFF: slot {d} > last covered {d} (newest cached epoch {d}). epoch_stakes is EXHAUSTED — Clock estimate, leader schedule and fork-choice weights are now unreliable. Re-bootstrap.", .{ now_slot, effective_cliff, current_epoch });
             }
         }
 

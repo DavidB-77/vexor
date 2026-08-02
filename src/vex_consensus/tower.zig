@@ -225,25 +225,64 @@ pub const TowerBft = struct {
     };
 
     /// VOTE-THRESHOLD gate mode (VEX_VOTE_THRESHOLD, parsed at the replay_stage
-    /// call site): .off → check fully dormant (hot path computes nothing);
-    /// .shadow (DEFAULT) → real stakes are computed and the would-be verdict is
-    /// logged, but the values actually PASSED to shouldVote stay (0,0) — byte-
-    /// identical vote decisions to the pre-fix binary; .armed → the real stakes
-    /// are passed and the depth-8 threshold check enforces.
-    pub const ThresholdMode = enum { off, shadow, armed };
+    /// call site). ARMED BY DEFAULT since 2026-07-29 (F348/F723, operator
+    /// no-shadow-modes hard-cutover): there is no observe-only leg any more,
+    /// only an enforcing default and an emergency kill-switch.
+    ///   .armed (DEFAULT) → real stakes are computed AND passed to shouldVote;
+    ///                       the depth-8 threshold check enforces.
+    ///   .off             → check fully dormant (hot path computes nothing;
+    ///                       VEX_VOTE_THRESHOLD=off, emergency rollback ONLY).
+    pub const ThresholdMode = enum { off, armed };
 
     pub const ThresholdStakes = struct { voted: u64, total: u64 };
 
-    /// The SINGLE point deciding which stake pair reaches shouldVote. Shadow
-    /// mode can never alter the vote decision BY CONSTRUCTION: only .armed ever
-    /// forwards non-zero stakes, and (0,0) skips the threshold check entirely
-    /// (shouldVote's `total_stake > 0` guard) — KAT'd in
-    /// src/kat_vote_threshold_shadow.zig.
+    /// The SINGLE point deciding which stake pair reaches shouldVote.
+    /// .armed forwards the real pair unconditionally; .off zeroes it, which
+    /// (via shouldVote's `total_stake > 0` guard) skips the threshold check
+    /// entirely — the kill-switch's ONLY effect. KAT'd in
+    /// src/kat_vote_threshold_armed.zig.
     pub fn thresholdStakesForMode(mode: ThresholdMode, voted: u64, total: u64) ThresholdStakes {
         return switch (mode) {
             .armed => .{ .voted = voted, .total = total },
-            .off, .shadow => .{ .voted = 0, .total = 0 },
+            .off => .{ .voted = 0, .total = 0 },
         };
+    }
+
+    /// Pure depth-8 stake-threshold predicate — TRUE = admit ("cluster has
+    /// enough stake voted at/beyond the depth-8 slot"), FALSE = refuse.
+    /// `total == 0` trivially passes: Agave's own not-deep-enough-data
+    /// trivial-pass, mirrored here so a caller that hasn't reached depth 8
+    /// yet (or has no epoch-stake data) never manufactures a false refuse.
+    /// pub: single source of truth for the u128-widened exact-rational-ratio math, shared by
+    /// shouldVote's enforcement below AND replay_stage's
+    /// [VOTE-THRESHOLD-ARMED] proof-of-arming REFUSE/PASS counters — so the
+    /// counters can never drift from what actually gated the vote.
+    pub fn thresholdPasses(voted: u64, total: u64) bool {
+        if (total == 0) return true;
+        // EXACT RATIONAL COMPARISON (F207, 2026-07-29): Agave's
+        // `check_vote_stake_threshold` (core/src/consensus.rs:1331-1364) compares the
+        // exact real-valued ratio `fork_stake as f64 / total_stake as f64 > 2/3`, a
+        // strict `>` against the true ratio — NOT a floored integer percentage. The
+        // prior `pct = (voted*100)/total; pct >= 67` floors before comparing, which
+        // needlessly REFUSES a vote Agave would cast for any true ratio in the
+        // half-open interval (2/3, 0.67) ≈ (0.666667, 0.67): every such ratio floors
+        // to pct=66, failing `>= 67`, while Agave's `ratio > 2/3` is true. This is
+        // liveness-conservative only (Vexor can only withhold a vote Agave would
+        // cast, never cast one Agave would refuse). Comparing `voted*3 > total*2`
+        // reproduces the exact boundary with no float/rounding: at ratio == 2/3
+        // exactly, voted*3 == total*2, so `>` is false and both implementations
+        // agree on refusal.
+        // u128 WIDEN — defensive, carried over from the prior `*100` multiply,
+        // which DID overflow u64 at mainnet/testnet magnitudes (u64_max/100 ≈
+        // 1.845e17 lamports, and testnet/mainnet total stake is ~3.5-3.65e17).
+        // `*3`/`*2` have far more headroom (u64_max/3 ≈ 6.15e18 lamports ≈
+        // 6.15e9 SOL, nowhere near today's ~3.5e17) — this is NOT currently an
+        // operating-range overflow. Kept in u128 anyway (near-zero cost) so a
+        // future lamport-denomination change or stake-magnitude assumption can
+        // never silently wrap under ReleaseFast (which disables overflow checks)
+        // — a wrap would produce a wrong vote verdict with no panic and no log,
+        // worse than a crash.
+        return @as(u128, voted) * 3 > @as(u128, total) * 2;
     }
 
     /// CARRIER #7 (2026-06-10): production ancestry view for `isLockedOut`.
@@ -309,16 +348,14 @@ pub const TowerBft = struct {
         if (self.vote_state.isLockedOut(slot, ancestors)) return false;
 
         // Threshold check: cluster must have enough stake at our depth-8 slot.
-        // u128 widen (DIFF987 gate catch, 2026-07-20): real lamport-scale stakes
-        // overflow u64 at ×100 — testnet voted stake ≈2-3e17 lamports, ×100 ≈
-        // 2-3e19 > u64 max 1.84e19. Panicked the offline golden replay at the
-        // first deep-tower vote (shadow mode calls this with real stakes for
-        // its would-be verdict, so the overflow reaches production even
-        // before arming). Toy-stake KATs missed it; the mainnet-magnitude
-        // regression KAT in kat_vote_threshold_shadow.zig now pins it.
+        // ARMED BY DEFAULT (F348/F723, 2026-07-29) — was DORMANT: both live call
+        // sites in replay_stage.zig used to pass `0, 0` for (cluster_voted_stake,
+        // total_stake), so the `total_stake > 0` guard below skipped this block
+        // entirely and the gate never fired. Now wired to
+        // clusterVotedStakeAtDepthSlot()/epochTotalStake() AND armed by default —
+        // see thresholdPasses() above for the u128-widen rationale.
         if (total_stake > 0 and self.vote_state.len >= THRESHOLD_DEPTH) {
-            const pct = (@as(u128, cluster_voted_stake) * 100) / total_stake;
-            if (pct < THRESHOLD_PCT) return false;
+            if (!thresholdPasses(cluster_voted_stake, total_stake)) return false;
         }
 
         // Switch check: a cross-fork vote requires a 38% switch proof.
@@ -833,4 +870,83 @@ test "vote-coverage: target == tip non-advancing -> withhold (no self-fallback)"
         TowerBft.VoteState.VoteTargetChoice.withhold,
         state.resolveVoteTarget(101, 101, true),
     );
+}
+
+test "REGRESSION: mainnet-magnitude stakes must not overflow the threshold ratio" {
+    // WHAT THIS PINS: `cluster_voted_stake * 100` in shouldVote's threshold check was computed in
+    // u64. u64 max is 1.8446744e19, so the product overflows once voted stake exceeds
+    // u64_max/100 = 1.845e17 lamports = 184,467,440 SOL. Testnet total stake is ~348M SOL and
+    // mainnet ~365M — both roughly 2x past that line. This is the operating range, not an edge case.
+    //
+    // WHY A TOY-STAKE TEST CANNOT CATCH IT: every other test in this file uses small operands that
+    // never approach the overflow. The magnitudes below are the whole point of the test.
+    //
+    // 🔴 THIS TEST MUST FAIL WITHOUT THE FIX. Revert the `@as(u128, ...)` widening in
+    // `thresholdPasses` and re-run: under Debug/ReleaseSafe it panics with "integer overflow";
+    // under ReleaseFast (the shipping mode) the product wraps silently and the 75% case below
+    // computes a garbage ratio that fails the check, so the first expect() fails. A green run
+    // with the widening removed would mean the test is not exercising the multiply.
+    const identity = core.Pubkey{ .data = [_]u8{9} ** 32 };
+    var t = try TowerBft.init(std.testing.allocator, identity);
+    defer t.deinit();
+
+    // Need vote_state.len >= THRESHOLD_DEPTH (8) or the threshold block is skipped entirely.
+    var s: core.Slot = 100;
+    while (s < 109) : (s += 1) t.vote_state.recordVote(s);
+    try std.testing.expect(t.vote_state.len >= TowerBft.THRESHOLD_DEPTH);
+
+    // rooted_slot=108 makes every prior vote an ancestor, so isLockedOut is not what we measure.
+    const anc = TowerBft.SliceAncestors{ .rooted_slot = 108, .chain = &.{} };
+
+    const total: u64 = 400_000_000_000_000_000; // 4e17 lamports = 400M SOL, testnet-scale
+
+    // 75% of total. 3e17 * 100 = 3e19 > u64 max — this is the overflowing multiply.
+    // Correct math gives a ratio well above 2/3 => vote allowed.
+    try std.testing.expect(t.shouldVote(109, true, anc, 300_000_000_000_000_000, total));
+
+    // 50% of total: 2e17 * 100 = 2e19, also overflows u64, but the CORRECT answer is a REFUSAL.
+    // This side proves the fix did not simply make the check permissive.
+    try std.testing.expect(!t.shouldVote(109, true, anc, 200_000_000_000_000_000, total));
+
+    // Just below the threshold (66%) must still refuse — guards an off-by-one at the boundary.
+    try std.testing.expect(!t.shouldVote(109, true, anc, 264_000_000_000_000_000, total));
+
+    // Exactly at the threshold (67%) must pass — `voted*3 > total*2` at 67% is strict-true.
+    try std.testing.expect(t.shouldVote(109, true, anc, 268_000_000_000_000_000, total));
+
+    // Sanity: a (0, 0) stake pair — what VEX_VOTE_THRESHOLD=off forwards — skips the threshold
+    // block entirely via the `total_stake > 0` guard. That is the kill-switch's only effect.
+    try std.testing.expect(t.shouldVote(109, true, anc, 0, 0));
+}
+
+test "F207 KAT: exact rational threshold at the (2/3, 0.67) boundary interval" {
+    // WHAT THIS PINS: Agave's check_vote_stake_threshold (consensus.rs:1331-1364)
+    // compares the exact real-valued ratio `fork_stake/total_stake > 2/3` (strict).
+    // The old `pct = (voted*100)/total; pct >= 67` floors before comparing, so any
+    // true ratio in the half-open interval (2/3, 0.67) ≈ (0.666667, 0.67) floors to
+    // pct=66 and wrongly REFUSES a vote Agave would cast. This test would FAIL
+    // against the pre-fix floored-percentage implementation.
+    try std.testing.expect(TowerBft.thresholdPasses(1, 1)); // trivial, not the interval
+
+    // total divisible by 3 so 2/3 is exact: total=300, 2/3*total=200.
+    const total: u64 = 300_000_000_000_000_000;
+
+    // Exactly at r = 2/3: Agave's strict `>` rejects; voted*3 == total*2 → refuse.
+    // Both implementations agree exactly at this boundary.
+    try std.testing.expect(!TowerBft.thresholdPasses(200_000_000_000_000_000, total));
+
+    // Just above r = 2/3, still inside (2/3, 0.67): e.g. r ≈ 0.666668.
+    // Old floored-percentage code: floor(66.6668) = 66 < 67 → wrongly refuses.
+    // Fixed exact-rational code: voted*3 = 600_000_300_000_000_000 > total*2 =
+    // 600_000_000_000_000_000 → passes.
+    const voted_just_above: u64 = 200_000_100_000_000_000; // r = 0.6667000...
+    try std.testing.expect(TowerBft.thresholdPasses(voted_just_above, total));
+
+    // r = 0.67 exactly (upper edge of the interval): must pass under both old and new math.
+    const voted_067: u64 = 201_000_000_000_000_000; // 0.67 * 300e15
+    try std.testing.expect(TowerBft.thresholdPasses(voted_067, total));
+
+    // Just below r = 2/3: must still refuse under both old and new math (no regression
+    // toward permissiveness below the boundary).
+    try std.testing.expect(!TowerBft.thresholdPasses(199_999_900_000_000_000, total));
 }

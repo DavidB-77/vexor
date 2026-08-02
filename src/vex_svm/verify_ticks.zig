@@ -45,7 +45,9 @@ pub const Verdict = enum {
     /// FD verify_ticks_final TOO_FEW_TICKS (fd_sched.c:2014).
     too_few_ticks,
     /// Agave entry.rs:684 zero-hash tick (rc.1 delta) — a tick with num_hashes==0
-    /// while hashing is enabled. The `zerohash` level checks ONLY this.
+    /// while hashing is enabled. The `zerohash` level checks this plus
+    /// `too_many_ticks` (both are cadence-independent); the remaining
+    /// hash-cadence checks below stay `full`-only.
     invalid_tick_hash_count_zero,
     /// FD fd_sched.c:1987 cumulative DoS bound: curr_tick_hashcnt > hashes_per_tick.
     invalid_tick_hash_count_cumulative,
@@ -107,14 +109,20 @@ pub const Verifier = struct {
             return .invalid_tick_hash_count_zero;
         }
 
-        if (self.level != .full) return .ok;
-
-        // ── full: FD verify_ticks_eager ──
-        // TOO_MANY_TICKS (fd_sched.c:1979): checked on each tick. tick_count
-        // already includes this tick.
+        // ── TOO_MANY_TICKS (fd_sched.c:1979) ──
+        // Depends only on tick_count/tick_height/max_tick_height — no hash-count
+        // state, so unlike the hash-cadence checks below it has no dependency on
+        // hashes_per_tick being meaningfully populated. Runs at `zerohash` too
+        // (not just `full`): this is the level the live binary is hardcoded to
+        // (build.zig net_opts.addOption(..., .zerohash)), and TooManyTicks has no
+        // other fallback anywhere in replay_stage.zig (unlike TooFewTicks, which
+        // keeps an independent flat gate at replay_stage.zig for the non-`full`
+        // levels). Checked on each tick; tick_count already includes this tick.
         if (is_tick and (self.tick_count +% self.tick_height > self.max_tick_height)) {
             return .too_many_ticks;
         }
+
+        if (self.level != .full) return .ok;
 
         // Accumulate hashes across ALL entries (tick + non-tick), Agave
         // entry.rs:682 / FD fd_sched.c:2166.

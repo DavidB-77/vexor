@@ -163,7 +163,19 @@ pub const VoteState = struct {
         @memset(&vs.inflation_rewards_collector, 0);
         @memset(&vs.block_revenue_collector, 0);
         vs.inflation_rewards_commission_bps = 0;
-        vs.block_revenue_commission_bps = 0;
+        // F206: Agave's canonical accessor `block_revenue_commission()`
+        // (vote/src/vote_state_view.rs:113-116) returns the literal default
+        // `10_000` (DEFAULT_BLOCK_REVENUE_COMMISSION_BPS, TRI-SOURCE with
+        // Firedancer's fd_vote_state_versioned.c) for any pre-V4 account, since
+        // the field does not exist in pre-V4 wire bytes. `deserializeVoteState()`
+        // starts from this init() default and only overwrites it for version==3
+        // (V4) accounts, so pre-V4 in-memory VoteStates must default to 10_000
+        // here to match Agave — zero would silently disagree with the canonical
+        // accessor for any consumer that reads this field before an explicit
+        // convertToV4() call. Matches the sibling deserializer
+        // (voteforge/vote_codec.zig:migrateLegacyToV4), which already defaults
+        // to 10_000. See parity-sweep audit finding F206.
+        vs.block_revenue_commission_bps = 10_000;
         vs.pending_delegator_rewards = 0;
         vs.has_bls_pubkey_compressed = false;
         @memset(&vs.bls_pubkey_compressed, 0);
@@ -2144,6 +2156,44 @@ test "getLastVotedSlot v4 (SIMD-0185, version=3)" {
     @memset(&buf_empty, 0);
     _ = serializeVoteState(&vs, &buf_empty);
     try std.testing.expect(getLastVotedSlot(&buf_empty) == null);
+}
+
+test "F206 KAT: pre-V4 VoteState defaults block_revenue_commission_bps to Agave's 10_000, not 0" {
+    // WHAT THIS PINS: Agave's canonical accessor `block_revenue_commission()`
+    // (vote/src/vote_state_view.rs:113-116) returns 10_000 for ANY pre-V4
+    // account (the field doesn't exist in pre-V4 wire bytes, so the accessor
+    // falls back to the named default). Before this fix, VoteState.init()
+    // zeroed the field and deserializeVoteState() only populated it inside the
+    // version==3 (V4) branch, so a freshly-init'd or deserialized V1/V2
+    // in-memory VoteState read back 0 instead of Agave's 10_000 whenever a
+    // consumer read the field BEFORE calling convertToV4(). This test would
+    // FAIL against the pre-fix zero-default.
+    var fresh = VoteState.init();
+    fresh.version = 2;
+    try std.testing.expectEqual(@as(u16, 10_000), fresh.block_revenue_commission_bps);
+
+    // Round-trip through the real V3-wire (version=2) serializer/deserializer:
+    // V3 wire has no block_revenue_commission_bps bytes at all (only the V4
+    // branch, version==3, serializes/deserializes them), so the deserialized
+    // value must come from the init() default, not from wire bytes.
+    var vs = VoteState.init();
+    vs.version = 2;
+    vs.node_pubkey = [_]u8{0x77} ** 32;
+    vs.authorized_withdrawer = [_]u8{0x88} ** 32;
+    vs.commission = 5;
+    vs.lockout_count = 0;
+    vs.av_count = 1;
+    vs.authorized_voters[0] = .{ .epoch = 0, .pubkey = [_]u8{0x99} ** 32 };
+    vs.ec_count = 0;
+
+    var buf: [VOTE_STATE_V3_SZ]u8 = undefined;
+    @memset(&buf, 0);
+    const written = serializeVoteState(&vs, &buf);
+    try std.testing.expect(written != null);
+
+    const rt = deserializeVoteState(&buf).?;
+    try std.testing.expectEqual(@as(u32, 2), rt.version);
+    try std.testing.expectEqual(@as(u16, 10_000), rt.block_revenue_commission_bps);
 }
 
 test "convertToV4: V1_14_11 -> V4 (SIMD-0185 carrier #50) field-map + byte round-trip" {
