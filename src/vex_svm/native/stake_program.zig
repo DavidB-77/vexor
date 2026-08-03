@@ -1287,6 +1287,96 @@ fn handleSplit(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std
         // activating-only sources (adversarial-audit finding, 2026-08-02).
         const source_is_active = src_status.effective > 0 or src_status.activating > 0;
 
+        // ── Canonical branch A: FULL DRAIN (any activation status) ───────────────
+        // CITATION BASIS (2026-08-02 audit): every processor.rs line number in this arm
+        // is v5.0.0. A checkout of the stake program at program@v5.1.0 is +10 lines through
+        // this region, so read the canonical source with
+        // `git show program@v5.0.0:program/src/processor.rs`, NOT whatever the working tree
+        // happens to be on. (The first draft of this comment cited a v5.1.0 working tree and
+        // was 10 lines high throughout; the branch-B citations below were always v5.0.0 and
+        // are unchanged.)
+        // Core-BPF stake program@v5.0.0 (6ed2c60c) processor.rs:575-618. When
+        // split_lamports == the source's ENTIRE balance, canonical hands the destination
+        // the whole source state with only meta.rent_exempt_reserve replaced
+        // (processor.rs:576-594) — delegation.stake is COPIED VERBATIM, never recomputed
+        // — then resizes the source to 0 bytes and relocates the lamports. This is a
+        // SINGLE arm for EVERY full drain: canonical's `split_lamports ==
+        // source_lamport_balance` block is entered before the !is_active_or_activating
+        // branch (:621) and before the redistribute branch (:667), so activation status
+        // never selects a different code path here — it only selects the value of the
+        // `delegation` term used by the two guards, which is the source's stake S when
+        // the source is active-or-activating and 0 otherwise (processor.rs:581-585):
+        //   * dest deficit (processor.rs:596-602): (D +| L) -| delegation >= dst reserve;
+        //   * min_delegation (processor.rs:604-606): applied to `delegation` ONLY when
+        //     is_active_or_activating — never on an inactive drain;
+        //   * no source-side rent guard exists on branch A at all — the source is emptied.
+        // dest delegation.stake is the source's stake VERBATIM in BOTH cases: the
+        // `delegation` term feeds the guards only, never the serialized bytes.
+        // The legacy path below instead wrote dst delegation.stake = split_lamports -|
+        // src_rent, demanded D + L >= dst_reserve + min_delegation, and applied
+        // min_delegation unconditionally: it silently no-ops canonical-ACCEPTED drains
+        // (e.g. an inactive 1.0 SOL source) and writes the wrong dest stake for any
+        // source whose lamports != src_rent + delegation.stake. Audit findings F2
+        // (inactive, fixed 2026-08-02) and F13 (active/activating, fixed here by
+        // unifying the two into this one arm) — the 2026-08-02 stake-split audit; same
+        // carrier class as slot 425636293. The legacy full-drain math below is now DEAD: every
+        // src_remaining == 0 input returns from this arm, whatever its activation status.
+        if (src_remaining == 0) {
+            // processor.rs:581-585. NOTE this feeds the two GUARDS below only — the
+            // destination's serialized delegation.stake is the verbatim copy either way.
+            const delegation_for_checks: u64 = if (source_is_active) src_delegation_stake else 0;
+
+            // processor.rs:596-602. Zig's `+|`/`-|` are both additive-precedence and
+            // left-associative, so this is (D +| L) -| delegation — the same order as
+            // canonical's saturating_add(split).saturating_sub(delegation); parenthesised
+            // anyway because the two saturations are NOT commutative.
+            if ((dst_acct.lamports +| split_lamports) -| delegation_for_checks < dst_rent_exempt_reserve) return;
+
+            // processor.rs:604-606 — gated on is_active_or_activating, and applied to the
+            // source's delegated stake S, NOT to the legacy `split_lamports -| src_rent`.
+            if (source_is_active and delegation_for_checks < min_delegation) return;
+
+            const a_dst = alloc.alloc(u8, stake_state.STAKE_STATE_SZ) catch return;
+            @memcpy(a_dst, src_acct.data[0..stake_state.STAKE_STATE_SZ]);
+            stake_state.writeU64(a_dst, stake_state.Offsets.rent_exempt_reserve, dst_rent_exempt_reserve);
+
+            // Source: canonical calls resize(0) (processor.rs:609); Vexor writes disc=0
+            // over an otherwise verbatim 200-byte copy, at 0 lamports. Keeping the
+            // 200-byte shape (rather than a 0-length write) is the pre-existing,
+            // deliberate Vexor behavior on every drain path in this handler.
+            //
+            // ⚠ THIS IS AN OBSERVABLE DIVERGENCE — audit finding F14 (2026-08-02). An
+            // earlier version of this comment called it unobservable because accountLtHash
+            // returns the IDENTITY element for a zero-lamport account (bank.zig:1090).
+            // That is TRUE and it is NOT sufficient: lthash identity covers only the
+            // drained account's contribution to bank_hash. It says nothing about a READBACK
+            // of the account later in the same transaction/slot, before it is purged. A
+            // later instruction that reads the drained account sees data.len == 200 where
+            // canonical — having resized — sees 0.
+            //
+            // Concrete, reachable in ONE transaction: drain A (this arm), then
+            // `Split C -> A` in a following instruction. A now looks like a valid Split
+            // DESTINATION — Uninitialized (disc=0), exactly 200 bytes, stake-program-owned
+            // — so the destination-shape check at :1223 (`dst_acct.data.len !=
+            // STAKE_STATE_SZ`) PASSES here and the second split is executed. Canonical
+            // sees a 0-byte account and rejects with InvalidAccountData, aborting the whole
+            // transaction. Accept-vs-reject, hence bank_hash.
+            //
+            // Applies to the OTHER drain path in this handler too: the Initialized arm below
+            // emits the same 200-byte disc=0 residue. (The third site F14 originally listed,
+            // the legacy full-drain arm, no longer exists — F13 folded it into this one.)
+            // F14 is recorded, not fixed here — the fix is a 0-length write on both, which
+            // also needs the write pipeline's zero-length/purge handling verified.
+            // Recorded as F14 of the 2026-08-02 stake-split audit.
+            const a_src = alloc.alloc(u8, src_acct.data.len) catch return;
+            @memcpy(a_src, src_acct.data);
+            stake_state.writeU32(a_src, stake_state.Offsets.discriminant, 0);
+
+            emitWrite(bank, src_key, src_acct.owner.data, src_acct.lamports, src_acct.executable, src_acct.data, src_remaining, src_acct.owner.data, src_acct.executable, src_acct.rent_epoch, a_src);
+            emitWrite(bank, dst_key, dst_acct.owner.data, dst_acct.lamports, dst_acct.executable, dst_acct.data, dst_acct.lamports + split_lamports, dst_acct.owner.data, dst_acct.executable, dst_acct.rent_epoch, a_dst);
+            return;
+        }
+
         // ── Canonical branch B: source neither effective nor activating ──────────
         // Core-BPF stake program@v5.0.0 (6ed2c60c) processor.rs:621-655. When the
         // source's activation status is (effective==0 AND activating==0) — e.g. it was
@@ -1302,15 +1392,11 @@ fn handleSplit(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std
         // differed by 1 lamport collapsed to byte-identical post-states — an identity
         // impossible under canonical no-write semantics. See the 2026-08-01
         // divergence at slot 425636293.
-        // Full drain (src_remaining == 0) is canonical branch A and stays on the legacy
-        // path below. ⚠ That arm is NOT numerically convergent (2026-08-02 audit,
-        // both auditors): canonical branch A copies delegation.stake to the dest
-        // VERBATIM and applies min_delegation only when is_active_or_activating,
-        // while the legacy path writes split_lamports -| src_rent and checks
-        // min_delegation unconditionally — divergent for any inactive source whose
-        // lamports != rent + delegation.stake (e.g. after a transfer-in or partial
-        // withdraw). Reachable, same carrier class as 425636293; open S0 gap, needs
-        // its own fix branch (one-outstanding-fix rule).
+        // The `src_remaining != 0` term is now redundant-but-kept: EVERY full drain,
+        // whatever its activation status, returned from the unified branch-A arm above
+        // (audit F2 + F13, fixed 2026-08-02). Kept because it states branch B's canonical
+        // precondition — processor.rs reaches :621 only after the :575 full-split block
+        // has returned — rather than relying on a reader tracing the arm above.
         if (src_remaining != 0 and src_status.effective == 0 and src_status.activating == 0) {
             if (src_remaining < rentExemptMinimumBalance(src_acct.data.len)) return;
             if (dst_acct.lamports +| split_lamports < dst_rent_exempt_reserve) return;
@@ -1327,6 +1413,11 @@ fn handleSplit(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std
             return;
         }
 
+        // ── PARTIAL SPLITS ONLY, from here to the end of this arm ────────────────
+        // Every full drain (src_remaining == 0) returned from the unified branch-A arm
+        // above, for ANY activation status (audit F2 + F13). The `src_remaining != 0`
+        // terms below are therefore redundant-but-kept, as guard-condition documentation.
+        //
         // validateSplitAmount (sig lib.zig:780-823; vex_bpf2 stake_program.zig:1727-1735).
         // source_remaining_balance == 0 (full drain) is exempt from this check; otherwise the
         // source must retain rent + min_delegation. Saturating `+|` (sig lib.zig:803's literal
@@ -1372,12 +1463,13 @@ fn handleSplit(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std
         // something to introduce for this guard either.
         if (source_is_active and src_remaining != 0 and dst_acct.lamports < dst_rent_exempt_reserve) return;
 
-        // Item 2 — destination deficit check (sig lib.zig:819-823), unconditional (both the
-        // full-drain and partial-split branches below): reject when the split amount can't
-        // cover what the destination still needs to reach rent-exemption + min_delegation,
-        // net of what it already holds. Replaces the old `split_lamports -| reserve < min`
-        // form, which assumed an unfunded (0-lamport) destination and was wrong for any
-        // prefunded one.
+        // Item 2 — destination deficit check (sig lib.zig:819-823). Now reached ONLY by the
+        // partial split: reject when the split amount can't cover what the destination still
+        // needs to reach rent-exemption + min_delegation, net of what it already holds.
+        // Replaces the old `split_lamports -| reserve < min` form, which assumed an unfunded
+        // (0-lamport) destination and was wrong for any prefunded one. This is NOT canonical
+        // branch A's deficit predicate — that one lives in the arm above and is
+        // `(D +| L) -| delegation >= R` (processor.rs:596-602).
         const destination_minimum_balance = dst_rent_exempt_reserve +| min_delegation;
         const destination_balance_deficit = destination_minimum_balance -| dst_acct.lamports;
         if (split_lamports < destination_balance_deficit) return;
@@ -1389,39 +1481,33 @@ fn handleSplit(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std
         const src_data = alloc.alloc(u8, src_acct.data.len) catch return;
         @memcpy(src_data, src_acct.data);
 
-        var remaining_stake_delta: u64 = undefined;
-        var split_stake_amount: u64 = undefined;
+        // Item 1(a) — partial split (sig lib.zig:892-899; vex_bpf2 :1744-1746). BEFORE
+        // computing the amounts: reject if the source's post-split delegation would fall
+        // under min_delegation (StakeError::InsufficientDelegation upstream). Replaces
+        // the old post-hoc `remaining_stake < min and remaining_stake > 0` escape-hatch
+        // pair, which let a zero-remaining or zero-split-amount partial split through.
+        if (src_delegation_stake -| split_lamports < min_delegation) return;
 
-        if (src_remaining == 0) {
-            // Item 5 — full drain (sig lib.zig:884-887; vex_bpf2 :1740-1742): both amounts
-            // collapse to the same value, net of the SOURCE's own reserve (not the
-            // destination's). Previously this branch never wrote dst delegation.stake at
-            // all — the dest silently inherited the source's full PRE-split stake via the
-            // @memcpy above. Now explicitly overridden below, same as the partial branch.
-            remaining_stake_delta = split_lamports -| src_rent;
-            split_stake_amount = remaining_stake_delta;
-        } else {
-            // Item 1(a) — partial split (sig lib.zig:892-899; vex_bpf2 :1744-1746). BEFORE
-            // computing the amounts: reject if the source's post-split delegation would fall
-            // under min_delegation (StakeError::InsufficientDelegation upstream). Replaces
-            // the old post-hoc `remaining_stake < min and remaining_stake > 0` escape-hatch
-            // pair, which let a zero-remaining or zero-split-amount partial split through.
-            if (src_delegation_stake -| split_lamports < min_delegation) return;
+        // Stake::split: the SOURCE loses the full delta, not the split amount (sig
+        // state.zig:72-77).
+        const remaining_stake_delta = split_lamports;
+        // Canonical: the destination's PRE-EXISTING lamports offset the reserve it must
+        // retain — a dest already funded to rent-exemption consumes NONE of the split,
+        // so the full amount becomes delegation.
+        const split_stake_amount = split_lamports -| (dst_rent_exempt_reserve -| dst_acct.lamports);
 
-            // Stake::split: the SOURCE loses the full delta, not the split amount (sig
-            // state.zig:72-77).
-            remaining_stake_delta = split_lamports;
-            // Canonical: the destination's PRE-EXISTING lamports offset the reserve it must
-            // retain — a dest already funded to rent-exemption consumes NONE of the split,
-            // so the full amount becomes delegation.
-            split_stake_amount = split_lamports -| (dst_rent_exempt_reserve -| dst_acct.lamports);
-        }
-
-        // Item 1(b) — unconditional, both branches (sig lib.zig:902-905; vex_bpf2 :1748).
+        // Item 1(b) (sig lib.zig:902-905; vex_bpf2 :1748). Was "unconditional, both
+        // branches"; with the full-drain branch gone it applies to the partial split only.
         if (split_stake_amount < min_delegation) return;
 
-        // Stake::split's insufficient_stake guard (sig state.zig:72-75), then the decrement —
-        // applies to both branches now that remaining_stake_delta is computed in both.
+        // Stake::split's insufficient_stake guard (sig state.zig:72-75), then the decrement.
+        // ⚠ RETAINED BUT PROVABLY DEAD (2026-08-02, F13): with remaining_stake_delta ==
+        // split_lamports on the only branch that reaches here, the guard immediately above
+        // (`src_delegation_stake -| split_lamports < min_delegation`, min_delegation > 0)
+        // already rejects every input for which split_lamports > src_delegation_stake. It
+        // was live only via the deleted full-drain formula (split_lamports -| src_rent,
+        // which could exceed the delegation). Kept as the sig state.zig:72-75 structural
+        // mirror and as a fail-closed backstop if the amounts are ever recomputed.
         if (remaining_stake_delta > src_delegation_stake) return;
         const remaining_stake = src_delegation_stake - remaining_stake_delta;
         stake_state.writeU64(src_data, stake_state.Offsets.delegation_stake, remaining_stake);
@@ -1430,14 +1516,10 @@ fn handleSplit(ix: anytype, ptx: anytype, bank: anytype, db: anytype, alloc: std
         stake_state.writeU64(dst_data, stake_state.Offsets.rent_exempt_reserve, dst_rent_exempt_reserve);
         stake_state.writeU64(dst_data, stake_state.Offsets.delegation_stake, split_stake_amount);
 
-        if (src_remaining == 0) {
-            // Source becomes uninitialized. Item 6 — canonical writes ONLY the 4-byte
-            // discriminant and PRESERVES bytes 4..200 (sig lib.zig:971-973; vex_bpf2
-            // stake_program.zig:1796); the delegation_stake write immediately above already
-            // put the correct post-split value in that preserved region, so no further
-            // zeroing is needed or correct.
-            stake_state.writeU32(src_data, stake_state.Offsets.discriminant, 0);
-        }
+        // (The former `if (src_remaining == 0) writeU32(disc, 0)` block that stood here —
+        // Item 6, sig lib.zig:971-973 — is gone with the rest of the legacy full-drain
+        // math: the source is never emptied on this path any more. The equivalent write
+        // lives in the unified branch-A arm above, and on the Initialized arm below.)
 
         // Emit source write
         emitWrite(bank, src_key, src_acct.owner.data, src_acct.lamports, src_acct.executable, src_acct.data, src_remaining, src_acct.owner.data, src_acct.executable, src_acct.rent_epoch, src_data);
@@ -2717,10 +2799,14 @@ const StakeTestIx = struct {
 };
 
 const StakeTestEpochSchedule = struct {
+    /// Defaults to 0 so every pre-existing KAT that constructs this by `.{}` keeps the
+    /// epoch it was written against. The Split branch-A integration KATs override it:
+    /// an ACTIVE source needs target_epoch > activation_epoch (bank.zig:2885-2887
+    /// returns activating-only at equality, effective-0), which epoch 0 cannot express.
+    epoch: u64 = 0,
     pub fn getEpoch(self: *const StakeTestEpochSchedule, slot: u64) u64 {
-        _ = self;
         _ = slot;
-        return 0;
+        return self.epoch;
     }
 };
 
@@ -3133,8 +3219,12 @@ test "split item4: rentExemptMinimumBalance() pinned to the constant production 
     try testing.expectEqual(@as(u64, 2_282_880), rentExemptMinimumBalance(stake_state.STAKE_STATE_SZ));
 }
 
-test "split item5: full-drain branch writes dst delegation.stake = split_lamports -| src_rent (not inherited pre-split stake)" {
+test "split item5: ACTIVE full-drain branch writes dst delegation.stake = split_lamports -| src_rent (not inherited pre-split stake)" {
     const testing = std.testing;
+    // ⚠ SCOPE (2026-08-02, audit F2): this pins the LEGACY full-drain formula, which after
+    // the F2 fix is reached only by an ACTIVE-or-activating source. Inactive full drains
+    // now take the canonical branch-A arm (processor.rs:575-618) and copy delegation.stake
+    // verbatim — see the "split branch A" KATs below.
     const RESERVE: u64 = 2_282_880;
     const SRC_DELEGATION_STAKE_PRE: u64 = 50_000_000_000; // pre-split source delegation
 
@@ -3220,7 +3310,9 @@ test "split branch B: source neither effective nor activating — no-write sourc
         try testing.expect(src_remaining >= RESERVE); // branch B: accept
         // the legacy guard this window used to die on (rent + min_delegation):
         try testing.expect(src_remaining < RESERVE +| MIN_DELEGATION); // legacy: reject
-        // full drain stays OFF branch B (canonical branch A, legacy path):
+        // full drain stays OFF branch B — it is canonical branch A, served since the F2
+        // fix (2026-08-02) by the inactive branch-A arm above branch B, or by the legacy
+        // path when the source is active (audit F13):
         try testing.expect(!(src_lamports - src_lamports != 0));
     }
 
@@ -3282,4 +3374,852 @@ test "split branch B: source neither effective nor activating — no-write sourc
         try testing.expect(dst_lamports +| (RESERVE - 1_000_000) >= RESERVE); // exact top-up: accept
         try testing.expect(dst_lamports +| (RESERVE - 1_000_001) < RESERVE); // 1 short: reject
     }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical branch A — INACTIVE source (audit finding F2) plus the ACTIVE/activating
+// half unified into the same arm (audit finding F13), both 2026-08-02.
+//
+// 🔴 THESE FOUR ARE ARITHMETIC MIRRORS, NOT COVERAGE (audit F10, restated 2026-08-02
+// evening). They re-derive the formulas by hand; NOT ONE of them calls handleSplit, so
+// deleting the branch-A arm from the handler leaves all four passing. The real coverage
+// is the integration KAT below ("split branch A INTEGRATION"), which drives handleSplit
+// through mocks and IS a deletion detector. Keep these as a by-value pin on the formulas
+// and on the legacy values they must not regress to — nothing more.
+//
+// Byte/arithmetic mirrors of the branch-A arm added to handleSplit — Core-BPF stake
+// program@v5.0.0 (6ed2c60c) processor.rs:575-618, with `delegation` == 0 because the
+// source is neither effective nor activating (processor.rs:581-585).
+// Audit: the 2026-08-02 stake-split audit.
+// ---------------------------------------------------------------------------
+
+test "split branch A (arithmetic mirror): inactive full drain copies delegation.stake VERBATIM (F2 delta (a))" {
+    const testing = std.testing;
+    const RESERVE: u64 = 2_282_880;
+
+    // The audit's trigger shape: an inactive source holding 3 SOL of lamports but only
+    // 0.5 SOL of delegation (lamports != src_rent + delegation.stake — e.g. after a
+    // transfer-in or a partial withdraw).
+    const SRC_LAMPORTS: u64 = 3_000_000_000;
+    const SRC_STAKE: u64 = 500_000_000;
+    const split_lamports: u64 = SRC_LAMPORTS; // full drain
+    const src_rent: u64 = RESERVE;
+
+    var src_data: [stake_state.STAKE_STATE_SZ]u8 = undefined;
+    for (&src_data, 0..) |*b, i| b.* = @truncate(0x5A ^ i); // non-trivial tail
+    stake_state.writeU32(&src_data, stake_state.Offsets.discriminant, 2);
+    stake_state.writeU64(&src_data, stake_state.Offsets.rent_exempt_reserve, src_rent);
+    stake_state.writeU64(&src_data, stake_state.Offsets.delegation_stake, SRC_STAKE);
+    var src_pre: [stake_state.STAKE_STATE_SZ]u8 = undefined;
+    @memcpy(&src_pre, &src_data);
+
+    // Branch-A dest, verbatim from production: full copy, only rent_exempt_reserve replaced.
+    var a_dst: [stake_state.STAKE_STATE_SZ]u8 = undefined;
+    @memcpy(&a_dst, &src_data);
+    stake_state.writeU64(&a_dst, stake_state.Offsets.rent_exempt_reserve, RESERVE);
+
+    // (a) delegation.stake copied VERBATIM — canonical processor.rs:576-594.
+    try testing.expectEqual(SRC_STAKE, stake_state.readU64(&a_dst, stake_state.Offsets.delegation_stake).?);
+    // Everything outside rent_exempt_reserve is byte-identical to the source.
+    try testing.expectEqualSlices(u8, src_pre[0..stake_state.Offsets.rent_exempt_reserve], a_dst[0..stake_state.Offsets.rent_exempt_reserve]);
+    try testing.expectEqualSlices(u8, src_pre[stake_state.Offsets.rent_exempt_reserve + 8 ..], a_dst[stake_state.Offsets.rent_exempt_reserve + 8 ..]);
+
+    // The pre-fix legacy formula wrote split_lamports -| src_rent instead — 2_997_717_120
+    // here, off by nearly 2.5 SOL of delegated stake. Pinned as a literal so a regression
+    // back to the legacy form is caught by value, not just by inequality.
+    const legacy_split_stake_amount = split_lamports -| src_rent;
+    try testing.expectEqual(@as(u64, 2_997_717_120), legacy_split_stake_amount);
+    try testing.expect(legacy_split_stake_amount != SRC_STAKE);
+
+    // Source-side: production emits a verbatim copy with only the discriminant zeroed, at
+    // 0 lamports. Canonical resize(0)s instead; both are unobservable because
+    // accountLtHash returns the identity element for a zero-lamport account (bank.zig:1090).
+    var a_src: [stake_state.STAKE_STATE_SZ]u8 = undefined;
+    @memcpy(&a_src, &src_data);
+    stake_state.writeU32(&a_src, stake_state.Offsets.discriminant, 0);
+    try testing.expectEqual(@as(u32, 0), stake_state.readU32(&a_src, 0).?);
+    try testing.expectEqualSlices(u8, src_pre[4..], a_src[4..]); // tail untouched
+    try testing.expectEqual(@as(u64, 0), SRC_LAMPORTS - split_lamports); // src_remaining == 0
+}
+
+test "split branch A (arithmetic mirror): inactive 1.0 SOL full drain is ACCEPTED — min_delegation is gated on is_active_or_activating (F2 delta (b))" {
+    const testing = std.testing;
+    const RESERVE: u64 = 2_282_880;
+    const MIN_DELEGATION: u64 = 1_000_000_000;
+
+    // Canonical processor.rs:604-606 — `if is_active_or_activating && delegation < minimum_delegation`.
+    // Inactive source ⇒ the guard is not evaluated at all.
+    const SRC_LAMPORTS: u64 = 1_000_000_000;
+    const split_lamports: u64 = SRC_LAMPORTS; // full drain
+    const dst_lamports: u64 = 0;
+    const src_rent: u64 = RESERVE;
+    const is_active_or_activating = false;
+    const delegation: u64 = 0; // processor.rs:581-585: 0 unless active-or-activating
+
+    // Branch A's only guard on this arm (processor.rs:596-602): D +| L -| delegation >= R.
+    const dest_ok = (dst_lamports +| split_lamports) -| delegation >= RESERVE;
+    try testing.expect(dest_ok); // canonical: ACCEPT
+    // min_delegation: gated off.
+    try testing.expect(!(is_active_or_activating and delegation < MIN_DELEGATION));
+
+    // The two legacy guards that used to reject this exact drain silently (bare `return`):
+    const legacy_deficit = (RESERVE +| MIN_DELEGATION) -| dst_lamports;
+    try testing.expect(split_lamports < legacy_deficit); // legacy: reject on the deficit check
+    const legacy_split_stake_amount = split_lamports -| src_rent; // 997_717_120
+    try testing.expectEqual(@as(u64, 997_717_120), legacy_split_stake_amount);
+    try testing.expect(legacy_split_stake_amount < MIN_DELEGATION); // legacy: reject again
+}
+
+test "split branch A (arithmetic mirror): inactive dest deficit boundary is D + L >= R, not L >= R + min - D (F2 delta (c))" {
+    const testing = std.testing;
+    const RESERVE: u64 = 2_282_880;
+    const MIN_DELEGATION: u64 = 1_000_000_000;
+    const delegation: u64 = 0; // inactive source
+
+    // Exactly at the boundary: D + L == R accepts.
+    {
+        const dst_lamports: u64 = 1_000_000;
+        const split_lamports: u64 = RESERVE - 1_000_000; // D + L == R exactly
+        try testing.expect((dst_lamports +| split_lamports) -| delegation >= RESERVE); // accept
+    }
+    // One lamport short rejects.
+    {
+        const dst_lamports: u64 = 1_000_000;
+        const split_lamports: u64 = RESERVE - 1_000_001;
+        try testing.expect((dst_lamports +| split_lamports) -| delegation < RESERVE); // reject
+    }
+    // The legacy form demanded L >= R + min - D — a full SOL more than canonical, so a
+    // canonical-accepted drain of just over the reserve was silently dropped.
+    {
+        const dst_lamports: u64 = 1_000_000;
+        const split_lamports: u64 = RESERVE - 1_000_000;
+        const legacy_deficit = (RESERVE +| MIN_DELEGATION) -| dst_lamports;
+        try testing.expect(split_lamports < legacy_deficit); // legacy: reject
+        try testing.expectEqual(RESERVE + MIN_DELEGATION - 1_000_000, legacy_deficit);
+    }
+}
+
+test "split branch A (arithmetic mirror): ACTIVE full drain is canonical too — the legacy formulas it replaced, pinned by value (audit F13)" {
+    const testing = std.testing;
+    const RESERVE: u64 = 2_282_880;
+    const MIN_DELEGATION: u64 = 1_000_000_000;
+
+    // ⚠ REWRITTEN 2026-08-02 (F13). This test previously asserted that the ACTIVE full
+    // drain "is UNCHANGED by the F2 fix" and pinned the LEGACY arithmetic as current.
+    // Because it never calls handleSplit it would have stayed green through the F13 fix
+    // while documenting the divergent behavior as the intended one — the exact failure
+    // mode audit F10 named for the mirror KATs. It now pins the CANONICAL values and
+    // keeps the legacy ones only as by-value regression detectors. Real coverage is the
+    // "split branch A INTEGRATION (F13-*)" tests, which drive the handler.
+    const SRC_STAKE: u64 = 50_000_000_000;
+    const src_rent: u64 = RESERVE;
+    const dst_lamports: u64 = 0;
+
+    // Ordinary shape (L == src_rent + S): canonical and legacy AGREE on the dest stake,
+    // which is why F13 stayed invisible on live traffic for so long.
+    {
+        const SRC_LAMPORTS: u64 = SRC_STAKE + RESERVE;
+        const split_lamports: u64 = SRC_LAMPORTS;
+        // Canonical (processor.rs:581-606): delegation == S, dest stake == S verbatim.
+        try testing.expect((dst_lamports +| split_lamports) -| SRC_STAKE >= RESERVE); // accept
+        try testing.expect(!(SRC_STAKE < MIN_DELEGATION)); // gated min check: passes
+        try testing.expectEqual(SRC_STAKE, split_lamports -| src_rent); // legacy agrees here
+    }
+
+    // Free lamports beyond rent + stake: the legacy formula over-credits the destination
+    // by exactly the free amount. Pinned by value.
+    {
+        const free_lamports: u64 = 7_000_000;
+        const SRC_LAMPORTS: u64 = SRC_STAKE + RESERVE + free_lamports;
+        const legacy_dst_stake = SRC_LAMPORTS -| src_rent;
+        try testing.expectEqual(SRC_STAKE + free_lamports, legacy_dst_stake);
+        try testing.expect(legacy_dst_stake != SRC_STAKE); // canonical writes SRC_STAKE
+        // Canonical still ACCEPTS this drain: (0 + L) - S == RESERVE + free >= RESERVE.
+        try testing.expect((dst_lamports +| SRC_LAMPORTS) -| SRC_STAKE >= RESERVE);
+    }
+
+    // The two guards canonical replaced, pinned so a regression to either is caught by
+    // value: deficit `D + L >= R + min` (vs `(D +| L) -| S >= R`) and an UNCONDITIONAL
+    // min check on `L -| src_rent` (vs a gated one on S).
+    {
+        const SRC_LAMPORTS: u64 = 1_500_000_000;
+        const S: u64 = 2_000_000_000; // under-funded: L < src_rent + S
+        const legacy_deficit = (RESERVE +| MIN_DELEGATION) -| dst_lamports;
+        try testing.expectEqual(@as(u64, 1_002_282_880), legacy_deficit);
+        try testing.expect(!(SRC_LAMPORTS < legacy_deficit)); // legacy: ACCEPT
+        try testing.expectEqual(@as(u64, 1_497_717_120), SRC_LAMPORTS -| src_rent);
+        // Canonical: (0 + 1.5e9) -| 2e9 == 0 < RESERVE ⇒ REJECT. Opposite verdict.
+        try testing.expectEqual(@as(u64, 0), (dst_lamports +| SRC_LAMPORTS) -| S);
+        try testing.expect((dst_lamports +| SRC_LAMPORTS) -| S < RESERVE);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// INTEGRATION KAT — canonical branch A driven through the REAL handleSplit
+// ---------------------------------------------------------------------------
+// Audit finding F10 / TASK 1 (2026-08-02 evening): the four branch-A KATs above are
+// arithmetic MIRRORS — they re-derive the formulas by hand and never call the handler,
+// so deleting the branch-A arm leaves all four green. This block closes that hole by
+// calling `handleSplit(ix, ptx, bank, db, alloc)` directly through minimal duck-typed
+// mocks (same technique as the P0-2 AuthorizeWithSeed KATs above: private `fn`,
+// same-file test access, mock ONLY the surface the handler touches — bank.slot,
+// bank.epoch_schedule.getEpoch, bank.ancestors, bank.pending_writes.items,
+// bank.collectWrite, bank.readStakeHistory, bank.getNewRateActivationEpoch,
+// db.getAccountInSlot). Every emitted write is captured and asserted BY KEY.
+//
+// DELETION DETECTOR — verified 2026-08-02 by reverting the arm in the working tree:
+//   (a) full drain, verbatim stake   → arm removed: 0 writes (legacy returns at
+//                                      `remaining_stake_delta > src_delegation_stake`)
+//   (b) under-funded source          → arm removed: 2 writes, dest stake 1_497_717_120
+//                                      instead of 2_000_000_000  ← VALUE detector
+//   (c) inactive 1.0 SOL full drain  → arm removed: 0 writes (legacy dest-deficit guard)
+//   (d) accept half of the boundary  → arm removed: 0 writes; reject half passes either
+//                                      way (it is a boundary pin, not a detector)
+//
+// ⚠ THE FOUR LINES ABOVE ARE A HISTORICAL RECORD OF THE 2026-08-02 F2 RUN — DO NOT READ
+// THEM AS THE MECHANISM THAT WOULD FIRE TODAY (F13, same day, later). F13 deleted the
+// legacy full-drain math, which is where (a)'s and (b)'s stated mechanisms lived:
+// `remaining_stake_delta > src_delegation_stake` and the dest stake `split_lamports -|
+// src_rent` were both reachable only through it. Deleting the arm NOW drops all four
+// inputs onto the partial-split path instead, where the FIRST guard
+// (`src_delegation_stake -| split_lamports < min_delegation`) rejects every one of them —
+// so all four would still fail, but (b) would fail as a ZERO-WRITE case rather than on
+// the 1_497_717_120 value. Derived from the code, NOT re-run. The RE-RUN deletion proof
+// against the current arm is in the F13 block at the end of this file.
+// ---------------------------------------------------------------------------
+
+const SPLIT_AUTH_KEY = [_]u8{0xA0} ** 32;
+const SPLIT_SRC_KEY = [_]u8{0x01} ** 32;
+const SPLIT_DST_KEY = [_]u8{0x02} ** 32;
+
+const SplitTestEntry = struct {
+    key: [32]u8,
+    account: StakeTestAccount,
+};
+
+const SplitTestDb = struct {
+    entries: []const SplitTestEntry,
+
+    pub fn getAccountInSlot(self: *const SplitTestDb, pk: *const core.Pubkey, slot: u64, ancestors: []const u64) ?StakeTestAccount {
+        _ = slot;
+        _ = ancestors;
+        for (self.entries) |e| {
+            if (std.mem.eql(u8, &pk.data, &e.key)) return e.account;
+        }
+        return null;
+    }
+};
+
+const SplitCapturedWrite = struct {
+    key: [32]u8,
+    lamports: u64,
+    data: []const u8,
+};
+
+const SplitTestBank = struct {
+    alloc: std.mem.Allocator,
+    slot: u64 = 1,
+    epoch_schedule: StakeTestEpochSchedule = .{}, // getEpoch() → 0
+    // Same constraint as StakeTestBank: readOverlayed hardcodes bank_mod.AccountWrite,
+    // so this field must use the real type by name. Always empty here — no in-slot
+    // pending writes to overlay, so no bank_mod.Bank construction is needed.
+    pending_writes: struct { items: []const bank_mod.AccountWrite = &.{} } = .{},
+    writes: std.ArrayListUnmanaged(SplitCapturedWrite) = .{},
+
+    pub fn ancestors(self: *const SplitTestBank) []const u64 {
+        _ = self;
+        return &.{};
+    }
+    pub fn getNewRateActivationEpoch(self: *SplitTestBank) u64 {
+        _ = self;
+        return 0;
+    }
+    /// No StakeHistory sysvar in these fixtures. Returning an ERROR (rather than an
+    /// allocated empty slice) makes the handler take its own
+    /// `catch &[_]StakeHistoryEntry{}` fallback — the production code path for a bank
+    /// whose sysvar is absent — and allocates nothing, so the testing allocator's leak
+    /// check stays meaningful. (An `allocator.alloc(T, 0)` here would NOT be freed:
+    /// handleSplit's `defer` is guarded on `history.len > 0`.)
+    pub fn readStakeHistory(self: *SplitTestBank, allocator: std.mem.Allocator) ![]bank_mod.Bank.StakeHistoryEntry {
+        _ = self;
+        _ = allocator;
+        return error.StakeHistoryUnavailable;
+    }
+    pub fn collectWrite(self: *SplitTestBank, write: anytype) !void {
+        try self.writes.append(self.alloc, .{
+            .key = write.pubkey.data,
+            .lamports = write.lamports,
+            .data = write.data,
+        });
+    }
+
+    /// The handler allocates each write's `.data` and the real bank takes ownership;
+    /// here the test owns it.
+    fn deinitFreeingWrites(self: *SplitTestBank) void {
+        for (self.writes.items) |w| self.alloc.free(w.data);
+        self.writes.deinit(self.alloc);
+    }
+    /// Assert by KEY, not by emission order.
+    fn find(self: *const SplitTestBank, key: [32]u8) ?SplitCapturedWrite {
+        for (self.writes.items) |w| {
+            if (std.mem.eql(u8, &w.key, &key)) return w;
+        }
+        return null;
+    }
+};
+
+/// 200-byte StakeStateV2::Stake whose activation_epoch == deactivation_epoch == 1 —
+/// getStakeActivationStatus returns (0,0,0) for ANY target epoch and history, which is
+/// the INACTIVE precondition branch A keys on, and the shape of the slot-425636293
+/// carrier accounts. The tail is filled with a non-trivial pattern first so a
+/// "dest is a verbatim copy of the source" assertion has something to bite on.
+fn buildInactiveStakeSource(
+    alloc: std.mem.Allocator,
+    staker: [32]u8,
+    delegation_stake: u64,
+    stored_rent_exempt_reserve: u64,
+) ![]u8 {
+    return buildStakeSourceWithEpochs(alloc, staker, delegation_stake, stored_rent_exempt_reserve, 1, 1);
+}
+
+/// Same 200-byte Stake fixture with caller-chosen activation/deactivation epochs, so the
+/// F13 KATs can build an ACTIVE (`activation_epoch < bank epoch`, empty history ⇒
+/// bank.zig:2920-2922 "initial entry missing = fully activated" ⇒ effective == stake) or
+/// an ACTIVATING-ONLY (`activation_epoch == bank epoch` ⇒ bank.zig:2885-2887 returns
+/// effective 0, activating == stake) source without mocking a StakeHistory sysvar.
+fn buildStakeSourceWithEpochs(
+    alloc: std.mem.Allocator,
+    staker: [32]u8,
+    delegation_stake: u64,
+    stored_rent_exempt_reserve: u64,
+    activation_epoch: u64,
+    deactivation_epoch: u64,
+) ![]u8 {
+    const data = try alloc.alloc(u8, stake_state.STAKE_STATE_SZ);
+    for (data, 0..) |*b, i| b.* = @truncate(0x5A ^ i);
+    stake_state.writeU32(data, stake_state.Offsets.discriminant, 2); // Stake
+    stake_state.writeU64(data, stake_state.Offsets.rent_exempt_reserve, stored_rent_exempt_reserve);
+    stake_state.writePubkey(data, stake_state.Offsets.staker, staker);
+    stake_state.writeU64(data, stake_state.Offsets.delegation_stake, delegation_stake);
+    stake_state.writeU64(data, stake_state.Offsets.activation_epoch, activation_epoch);
+    stake_state.writeU64(data, stake_state.Offsets.deactivation_epoch, deactivation_epoch);
+    return data;
+}
+
+/// Uninitialized (disc=0), exactly 200 bytes — the only shape handleSplit accepts as a
+/// Split destination.
+fn buildUninitializedDest(alloc: std.mem.Allocator) ![]u8 {
+    const data = try alloc.alloc(u8, stake_state.STAKE_STATE_SZ);
+    @memset(data, 0);
+    return data;
+}
+
+fn buildSplitIxData(alloc: std.mem.Allocator, lamports: u64) ![]u8 {
+    const buf = try alloc.alloc(u8, 12);
+    std.mem.writeInt(u32, buf[0..4], 3, .little); // Split
+    std.mem.writeInt(u64, buf[4..12], lamports, .little);
+    return buf;
+}
+
+/// Drive the REAL handleSplit over a two-account fixture. Accounts are laid out
+/// authority(0) / source(1) / destination(2) with num_required_sigs = 1, so only the
+/// authority signs — `ix.account_indices = {1, 2, 0}` maps them into the handler's
+/// [source, destination, staker] order.
+fn runHandleSplit(
+    alloc: std.mem.Allocator,
+    bank: *SplitTestBank,
+    src_data: []const u8,
+    src_lamports: u64,
+    dst_data: []const u8,
+    dst_lamports: u64,
+    split_lamports: u64,
+) !void {
+    const ix_data = try buildSplitIxData(alloc, split_lamports);
+    defer alloc.free(ix_data);
+
+    const entries = [_]SplitTestEntry{
+        .{ .key = SPLIT_SRC_KEY, .account = .{
+            .lamports = src_lamports,
+            .owner = .{ .data = STAKE_PROGRAM_ID_TEST },
+            .executable = false,
+            .rent_epoch = 0,
+            .data = src_data,
+        } },
+        .{ .key = SPLIT_DST_KEY, .account = .{
+            .lamports = dst_lamports,
+            .owner = .{ .data = STAKE_PROGRAM_ID_TEST },
+            .executable = false,
+            .rent_epoch = 0,
+            .data = dst_data,
+        } },
+    };
+    const db = SplitTestDb{ .entries = &entries };
+    const keys = [_][32]u8{ SPLIT_AUTH_KEY, SPLIT_SRC_KEY, SPLIT_DST_KEY };
+    const indices = [_]u8{ 1, 2, 0 };
+    const ptx = StakeTestPtx{ .num_accounts = 3, .account_keys = &keys, .num_required_sigs = 1 };
+    const ix = StakeTestIx{ .data = ix_data, .account_indices = &indices };
+
+    try handleSplit(ix, ptx, bank, db, alloc);
+}
+
+test "split branch A INTEGRATION (a): inactive full drain through handleSplit writes source stake VERBATIM" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const DST_RESERVE: u64 = 2_282_880; // rentExemptMinimumBalance(200)
+    const SRC_LAMPORTS: u64 = 3_000_000_000;
+    const SRC_STAKE: u64 = 500_000_000;
+    // Deliberately NOT equal to DST_RESERVE, so "only meta.rent_exempt_reserve is
+    // replaced" is an assertion with content rather than a tautology.
+    const SRC_STORED_RESERVE: u64 = 1_000_000;
+
+    // Precondition, asserted against the REAL activation-status function: this fixture
+    // is inactive (effective == activating == 0), which is what branch A keys on.
+    const st = bank_mod.Bank.getStakeActivationStatus(1, 1, SRC_STAKE, 0, &.{}, 0);
+    try testing.expectEqual(@as(u64, 0), st.effective);
+    try testing.expectEqual(@as(u64, 0), st.activating);
+
+    const src_data = try buildInactiveStakeSource(alloc, SPLIT_AUTH_KEY, SRC_STAKE, SRC_STORED_RESERVE);
+    defer alloc.free(src_data);
+    const dst_data = try buildUninitializedDest(alloc);
+    defer alloc.free(dst_data);
+
+    var bank = SplitTestBank{ .alloc = alloc };
+    defer bank.deinitFreeingWrites();
+    try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+    // DELETION DETECTOR (by count): with the branch-A arm removed, this input falls to
+    // the legacy full-drain arm, where remaining_stake_delta = 3_000_000_000 -| 1_000_000
+    // = 2_999_000_000 exceeds the source's 500_000_000 delegation and the handler returns
+    // with ZERO writes.
+    try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+
+    const dw = bank.find(SPLIT_DST_KEY).?;
+    const sw = bank.find(SPLIT_SRC_KEY).?;
+
+    // Lamports relocate in full: dest = D + L, source = 0.
+    try testing.expectEqual(@as(u64, 0) + SRC_LAMPORTS, dw.lamports);
+    try testing.expectEqual(@as(u64, 0), sw.lamports);
+
+    // (a) dest delegation.stake is the SOURCE's stake, copied verbatim — NOT the legacy
+    // `split_lamports -| src_rent`.
+    const dst_stake = stake_state.readU64(dw.data, stake_state.Offsets.delegation_stake).?;
+    try testing.expectEqual(SRC_STAKE, dst_stake);
+    try testing.expectEqual(@as(u64, 2_999_000_000), SRC_LAMPORTS -| SRC_STORED_RESERVE);
+    try testing.expect(dst_stake != SRC_LAMPORTS -| SRC_STORED_RESERVE);
+
+    // dest = byte copy of the source with ONLY meta.rent_exempt_reserve overwritten.
+    try testing.expectEqual(DST_RESERVE, stake_state.readU64(dw.data, stake_state.Offsets.rent_exempt_reserve).?);
+    try testing.expectEqualSlices(u8, src_data[0..stake_state.Offsets.rent_exempt_reserve], dw.data[0..stake_state.Offsets.rent_exempt_reserve]);
+    try testing.expectEqualSlices(u8, src_data[stake_state.Offsets.rent_exempt_reserve + 8 ..], dw.data[stake_state.Offsets.rent_exempt_reserve + 8 ..]);
+
+    // Source: discriminant zeroed, 196-byte tail preserved. This 200-byte residue is
+    // audit finding F14 (canonical resize(0)s instead) — pinned here so the F14 fix has
+    // to update this assertion deliberately rather than by accident.
+    try testing.expectEqual(@as(u32, 0), stake_state.readU32(sw.data, 0).?);
+    try testing.expectEqual(@as(usize, stake_state.STAKE_STATE_SZ), sw.data.len);
+    try testing.expectEqualSlices(u8, src_data[4..], sw.data[4..]);
+}
+
+test "split branch A INTEGRATION (b): DELETION DETECTOR by value — under-funded inactive source" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880;
+    // Under-funded: lamports < src_rent + delegation.stake. This is the shape where the
+    // legacy path still REACHES its writes (so both paths emit 2 writes) but writes a
+    // DIFFERENT dest delegation.stake — the value-level deletion detector the mirrors
+    // above cannot provide.
+    const SRC_STAKE: u64 = 2_000_000_000;
+    const SRC_LAMPORTS: u64 = 1_500_000_000;
+    const LEGACY_DST_STAKE: u64 = 1_497_717_120; // split_lamports -| src_rent
+
+    const src_data = try buildInactiveStakeSource(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE);
+    defer alloc.free(src_data);
+    const dst_data = try buildUninitializedDest(alloc);
+    defer alloc.free(dst_data);
+
+    var bank = SplitTestBank{ .alloc = alloc };
+    defer bank.deinitFreeingWrites();
+    try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+    try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+    const dst_stake = stake_state.readU64(bank.find(SPLIT_DST_KEY).?.data, stake_state.Offsets.delegation_stake).?;
+
+    // Canonical branch A (processor.rs:576-594): verbatim.
+    try testing.expectEqual(SRC_STAKE, dst_stake);
+    // The legacy value this input produces with the arm deleted — every guard on that
+    // path passes here (deficit 1_002_282_880 <= L; 1_497_717_120 >= 1 SOL;
+    // 1_497_717_120 <= 2_000_000_000), so it writes and the divergence is a VALUE.
+    try testing.expectEqual(LEGACY_DST_STAKE, SRC_LAMPORTS -| RESERVE);
+    try testing.expect(dst_stake != LEGACY_DST_STAKE);
+}
+
+test "split branch A INTEGRATION (c): inactive 1.0 SOL full drain is ACCEPTED (min_delegation gated off)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880;
+    const SRC_LAMPORTS: u64 = 1_000_000_000; // exactly 1 SOL = min_delegation
+    const SRC_STAKE: u64 = 997_717_120;
+
+    const src_data = try buildInactiveStakeSource(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE);
+    defer alloc.free(src_data);
+    const dst_data = try buildUninitializedDest(alloc);
+    defer alloc.free(dst_data);
+
+    var bank = SplitTestBank{ .alloc = alloc };
+    defer bank.deinitFreeingWrites();
+    try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+    // DELETION DETECTOR (by count): the legacy dest-deficit guard demands
+    // L >= R + min - D = 1_002_282_880 > 1_000_000_000 and silently drops this
+    // canonical-ACCEPTED drain — with the arm removed this test sees 0 writes.
+    try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+    try testing.expectEqual(SRC_LAMPORTS, bank.find(SPLIT_DST_KEY).?.lamports);
+    try testing.expectEqual(@as(u64, 0), bank.find(SPLIT_SRC_KEY).?.lamports);
+    try testing.expectEqual(SRC_STAKE, stake_state.readU64(bank.find(SPLIT_DST_KEY).?.data, stake_state.Offsets.delegation_stake).?);
+}
+
+test "split branch A INTEGRATION (d): dest deficit boundary D + L >= R — accept at equality, ZERO writes one lamport short" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880;
+    const DST_LAMPORTS: u64 = 1_000_000;
+    const SRC_STAKE: u64 = 500;
+
+    // One lamport short: D + L == R - 1 ⇒ the arm returns before allocating anything.
+    {
+        const src_lamports: u64 = RESERVE - DST_LAMPORTS - 1; // 1_282_879
+        const src_data = try buildInactiveStakeSource(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, src_lamports, dst_data, DST_LAMPORTS, src_lamports);
+
+        try testing.expectEqual(@as(u64, RESERVE - 1), DST_LAMPORTS +| src_lamports);
+        try testing.expectEqual(@as(usize, 0), bank.writes.items.len);
+    }
+
+    // Exactly at the boundary: D + L == R ⇒ ACCEPT, two writes. (This half is also a
+    // deletion detector: the legacy deficit guard would demand 1_001_282_880.)
+    {
+        const src_lamports: u64 = RESERVE - DST_LAMPORTS; // 1_282_880
+        const src_data = try buildInactiveStakeSource(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, src_lamports, dst_data, DST_LAMPORTS, src_lamports);
+
+        try testing.expectEqual(RESERVE, DST_LAMPORTS +| src_lamports);
+        try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+        try testing.expectEqual(RESERVE, bank.find(SPLIT_DST_KEY).?.lamports);
+        try testing.expectEqual(@as(u64, 0), bank.find(SPLIT_SRC_KEY).?.lamports);
+        // Verbatim stake copy holds at the boundary too — a 500-lamport delegation, far
+        // below min_delegation, which the legacy path's unconditional check would reject.
+        try testing.expectEqual(SRC_STAKE, stake_state.readU64(bank.find(SPLIT_DST_KEY).?.data, stake_state.Offsets.delegation_stake).?);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// INTEGRATION KAT — canonical branch A for ACTIVE / ACTIVATING sources (audit F13)
+// ---------------------------------------------------------------------------
+// The four INTEGRATION KATs above cover the INACTIVE full drain (F2). These cover the
+// other half of the same canonical block: an active-or-activating source, where the
+// `delegation` term of processor.rs:581-585 is the source's stake S rather than 0. They
+// drive the REAL handleSplit through the same SplitTestBank mocks and every one of them
+// is a deletion detector — flipping the arm's condition back to the F2 form
+// (`src_remaining == 0 and effective == 0 and activating == 0`) routes these inputs to
+// the legacy path and changes either the write COUNT or the dest delegation.stake VALUE.
+//
+// Activation status without a StakeHistory mock (SplitTestBank.readStakeHistory returns
+// an error, so the handler uses its own empty-slice fallback — the production path for a
+// bank whose sysvar is absent):
+//   * ACTIVE          activation_epoch = 1  < bank epoch 5  ⇒ bank.zig:2920-2922
+//                     "initial entry missing = fully activated" ⇒ effective == S.
+//   * ACTIVATING-only activation_epoch = 5 == bank epoch 5  ⇒ bank.zig:2885-2887
+//                     ⇒ effective == 0, activating == S.
+// Both preconditions are asserted against the REAL getStakeActivationStatus below, not
+// assumed.
+// Audit: the 2026-08-02 stake-split audit (F13).
+// ---------------------------------------------------------------------------
+
+const SPLIT_KAT_EPOCH: u64 = 5;
+const SPLIT_KAT_NEVER: u64 = std.math.maxInt(u64);
+
+test "split branch A INTEGRATION (F13-a): ACTIVE full drain writes source stake VERBATIM" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880; // rentExemptMinimumBalance(200)
+    const SRC_STAKE: u64 = 2_000_000_000;
+
+    // Precondition against the REAL activation-status function: effective > 0.
+    const st = bank_mod.Bank.getStakeActivationStatus(1, SPLIT_KAT_NEVER, SRC_STAKE, SPLIT_KAT_EPOCH, &.{}, 0);
+    try testing.expectEqual(SRC_STAKE, st.effective);
+    try testing.expectEqual(@as(u64, 0), st.activating);
+
+    // ── (a1) VALUE detector. The stored meta.rent_exempt_reserve (0.1 SOL) differs from
+    // the formula value, which is exactly the shape the audit named for F13: the legacy
+    // dest-stake formula `split_lamports -| src_rent` reads the STORED reserve, canonical
+    // reads nothing at all and copies delegation.stake verbatim. Every legacy guard passes
+    // for this input, so with the arm reverted the handler still emits 2 writes and the
+    // divergence is a VALUE, not a count.
+    {
+        const SRC_STORED_RESERVE: u64 = 100_000_000;
+        const SRC_LAMPORTS: u64 = SRC_STAKE + RESERVE + 5_000_000; // 2_007_282_880
+        const LEGACY_DST_STAKE: u64 = 1_907_282_880; // split_lamports -| stored reserve
+
+        const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, SRC_STORED_RESERVE, 1, SPLIT_KAT_NEVER);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+        try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+        const dw = bank.find(SPLIT_DST_KEY).?;
+        const sw = bank.find(SPLIT_SRC_KEY).?;
+
+        // Lamports relocate in full.
+        try testing.expectEqual(SRC_LAMPORTS, dw.lamports);
+        try testing.expectEqual(@as(u64, 0), sw.lamports);
+
+        // Canonical processor.rs:576-594 — verbatim S, NOT the legacy formula.
+        const dst_stake = stake_state.readU64(dw.data, stake_state.Offsets.delegation_stake).?;
+        try testing.expectEqual(SRC_STAKE, dst_stake);
+        try testing.expectEqual(LEGACY_DST_STAKE, SRC_LAMPORTS -| SRC_STORED_RESERVE);
+        try testing.expect(dst_stake != LEGACY_DST_STAKE);
+
+        // dest = byte copy of the source with ONLY meta.rent_exempt_reserve overwritten.
+        try testing.expectEqual(RESERVE, stake_state.readU64(dw.data, stake_state.Offsets.rent_exempt_reserve).?);
+        try testing.expectEqualSlices(u8, src_data[0..stake_state.Offsets.rent_exempt_reserve], dw.data[0..stake_state.Offsets.rent_exempt_reserve]);
+        try testing.expectEqualSlices(u8, src_data[stake_state.Offsets.rent_exempt_reserve + 8 ..], dw.data[stake_state.Offsets.rent_exempt_reserve + 8 ..]);
+
+        // Source: disc zeroed, 196-byte tail preserved (the F14 residue, pinned).
+        try testing.expectEqual(@as(u32, 0), stake_state.readU32(sw.data, 0).?);
+        try testing.expectEqual(@as(usize, stake_state.STAKE_STATE_SZ), sw.data.len);
+        try testing.expectEqualSlices(u8, src_data[4..], sw.data[4..]);
+    }
+
+    // ── (a2) COUNT detector. Free lamports beyond rent + stake, with a stored reserve
+    // BELOW the formula value: the legacy `remaining_stake_delta = L -| src_rent` then
+    // exceeds the source's delegation and the legacy path bails with ZERO writes on a
+    // drain canonical ACCEPTS.
+    {
+        const SRC_STORED_RESERVE: u64 = 1_000_000;
+        const SRC_LAMPORTS: u64 = SRC_STAKE + RESERVE + 7_000_000; // 2_009_282_880
+
+        const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, SRC_STORED_RESERVE, 1, SPLIT_KAT_NEVER);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+        try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+        try testing.expectEqual(SRC_STAKE, stake_state.readU64(bank.find(SPLIT_DST_KEY).?.data, stake_state.Offsets.delegation_stake).?);
+        // The legacy value that made this a zero-write path: 2_008_282_880 > 2_000_000_000.
+        try testing.expectEqual(@as(u64, 2_008_282_880), SRC_LAMPORTS -| SRC_STORED_RESERVE);
+        try testing.expect(SRC_LAMPORTS -| SRC_STORED_RESERVE > SRC_STAKE);
+    }
+}
+
+test "split branch A INTEGRATION (F13-b): ACTIVE full drain with S < min_delegation is REJECTED (min gate applies to S)" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880;
+    const MIN_DELEGATION: u64 = 1_000_000_000;
+    const SRC_LAMPORTS: u64 = 1_500_000_000;
+
+    // ── Reject half: S one lamport below min_delegation. The dest-deficit guard PASSES
+    // ((0 + 1.5e9) -| S = 500_000_001 >= RESERVE), so the rejection is provably
+    // processor.rs:604-606 and nothing else.
+    // NOT a deletion detector: the legacy path also rejects this input, and provably
+    // must — its own guards require split_stake_amount >= min AND <= S, which together
+    // imply S >= min, so no legacy full-drain ACCEPT can ever have S < min. This is a
+    // canonical-outcome pin.
+    {
+        const SRC_STAKE: u64 = MIN_DELEGATION - 1;
+        const st = bank_mod.Bank.getStakeActivationStatus(1, SPLIT_KAT_NEVER, SRC_STAKE, SPLIT_KAT_EPOCH, &.{}, 0);
+        try testing.expectEqual(SRC_STAKE, st.effective);
+        try testing.expect((@as(u64, 0) +| SRC_LAMPORTS) -| SRC_STAKE >= RESERVE); // deficit guard passes
+
+        const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE, 1, SPLIT_KAT_NEVER);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+        try testing.expectEqual(@as(usize, 0), bank.writes.items.len);
+    }
+
+    // ── Accept half, one lamport up: S == min_delegation exactly. THIS half IS a deletion
+    // detector by count — the legacy path computes remaining_stake_delta = 1_497_717_120,
+    // which exceeds S = 1_000_000_000, and emits zero writes on a canonical ACCEPT.
+    {
+        const SRC_STAKE: u64 = MIN_DELEGATION;
+        const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE, 1, SPLIT_KAT_NEVER);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+        try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+        try testing.expectEqual(SRC_STAKE, stake_state.readU64(bank.find(SPLIT_DST_KEY).?.data, stake_state.Offsets.delegation_stake).?);
+        try testing.expectEqual(SRC_LAMPORTS, bank.find(SPLIT_DST_KEY).?.lamports);
+        try testing.expectEqual(@as(u64, 0), bank.find(SPLIT_SRC_KEY).?.lamports);
+        try testing.expect(SRC_LAMPORTS -| RESERVE > SRC_STAKE); // legacy would have bailed
+    }
+}
+
+test "split branch A INTEGRATION (F13-c): ACTIVE dest-deficit boundary is D + L - S >= R" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880;
+    const SRC_STAKE: u64 = 2_000_000_000;
+    const DST_LAMPORTS: u64 = 1_000_000;
+
+    // Exactly at the boundary: D + L - S == R ⇒ ACCEPT. Deletion detector by VALUE (the
+    // legacy path accepts too, but writes 1_999_000_000).
+    {
+        const SRC_LAMPORTS: u64 = RESERVE + SRC_STAKE - DST_LAMPORTS; // 2_001_282_880
+        try testing.expectEqual(RESERVE, (DST_LAMPORTS +| SRC_LAMPORTS) -| SRC_STAKE);
+
+        const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE, 1, SPLIT_KAT_NEVER);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, DST_LAMPORTS, SRC_LAMPORTS);
+
+        try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+        try testing.expectEqual(DST_LAMPORTS + SRC_LAMPORTS, bank.find(SPLIT_DST_KEY).?.lamports);
+        try testing.expectEqual(@as(u64, 0), bank.find(SPLIT_SRC_KEY).?.lamports);
+        const dst_stake = stake_state.readU64(bank.find(SPLIT_DST_KEY).?.data, stake_state.Offsets.delegation_stake).?;
+        try testing.expectEqual(SRC_STAKE, dst_stake);
+        try testing.expectEqual(@as(u64, 1_999_000_000), SRC_LAMPORTS -| RESERVE); // legacy value
+        try testing.expect(dst_stake != SRC_LAMPORTS -| RESERVE);
+    }
+
+    // One lamport short ⇒ ZERO writes. Deletion detector by COUNT: every legacy guard
+    // still passes for this input, so the legacy path would emit 2 writes on a drain
+    // canonical REJECTS.
+    {
+        const SRC_LAMPORTS: u64 = RESERVE + SRC_STAKE - DST_LAMPORTS - 1; // 2_001_282_879
+        try testing.expectEqual(RESERVE - 1, (DST_LAMPORTS +| SRC_LAMPORTS) -| SRC_STAKE);
+
+        const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE, 1, SPLIT_KAT_NEVER);
+        defer alloc.free(src_data);
+        const dst_data = try buildUninitializedDest(alloc);
+        defer alloc.free(dst_data);
+
+        var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+        defer bank.deinitFreeingWrites();
+        try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, DST_LAMPORTS, SRC_LAMPORTS);
+
+        try testing.expectEqual(@as(usize, 0), bank.writes.items.len);
+        // What the legacy path would have done with the same bytes.
+        try testing.expect(SRC_LAMPORTS -| RESERVE <= SRC_STAKE);
+        try testing.expect(SRC_LAMPORTS >= (RESERVE +| @as(u64, 1_000_000_000)) -| DST_LAMPORTS);
+    }
+}
+
+test "split branch A INTEGRATION (F13-c2): ACTIVATING-only full drain uses S, not effective, as the deficit term" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880;
+    const SRC_STAKE: u64 = 2_000_000_000;
+    const SRC_LAMPORTS: u64 = 1_500_000_000;
+
+    // Precondition: activation_epoch == target epoch ⇒ effective 0, activating == S.
+    const st = bank_mod.Bank.getStakeActivationStatus(SPLIT_KAT_EPOCH, SPLIT_KAT_NEVER, SRC_STAKE, SPLIT_KAT_EPOCH, &.{}, 0);
+    try testing.expectEqual(@as(u64, 0), st.effective);
+    try testing.expectEqual(SRC_STAKE, st.activating);
+
+    const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE, SPLIT_KAT_EPOCH, SPLIT_KAT_NEVER);
+    defer alloc.free(src_data);
+    const dst_data = try buildUninitializedDest(alloc);
+    defer alloc.free(dst_data);
+
+    var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+    defer bank.deinitFreeingWrites();
+    try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, 0, SRC_LAMPORTS);
+
+    // Canonical: is_active_or_activating is TRUE via activating (processor.rs:548-549), so
+    // delegation == S and the deficit is (0 + 1.5e9) -| 2e9 == 0 < RESERVE ⇒ REJECT.
+    try testing.expectEqual(@as(usize, 0), bank.writes.items.len);
+
+    // TWO independent detectors on this one input:
+    //  * wrong-VARIABLE: had the arm used src_status.effective (0 here) as the delegation
+    //    term, the deficit would be 1.5e9 >= RESERVE and the drain would be ACCEPTED.
+    try testing.expect((@as(u64, 0) +| SRC_LAMPORTS) -| st.effective >= RESERVE);
+    try testing.expectEqual(@as(u64, 0), (@as(u64, 0) +| SRC_LAMPORTS) -| SRC_STAKE);
+    //  * arm DELETION: the legacy path passes all three of its guards here
+    //    (1_497_717_120 >= 1 SOL, <= 2e9; deficit 1_002_282_880 <= 1.5e9) and emits 2 writes.
+    try testing.expectEqual(@as(u64, 1_497_717_120), SRC_LAMPORTS -| RESERVE);
+    try testing.expect(SRC_LAMPORTS -| RESERVE <= SRC_STAKE);
+}
+
+test "split branch A INTEGRATION (F13-d): ACTIVE PARTIAL split is byte-identical to the legacy path" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const RESERVE: u64 = 2_282_880;
+    const SRC_STAKE: u64 = 5_000_000_000;
+    const SRC_LAMPORTS: u64 = SRC_STAKE + RESERVE; // 5_002_282_880
+    const SPLIT: u64 = 2_000_000_000;
+    const DST_LAMPORTS: u64 = RESERVE; // dest already at its own reserve
+
+    // REGRESSION PIN. A partial split of an ACTIVE source must not be perturbed by the
+    // F13 unification — it still runs the legacy math, whose values are pinned here BY
+    // VALUE so a later edit to that path cannot change them silently.
+    const src_data = try buildStakeSourceWithEpochs(alloc, SPLIT_AUTH_KEY, SRC_STAKE, RESERVE, 1, SPLIT_KAT_NEVER);
+    defer alloc.free(src_data);
+    const dst_data = try buildUninitializedDest(alloc);
+    defer alloc.free(dst_data);
+
+    const st = bank_mod.Bank.getStakeActivationStatus(1, SPLIT_KAT_NEVER, SRC_STAKE, SPLIT_KAT_EPOCH, &.{}, 0);
+    try testing.expectEqual(SRC_STAKE, st.effective);
+
+    var bank = SplitTestBank{ .alloc = alloc, .epoch_schedule = .{ .epoch = SPLIT_KAT_EPOCH } };
+    defer bank.deinitFreeingWrites();
+    try runHandleSplit(alloc, &bank, src_data, SRC_LAMPORTS, dst_data, DST_LAMPORTS, SPLIT);
+
+    try testing.expectEqual(@as(usize, 2), bank.writes.items.len);
+    const dw = bank.find(SPLIT_DST_KEY).?;
+    const sw = bank.find(SPLIT_SRC_KEY).?;
+
+    try testing.expectEqual(SRC_LAMPORTS - SPLIT, sw.lamports); // 3_002_282_880
+    try testing.expectEqual(DST_LAMPORTS + SPLIT, dw.lamports); // 2_002_282_880
+
+    // Expected bytes, built independently of the handler.
+    var expect_src: [stake_state.STAKE_STATE_SZ]u8 = undefined;
+    @memcpy(&expect_src, src_data);
+    stake_state.writeU64(&expect_src, stake_state.Offsets.delegation_stake, SRC_STAKE - SPLIT);
+    var expect_dst: [stake_state.STAKE_STATE_SZ]u8 = undefined;
+    @memcpy(&expect_dst, src_data);
+    stake_state.writeU64(&expect_dst, stake_state.Offsets.rent_exempt_reserve, RESERVE);
+    stake_state.writeU64(&expect_dst, stake_state.Offsets.delegation_stake, SPLIT);
+
+    try testing.expectEqualSlices(u8, &expect_src, sw.data);
+    try testing.expectEqualSlices(u8, &expect_dst, dw.data);
+
+    // Named values, so a regression names itself.
+    try testing.expectEqual(@as(u32, 2), stake_state.readU32(sw.data, 0).?); // source stays Stake
+    try testing.expectEqual(@as(u64, 3_000_000_000), stake_state.readU64(sw.data, stake_state.Offsets.delegation_stake).?);
+    try testing.expectEqual(@as(u64, 2_000_000_000), stake_state.readU64(dw.data, stake_state.Offsets.delegation_stake).?);
 }
