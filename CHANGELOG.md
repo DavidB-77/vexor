@@ -14,6 +14,14 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-l
+### Validator
+#### Fixed
+* Stake program: Split's full-drain handling is unified on the canonical branch for every activation status. The destination now receives a verbatim copy of the source's state — `delegation.stake` included — with only its own rent-exempt reserve written, matching what every other client does. Previously the destination's recorded delegation was written as the split amount minus the source's rent reserve, which diverges for any stake account whose lamports don't equal rent plus delegation (anything that ever received a transfer or partial withdrawal), and the unconditional minimum-delegation check could silently no-op a drain the cluster accepts. The minimum-delegation check now applies only to active or activating sources, and the destination deficit check uses the canonical delegation-adjusted form. Partial splits are unchanged, pinned by regression tests.
+
+#### Changes
+* Testing: a `handleSplit` integration harness now drives the real handler end to end through mocked bank plumbing, with deletion-detector tests that fail if the canonical arm is removed — thirteen new tests in all. Known gap, tracked: the standalone `test-stake-program` step is not yet part of the CI-required test workflow.
+
 ## 0.9.3-k
 ### Validator
 #### Fixed
