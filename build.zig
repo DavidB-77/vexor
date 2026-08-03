@@ -3962,6 +3962,25 @@ pub fn build(b: *std.Build) void {
     test_rpc_history_step.dependOn(&run_rpc_history.step);
     test_migrated_step.dependOn(&run_rpc_history.step);
 
+    // ── test-rpc (segmentation-bug fix, 2026-08-03): rpc.zig can't root a standalone test
+    // module of its own — it's relatively @import-ed by tvu.zig (line 47, `pub const rpc =
+    // @import("rpc.zig");`), so it already belongs to the net_vex_network package; giving it a
+    // second, separate root would hit the same "file exists in modules 'root' and 'vex_network'"
+    // wall the module-72 comments above warn about. Instead, reuse net_vex_network AS the test
+    // root directly (same precedent as test-gossip-votes below, which reuses net_vex_svm) and
+    // filter down to just the new handleConnection KATs (segmented-request / single-write /
+    // oversized-request — see memory/vexor-rpc-http-segmentation-bug-2026-08-03.md).
+    const test_rpc = b.addTest(.{
+        .name = "test-rpc",
+        .root_module = net_vex_network,
+        .filters = &.{ "handleConnection", "readFullRequestWithDeadline" },
+    });
+    test_rpc.linkLibC(); // bls_pop attaches blst binary-wide (same rationale as test_rpc_history)
+    const run_test_rpc = b.addRunArtifact(test_rpc);
+    const test_rpc_step = b.step("test-rpc", "RPC HTTP server KATs incl. the segmentation-bug regression (headers/body split across separate TCP writes) 2026-08-03");
+    test_rpc_step.dependOn(&run_test_rpc.step);
+    test_migrated_step.dependOn(&run_test_rpc.step);
+
     // ── test-net-force-compile (rebuild-native §E3/§J validation gate) ──
     const test_net_fc = b.addTest(.{
         .name = "test-net-force-compile",

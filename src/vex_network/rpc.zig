@@ -146,14 +146,63 @@ pub const RpcServer = struct {
         }
     }
 
+    /// Hard ceiling on the buffered header block (bytes read while still looking for the
+    /// terminating "\r\n\r\n"). Guards a client that never completes its headers. Independent of
+    /// `config.max_body_size`, which bounds the JSON-RPC body once a Content-Length header names
+    /// one (checked in readFullRequest before any body bytes are buffered).
+    const max_header_bytes: usize = 16 * 1024;
+
+    /// Bound on how long a single read() inside readFullRequest may block waiting for more bytes
+    /// — including the gap between a header write and a later body write, the same gap this fix
+    /// buffers across. readFullRequest's byte ceilings (max_header_bytes / config.max_body_size)
+    /// only bound HOW MUCH gets buffered; without this, a client that declares a Content-Length,
+    /// sends part of it, then goes silent would block this single-threaded accept loop forever.
+    /// PER-READ only, though: it resets on every read() that returns any data at all, so a client
+    /// trickling in one byte at a time (each arriving comfortably inside recv_timeout_secs) never
+    /// trips it. max_request_read_secs below is what bounds the request as a whole regardless of
+    /// how many such reads it takes — see its comment for why that's a separate, necessary bound.
+    const recv_timeout_secs: i64 = 10;
+
+    /// Hard ceiling on the TOTAL wall-clock time readFullRequest's read loop may spend on one
+    /// request, measured from when that loop starts (immediately after accept — setRecvTimeout is
+    /// the only work done first) to when it returns. recv_timeout_secs above only bounds each
+    /// individual read(); a slow-drip client that sends a single byte every few seconds (each one
+    /// comfortably under recv_timeout_secs) makes every read() succeed, so recv_timeout_secs never
+    /// fires and a Content-Length'd request can be held open indefinitely. Because httpListenLoop
+    /// calls handleConnection synchronously (single-threaded accept loop), that one connection
+    /// then starves every other RPC client behind it — the audit finding this constant closes.
+    /// Generous relative to recv_timeout_secs so a legitimate slow-but-steady upload isn't clipped;
+    /// worst case wall time before close is this plus one recv_timeout_secs (the read already in
+    /// flight when the deadline is checked is left to finish or time out on its own).
+    const max_request_read_secs: i64 = 30;
+
+    /// Apply recv_timeout_secs to `stream` so a stalled peer eventually errors out of read()
+    /// instead of blocking forever. Best-effort: an unsupported platform/socket type just leaves
+    /// the (pre-existing) blocking behavior in place rather than failing the connection.
+    fn setRecvTimeout(stream: std.net.Stream, seconds: i64) void {
+        const tv = std.posix.timeval{ .sec = seconds, .usec = 0 };
+        std.posix.setsockopt(stream.handle, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv)) catch {};
+    }
+
     fn handleConnection(self: *Self, stream: std.net.Stream) !void {
         defer stream.close();
+        setRecvTimeout(stream, recv_timeout_secs);
 
-        // Read HTTP request (simple: read until double CRLF, extract body)
-        var buf: [65536]u8 = undefined;
-        const n = stream.read(&buf) catch return;
-        if (n == 0) return;
-        const request = buf[0..n];
+        // Read the HTTP request, buffering across as many read()s as it takes (see
+        // readFullRequest's doc comment — this replaced a single-read() version that silently
+        // dropped the body whenever a client flushed headers and body as separate TCP writes;
+        // see memory/vexor-rpc-http-segmentation-bug-2026-08-03.md).
+        const request = self.readFullRequest(stream) catch |err| {
+            switch (err) {
+                error.RequestTooLarge => sendSimpleError(stream, 413, "Payload Too Large"),
+                error.RequestTimedOut => sendSimpleError(stream, 408, "Request Timeout"),
+                error.MalformedContentLength => sendSimpleError(stream, 400, "Bad Request"),
+                else => {},
+            }
+            return;
+        };
+        defer self.allocator.free(request);
+        if (request.len == 0) return;
 
         // Find body after \r\n\r\n
         const body = if (std.mem.indexOf(u8, request, "\r\n\r\n")) |idx|
@@ -180,6 +229,120 @@ pub const RpcServer = struct {
         _ = stream.write(hdr) catch {};
         _ = stream.write(response_body) catch {};
         self.stats.total_requests += 1;
+    }
+
+    /// Read a full HTTP request off `stream`, buffering across as many `read()` calls as needed.
+    /// Real HTTP clients routinely flush headers and body as separate TCP writes (ureq, Python's
+    /// http.client, ...); a single read() only ever sees whatever arrived first, which is why the
+    /// old version silently truncated the body away. This reads until the header terminator
+    /// ("\r\n\r\n") is seen and, if a Content-Length header names a body, until that many body
+    /// bytes have arrived too — bounded throughout (max_header_bytes / config.max_body_size /
+    /// max_request_read_secs) so a slow or oversized client can't grow this without limit. A
+    /// request with no Content-Length header stops as soon as headers are found, matching the
+    /// pre-fix single-read behavior for that case (there is no length to buffer to). A malformed
+    /// Content-Length — non-numeric, or duplicated with conflicting values (RFC 7230 §3.3.3) —
+    /// fails the request instead of guessing which value to honor. Caller owns the returned slice.
+    fn readFullRequest(self: *Self, stream: std.net.Stream) ![]u8 {
+        return self.readFullRequestWithDeadline(stream, max_request_read_secs);
+    }
+
+    /// readFullRequest's implementation, parameterized on the total-read deadline so the deadline
+    /// path itself can be exercised deterministically in a test (see the "total wall-clock
+    /// deadline" test below) instead of waiting out the real max_request_read_secs. All production
+    /// callers go through readFullRequest, which supplies that named constant.
+    fn readFullRequestWithDeadline(self: *Self, stream: std.net.Stream, deadline_secs: i64) ![]u8 {
+        var buf = std.ArrayListUnmanaged(u8){};
+        errdefer buf.deinit(self.allocator);
+
+        const read_chunk_size: usize = 65536; // matches the old single-shot buffer size
+        var chunk: [read_chunk_size]u8 = undefined;
+        var header_end: ?usize = null; // index just past the terminating "\r\n\r\n"
+        var body_target: ?usize = null; // header_end + Content-Length, once both are known
+        const deadline_ms: i64 = std.time.milliTimestamp() + deadline_secs * 1000;
+
+        while (true) {
+            // Total-request bound, checked before every read() so a slow-drip client (each read
+            // individually within recv_timeout_secs) can't hold this loop open indefinitely — see
+            // max_request_read_secs's comment. Reuses the same error/close path as RequestTooLarge.
+            if (std.time.milliTimestamp() >= deadline_ms) return error.RequestTimedOut;
+
+            const n = stream.read(&chunk) catch break;
+            if (n == 0) break; // peer closed — parse whatever arrived, same posture as before
+            try buf.appendSlice(self.allocator, chunk[0..n]);
+
+            if (header_end == null) {
+                if (std.mem.indexOf(u8, buf.items, "\r\n\r\n")) |idx| {
+                    header_end = idx + 4;
+                    if (try parseContentLength(buf.items[0..idx])) |content_len| {
+                        if (content_len > self.config.max_body_size) return error.RequestTooLarge;
+                        body_target = header_end.? + content_len;
+                    }
+                } else if (buf.items.len > max_header_bytes) {
+                    return error.RequestTooLarge; // never saw a complete header block
+                }
+            }
+
+            if (header_end != null and body_target == null) break; // no Content-Length: old single-read behavior
+            if (body_target) |target| {
+                if (buf.items.len >= target) break; // full declared body buffered
+            }
+        }
+
+        return buf.toOwnedSlice(self.allocator);
+    }
+
+    /// RFC 7230 §3.2.3 optional whitespace (OWS = *( SP / HTAB )) — the space-only skip this
+    /// replaced would misparse a legal `Content-Length:\t5` (tab instead of space) as having zero
+    /// digits and reject it, a false-positive the hardening itself would have introduced.
+    fn isOws(c: u8) bool {
+        return c == ' ' or c == '\t';
+    }
+
+    /// Case-insensitively find a `Content-Length` header's value within `headers` (the header
+    /// block up to but excluding the terminating "\r\n\r\n"). Returns null if the header is absent
+    /// entirely. Returns error.MalformedContentLength if it's present but not a plain non-negative
+    /// integer, or if it appears more than once with conflicting values — RFC 7230 §3.3.3 requires
+    /// rejecting the latter outright rather than picking either value, because a front-end proxy
+    /// and this server disagreeing on which of two Content-Length headers to honor is exactly the
+    /// desync request smuggling relies on (same-value duplicates are harmless and still accepted,
+    /// per that section). Matches only at a line start so it can't fire on some other header whose
+    /// name happens to contain the substring.
+    fn parseContentLength(headers: []const u8) error{MalformedContentLength}!?usize {
+        const key = "content-length";
+        var search_start: usize = 0;
+        var found: ?usize = null;
+        while (std.ascii.indexOfIgnoreCasePos(headers, search_start, key)) |idx| {
+            const at_line_start = idx == 0 or headers[idx - 1] == '\n';
+            search_start = idx + key.len;
+            if (!at_line_start) continue;
+
+            const rest = headers[idx + key.len ..];
+            var p: usize = 0;
+            while (p < rest.len and isOws(rest[p])) p += 1;
+            if (p >= rest.len or rest[p] != ':') continue; // not actually this header (e.g. "Content-Lengthx:")
+            p += 1;
+            while (p < rest.len and isOws(rest[p])) p += 1;
+            var e = p;
+            while (e < rest.len and rest[e] >= '0' and rest[e] <= '9') e += 1;
+            if (e == p) return error.MalformedContentLength; // zero digits — non-numeric, incl. a leading '-'
+            const value = std.fmt.parseInt(usize, rest[p..e], 10) catch return error.MalformedContentLength;
+
+            if (found) |prev| {
+                if (prev != value) return error.MalformedContentLength; // duplicate header, conflicting values
+            } else {
+                found = value;
+            }
+        }
+        return found;
+    }
+
+    /// Send a bare HTTP error status line with no body and close (caller's `defer stream.close()`
+    /// handles the actual close). Used only for requests rejected before JSON-RPC parsing is even
+    /// attempted (currently: oversized request).
+    fn sendSimpleError(stream: std.net.Stream, status_code: u16, status_text: []const u8) void {
+        var hdr_buf: [128]u8 = undefined;
+        const hdr = std.fmt.bufPrint(&hdr_buf, "HTTP/1.1 {d} {s}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", .{ status_code, status_text }) catch return;
+        _ = stream.write(hdr) catch {};
     }
 
     /// Stop the RPC server
@@ -537,4 +700,209 @@ test "http request parse" {
 
     try std.testing.expectEqualSlices(u8, "POST", req.method);
     try std.testing.expectEqualSlices(u8, "/rpc", req.path);
+}
+
+// ─── segmentation-bug regression tests (2026-08-03) ─────────────────────────────
+// Reproduces the T1-07 finding (memory/vexor-rpc-http-segmentation-bug-2026-08-03.md): a real
+// HTTP client that flushes headers and body as two separate TCP writes got -32600 Invalid
+// Request back, because the old handleConnection did exactly one stream.read() and treated
+// whatever arrived in it as the whole request. These drive handleConnection over a real loopback
+// TCP connection (not a synthetic buffer) so the two writes are genuinely two separate reads on
+// the server side, the same way ureq / Python's http.client / any two-syscall client behaves.
+
+fn testAcceptOnce(server: *RpcServer, listener: *std.net.Server) void {
+    const conn = listener.accept() catch return;
+    server.handleConnection(conn.stream) catch {};
+}
+
+/// Read until the peer closes (EOF). handleConnection's own response write is itself two separate
+/// stream.write() calls (headers, then body) — a single client-side read() can just as easily race
+/// that split as the server-side read raced the request split this whole test file exists to catch,
+/// so this loops rather than trusting one read() to capture the whole response.
+fn testReadUntilClose(client: std.net.Stream, resp_buf: []u8) ![]u8 {
+    var total: usize = 0;
+    while (total < resp_buf.len) {
+        const n = try client.read(resp_buf[total..]);
+        if (n == 0) break;
+        total += n;
+    }
+    return resp_buf[0..total];
+}
+
+/// Sends `first_write` then (after a short delay to force two separate server-side reads instead
+/// of the kernel coalescing them) `second_write`, and returns whatever handleConnection wrote
+/// back. `second_write` may be empty to model a request that never sends the rest.
+fn testSegmentedRequest(allocator: std.mem.Allocator, first_write: []const u8, second_write: []const u8, resp_buf: []u8) ![]u8 {
+    var server = try RpcServer.init(allocator, 0);
+    defer server.deinit();
+
+    var listener = try std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 0).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+    const port = listener.listen_address.getPort();
+
+    const accept_thread = try std.Thread.spawn(.{}, testAcceptOnce, .{ server, &listener });
+
+    const client = try std.net.tcpConnectToAddress(std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port));
+    defer client.close();
+
+    _ = try client.write(first_write);
+    if (second_write.len > 0) {
+        std.Thread.sleep(80 * std.time.ns_per_ms); // let the server's first read() return with headers only
+        _ = try client.write(second_write);
+    }
+
+    const resp = try testReadUntilClose(client, resp_buf);
+    accept_thread.join();
+    return resp;
+}
+
+test "handleConnection: segmented request (headers, then body, as two separate writes) parses correctly — T1-07 reproducer" {
+    const allocator = std.testing.allocator;
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}";
+    var hdr_buf: [256]u8 = undefined;
+    const headers = try std.fmt.bufPrint(&hdr_buf, "POST / HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+
+    var resp_buf: [4096]u8 = undefined;
+    const resp = try testSegmentedRequest(allocator, headers, body, &resp_buf);
+
+    // Pre-fix this came back as {"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid Request"}}
+    // because the body (sent in the second write) was never seen by the single stream.read().
+    try std.testing.expect(std.mem.indexOf(u8, resp, "-32600") == null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"result\":\"ok\"") != null);
+}
+
+test "handleConnection: single-write request still succeeds (no regression)" {
+    const allocator = std.testing.allocator;
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}";
+    var full_buf: [512]u8 = undefined;
+    const full_request = try std.fmt.bufPrint(&full_buf, "POST / HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.len, body });
+
+    var resp_buf: [4096]u8 = undefined;
+    const resp = try testSegmentedRequest(allocator, full_request, "", &resp_buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"result\":\"ok\"") != null);
+}
+
+test "handleConnection: oversized Content-Length is rejected cleanly (413), not buffered" {
+    const allocator = std.testing.allocator;
+    var server = try RpcServer.init(allocator, 0);
+    defer server.deinit();
+    // Declared body far past config.max_body_size (default 50MB) — must be rejected from the
+    // header alone, without the server ever trying to read that many bytes.
+    try std.testing.expect(server.config.max_body_size + 1 > server.config.max_body_size);
+    var hdr_buf: [256]u8 = undefined;
+    const headers = try std.fmt.bufPrint(&hdr_buf, "POST / HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n", .{server.config.max_body_size + 1});
+
+    var listener = try std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 0).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+    const port = listener.listen_address.getPort();
+
+    const accept_thread = try std.Thread.spawn(.{}, testAcceptOnce, .{ server, &listener });
+
+    const client = try std.net.tcpConnectToAddress(std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port));
+    defer client.close();
+    _ = try client.write(headers); // no body ever sent — server must not block waiting for one
+
+    var resp_buf: [256]u8 = undefined;
+    const resp = try testReadUntilClose(client, &resp_buf);
+    accept_thread.join();
+
+    try std.testing.expect(std.mem.indexOf(u8, resp, "413") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "Payload Too Large") != null);
+}
+
+// ─── hardening audit findings (2026-08-03) ──────────────────────────────────────
+// Adversarial audit of 9e22f86 (the segmentation fix above): P1 was the total-read deadline
+// (below); these two are the parseContentLength P2s — duplicate conflicting Content-Length and
+// non-numeric/negative Content-Length were each silently mishandled instead of rejected.
+
+test "handleConnection: duplicate conflicting Content-Length is rejected (400) — RFC 7230 §3.3.3 smuggling defense" {
+    const allocator = std.testing.allocator;
+    var server = try RpcServer.init(allocator, 0);
+    defer server.deinit();
+
+    var listener = try std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 0).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+    const port = listener.listen_address.getPort();
+
+    const accept_thread = try std.Thread.spawn(.{}, testAcceptOnce, .{ server, &listener });
+
+    const client = try std.net.tcpConnectToAddress(std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port));
+    defer client.close();
+    // Two Content-Length headers naming different lengths: a front-end and this server honoring
+    // different ones of the two would disagree about where the request ends, which is exactly the
+    // desync request smuggling relies on. Must be rejected outright, not resolved by either value.
+    const request = "POST / HTTP/1.1\r\nContent-Length: 5\r\nContent-Length: 9\r\n\r\nHELLOHELLO";
+    _ = try client.write(request);
+
+    var resp_buf: [256]u8 = undefined;
+    const resp = try testReadUntilClose(client, &resp_buf);
+    accept_thread.join();
+
+    try std.testing.expect(std.mem.indexOf(u8, resp, "400") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "Bad Request") != null);
+}
+
+test "handleConnection: non-numeric Content-Length is rejected (400), not treated as absent" {
+    const allocator = std.testing.allocator;
+    var server = try RpcServer.init(allocator, 0);
+    defer server.deinit();
+
+    var listener = try std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 0).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+    const port = listener.listen_address.getPort();
+
+    const accept_thread = try std.Thread.spawn(.{}, testAcceptOnce, .{ server, &listener });
+
+    const client = try std.net.tcpConnectToAddress(std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port));
+    defer client.close();
+    // Pre-fix this fell through parseContentLength's digit scan (zero digits matched, "e > p"
+    // false) without returning, so the header was silently treated as absent and "HELLO" would be
+    // left dangling as the start of the next request on the same connection instead of failing.
+    const request = "POST / HTTP/1.1\r\nContent-Length: abc\r\n\r\nHELLO";
+    _ = try client.write(request);
+
+    var resp_buf: [256]u8 = undefined;
+    const resp = try testReadUntilClose(client, &resp_buf);
+    accept_thread.join();
+
+    try std.testing.expect(std.mem.indexOf(u8, resp, "400") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resp, "Bad Request") != null);
+}
+
+test "handleConnection: Content-Length with a tab before the value (legal OWS) is accepted, not rejected" {
+    // RFC 7230 §3.2.3 OWS is *( SP / HTAB ) — a space-only skip would hit parseContentLength's
+    // zero-digits branch on this and turn a legal request into a false-positive 400.
+    const allocator = std.testing.allocator;
+    const body = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}";
+    var full_buf: [512]u8 = undefined;
+    const full_request = try std.fmt.bufPrint(&full_buf, "POST / HTTP/1.1\r\nContent-Length:\t{d}\r\n\r\n{s}", .{ body.len, body });
+
+    var resp_buf: [4096]u8 = undefined;
+    const resp = try testSegmentedRequest(allocator, full_request, "", &resp_buf);
+
+    try std.testing.expect(std.mem.indexOf(u8, resp, "\"result\":\"ok\"") != null);
+}
+
+test "readFullRequestWithDeadline: exceeding the total wall-clock deadline returns error.RequestTimedOut" {
+    // Exercises the P1 fix (max_request_read_secs) deterministically: deadline_secs=0 expires
+    // before the loop's first iteration, so this models a slow-drip client (one that keeps every
+    // individual read() under recv_timeout_secs, defeating that per-read bound) without an actual
+    // multi-second wait or a fake clock — the real max_request_read_secs=30 default is exercised
+    // by construction (same code path), just with the deadline parameter shortened for the test.
+    const allocator = std.testing.allocator;
+    var server = try RpcServer.init(allocator, 0);
+    defer server.deinit();
+
+    var listener = try std.net.Address.initIp4(.{ 127, 0, 0, 1 }, 0).listen(.{ .reuse_address = true });
+    defer listener.deinit();
+    const port = listener.listen_address.getPort();
+
+    const client = try std.net.tcpConnectToAddress(std.net.Address.initIp4(.{ 127, 0, 0, 1 }, port));
+    defer client.close();
+    const conn = try listener.accept();
+    defer conn.stream.close();
+
+    const result = server.readFullRequestWithDeadline(conn.stream, 0);
+    try std.testing.expectError(error.RequestTimedOut, result);
 }

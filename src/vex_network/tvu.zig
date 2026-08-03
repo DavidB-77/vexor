@@ -6218,6 +6218,14 @@ const turbine_tree = @import("turbine_tree.zig");
 // ═══════════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+// Force Sema to visit rpc.zig so `zig build test-rpc` (rooted at THIS module, filtered to the
+// "handleConnection" prefix — the HTTP-segmentation-bug fix, 2026-08-03) actually registers its
+// test blocks. A bare `pub const rpc = @import(...)` re-export alone is not enough.
+test {
+    _ = rpc;
+}
+
 test "tvu service init" {
     var service = try TvuService.init(std.testing.allocator, .{});
     defer service.deinit();
