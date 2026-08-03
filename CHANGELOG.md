@@ -14,6 +14,11 @@ in [`PROVENANCE.md`](./PROVENANCE.md) rather than being duplicated here.
 
 ## Unreleased
 
+## 0.9.3-m
+### Validator
+#### Fixed
+* RPC: a JSON-RPC request that arrived split across TCP segments (client-side split writes, or any proxy that fragments) was parsed as garbage and answered -32600/-32700 instead of being served, because the server treated one `read()` as one request. The server now buffers the request to its `Content-Length` under a total read deadline, so a slow-drip client cannot hold a connection slot open indefinitely, and it rejects smuggling-shaped `Content-Length` values before any body handling. A two-write regression test and the deadline and parse-hardening tests run under `zig build test-rpc`.
+
 ## 0.9.3-l
 ### Validator
 #### Fixed
